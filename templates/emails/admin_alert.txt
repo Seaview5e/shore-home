@@ -1,0 +1,12 @@
+ADMIN ACTION – {{ group_name }}
+
+Review dashboard for Coordination Group Action Needed.
+
+Current Status:
+{{ current_status }}
+
+NEXT STEP:
+{{ next_step }}
+
+Open Group:
+{{ group_link }}

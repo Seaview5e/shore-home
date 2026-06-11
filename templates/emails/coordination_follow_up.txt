@@ -1,0 +1,23 @@
+Hi {{ guest_name }},
+
+
+Hi — quick update: despite our best efforts (and several rounds of calendar Tetris), we haven’t been able to find a date that works for everyone yet.
+
+We’re going to take another pass with the group, review availability, and see if any schedule adjustments can help us land on a date that works for all.
+
+We’ll circle back once we’ve compared notes and found a path through the scheduling maze.
+
+Thanks for your patience — apparently coordinating calendars is harder than the actual visit.
+
+
+Current proposed dates:
+{{ tentative_dates }}
+
+Please use this link to confirm or update your availability:
+
+{{ request_link }}
+
+Thanks!
+
+John & Mark
+302-521-5401

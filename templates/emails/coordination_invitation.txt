@@ -1,0 +1,30 @@
+Hi {{ guest_name }},
+
+
+Hi — we’re kicking off the process of coordinating dates for the group visit: {{ group_title }} and wanted to give you a quick heads-up.
+
+The plan is simple (in theory): collect everyone’s preferred and alternate dates, compare availability, and then come back with one or more tentative options for the group to confirm.
+
+At this stage, nothing is booked or confirmed yet — we’re just tackling the classic challenge of getting multiple calendars to agree with each other. Once we hear back from everyone and compare notes, we’ll send around dates that look like the best fit for the group.
+
+Email us if you need more then one room and we will adjust accordingly.
+
+If you are the Organizer, you can let us know of additional guests you want added to the coordination invitation! Just email us the name and email and we will get the invite out ASAP.
+
+Thanks in advance for your flexibility and patience while we put the calendar puzzle together.
+
+Group members:
+{{ group_member_text }}
+
+Current dates and analysis so far.
+
+{{ suggestion_text }}
+
+Please use your personal link below to submit or update your date options:
+
+{{ request_link }}
+
+Thanks!
+
+John & Mark
+302-521-5401

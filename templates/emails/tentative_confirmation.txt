@@ -1,0 +1,16 @@
+Hi {{ guest_name }},
+
+Good news — the group found some possible dates that may line up with everyone’s busy and highly coordinated lives:
+
+{{ tentative_dates }}
+
+Take a quick look and use this link to let us know if any of these work for you:
+
+{{ request_link }}
+
+With a little luck (and enough calendar magic), we’ll find a match.
+
+Thanks!
+
+John & Mark
+302-521-5401

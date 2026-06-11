@@ -1,0 +1,20 @@
+Hi {{ guest_name }},
+
+
+Hi — just a friendly reminder that we’re still waiting to hear back on the date options.
+
+No rush… but our scheduling spreadsheet has started giving us side-eye. Once we have your dates, we can keep the calendar adventure moving and get everything lined up.
+
+Thanks!
+ {{ group_title }}.
+
+Current responses:
+{{ response_count }}
+
+Your link:
+{{ request_link }}
+
+Thanks!
+
+John & Mark
+302-521-5401

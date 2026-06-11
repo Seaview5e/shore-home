@@ -1,0 +1,32 @@
+Hi {{ guest_name }},
+
+Hi — thanks for sending over the requested dates. After comparing calendars, availability, and whatever mysterious forces govern scheduling, it looks like we won’t be able to confirm those dates.
+
+But don’t give up — please send another round of preferred and alternate options and let’s take another shot. We remain optimistic that somewhere out there is a date everyone dislikes equally.
+
+Round two?
+
+━━━━━━━━━━━━━━━━━━
+
+Requested Stay
+
+Arrival: {{ arrival_date }}
+Departure: {{ departure_date }}
+Length of Stay: {{ nights }} night(s)
+Rooms Requested: {{ rooms_requested }}
+Additional Guests: {{ additional_names }}
+
+━━━━━━━━━━━━━━━━━━
+Additional Notes:
+{{ decline_reason }}
+
+If you would like, you can use the link below to submit alternate dates for consideration:
+
+{{ request_link }}
+
+We’d still love to coordinate another time if schedules and space allow.
+
+Feel free to reply directly with any questions.
+
+John & Mark
+302-521-5401

@@ -1,0 +1,18 @@
+Hi {{ guest_name }},
+
+It looks like you or we needed to make a change to the previously discussed date. Between updated availability and a few post-consultation adjustments (on one side… or possibly all sides), we’re confirming the change before anyone accidentally books the wrong day(s).
+
+VISIT DETAILS:
+- Arrival: {{ arrival_date }}
+- Departure: {{ departure_date }}
+- Nights: {{ nights }}
+- Rooms: {{ rooms_requested }}
+- Assigned Room(s): {{ room_list }}
+
+Additional Guests: {{ additional_names }}
+{{ coordinating_with_section }}{{ optional_admin_message }}If anything does not look right, just reply to this email.
+
+Looking forward to seeing everyone at the shore!
+
+John & Mark
+302-521-5401

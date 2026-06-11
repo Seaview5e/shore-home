@@ -1,0 +1,10 @@
+ADMIN ACTION – {{ group_name }}
+
+Current Status:
+No group date worked after the planning rounds.
+
+NEXT STEP:
+Start a new group, duplicate this group, or archive it.
+
+Open Group:
+{{ group_link }}

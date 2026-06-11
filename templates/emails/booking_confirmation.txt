@@ -1,0 +1,20 @@
+Hi {{ guest_name }},
+
+Good news — your visit to Strathmere is officially confirmed. We’re looking forward to having you and are glad the calendar stars aligned..
+
+VISIT DETAILS:
+- Arrival: {{ arrival_date }}
+- Departure: {{ departure_date }}
+- Nights: {{ nights }}
+- Room(s): {{ room_list }}
+
+Additional Guests: {{ additional_names }}
+
+Please use the links below if your plans change. Remember you can always request a new date later on. 
+
+If you need anything before your visit, just reply to this email.
+
+Looking forward to having everyone down at the shore and hoping for great weather! If not, we have plenty of indoor activities until the sun comes out again.
+
+John & Mark
+302-521-5401
