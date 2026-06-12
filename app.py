@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_6"
+    "app_V28_7"
 )
 
 BASE_URL = os.environ.get(
@@ -670,8 +670,7 @@ def plain_text_to_html_email(subject, body):
         "Additional Guests:",
         "Additional Guests for Your Room(s):",
         "Group members:",
-        "Current proposed dates:",
-        "Requested Stay"
+        "Current proposed dates:"
     ]
 
     link_label_lines = [
@@ -684,6 +683,13 @@ def plain_text_to_html_email(subject, body):
         "Open Group:",
         "Your link:",
         "Review:",
+        "Visit Details",
+        "VISIT DETAILS:",
+        "Requested Stay",
+        "Additional Notes:",
+        "Current dates and analysis so far:",
+        "Need to make a change?",
+        "━━━━━━━━━━━━━━━━━━",
         "Change Dates",
         "Cancel Visit",
         "Start a New Request"
@@ -1105,6 +1111,12 @@ PUBLIC_ENDPOINTS = {
     "static",
     "invite_request",
     "invitation_request_alias",
+    "invitation_request",
+    "guest_invitation_request",
+    "request_form",
+    "new_request",
+    "public_request",
+    "guest_request",
     "submit",
     "request_submitted_review",
     "request_submitted_complete",
@@ -1131,12 +1143,26 @@ def admin_is_logged_in():
 def require_admin_login():
 
     endpoint = request.endpoint or ""
+    path = safe_text(request.path)
+
+    guest_public_prefixes = (
+        "/invite/",
+        "/request/",
+        "/coordination-member/",
+        "/coordination-group-member/"
+    )
 
     if endpoint in PUBLIC_ENDPOINTS:
         return None
 
     if endpoint.startswith("static"):
         return None
+
+    if any(path.startswith(prefix) for prefix in guest_public_prefixes):
+        # Guest-facing email links must stay public. Admin-only request review pages
+        # are still protected by their own non-guest routes and dashboard links.
+        if "/email-preview" not in path and "/approve" not in path and "/decline" not in path:
+            return None
 
     if not ADMIN_AUTH_ENABLED:
         return None
@@ -7457,9 +7483,7 @@ def approve_request(request_id):
                 Back to Booking Handoff
             </a>
             |
-            <a href="/request/{request_id}">
-                View Request
-            </a>
+            <a href="/request/{request_id}">Done</a>
             |
             <a href="/room-assignments">
                 Room Assignments
@@ -7675,9 +7699,7 @@ def approve_request(request_id):
             Back to Request Review
         </a>
         |
-        <a href="/request/{request_id}">
-            View Request
-        </a>
+        <a href="/request/{request_id}">Done</a>
     </p>
     """
 
@@ -10977,7 +10999,7 @@ def decline_request(request_id):
 
         <p>
             <a href="/requests">Back to Request Review</a> |
-            <a href="/request/{request_id}">View Request</a>
+            <a href="/request/{request_id}">Done</a>
         </p>
         """
 
@@ -11635,9 +11657,7 @@ def approve_change(request_id):
         </p>
 
         <p>
-            <a href="/request/{request_id}">
-                Back to Request
-            </a>
+            <a href="/request/{request_id}">Done</a>
         </p>
         """
 
@@ -11705,9 +11725,7 @@ def approve_change(request_id):
         </p>
 
         <p>
-            <a href="/request/{request_id}">
-                Back to Request
-            </a>
+            <a href="/request/{request_id}">Done</a>
         </p>
         """
 
@@ -11737,9 +11755,7 @@ def approve_change(request_id):
         </p>
 
         <p>
-            <a href='/request/{request_id}'>
-                Back to request
-            </a>
+            <a href='/request/{request_id}'>Done</a>
         </p>
         """
 
@@ -11756,9 +11772,7 @@ def approve_change(request_id):
         </p>
 
         <p>
-            <a href='/request/{request_id}'>
-                Back to request
-            </a>
+            <a href='/request/{request_id}'>Done</a>
         </p>
         """
 
@@ -11785,9 +11799,7 @@ def approve_change(request_id):
         </p>
 
         <p>
-            <a href='/request/{request_id}'>
-                Back to request
-            </a>
+            <a href='/request/{request_id}'>Done</a>
         </p>
         """
 
@@ -11827,9 +11839,7 @@ def approve_change(request_id):
             </p>
 
             <p>
-                <a href='/request/{request_id}'>
-                    Back to request
-                </a>
+                <a href='/request/{request_id}'>Done</a>
             </p>
             """
 
@@ -11966,9 +11976,7 @@ def approve_change(request_id):
                border-radius: 6px;
                font-weight: bold;
                margin-left: 8px;
-           ">
-            View Request
-        </a>
+           ">Done</a>
 
         <a href="/requests"
            style="
@@ -12105,9 +12113,7 @@ def approve_cancel(request_id):
                border-radius: 6px;
                font-weight: bold;
                margin-left: 8px;
-           ">
-            View Request
-        </a>
+           ">Done</a>
 
         <a href="/requests"
            style="
@@ -12466,7 +12472,7 @@ John & Mark
     <br>
 
     <p>
-        <a href="/request/{request_id}">Back to Request</a> |
+        <a href="/request/{request_id}">Done</a> |
         <a href="/requests">Request Review</a>
     </p>
     """
@@ -15707,9 +15713,7 @@ Change Notes:
         </div>
 
         <p>
-            <a href="/request/{request_id}">
-                View Request
-            </a>
+            <a href="/request/{request_id}">Done</a>
         </p>
         """
 
@@ -16301,9 +16305,7 @@ Change Notes:
     <br>
 
     <p>
-        <a href="/request/{request_id}">
-            Back to Request
-        </a>
+        <a href="/request/{request_id}">Done</a>
     </p>
     """
 
@@ -16719,9 +16721,7 @@ John & Mark
     <br>
 
     <p>
-        <a href="/request/{request_id}">
-            Back to Request
-        </a>
+        <a href="/request/{request_id}">Done</a>
     </p>
     """
 
