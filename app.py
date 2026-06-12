@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_9"
+    "app_V28_13"
 )
 
 BASE_URL = os.environ.get(
@@ -534,8 +534,6 @@ def admin_rebuild_email_templates():
 
     rebuild_email_template_files()
 
-    header_image_url = f"{BASE_URL}/static/email_header/shore_home_header.jpg"
-
     return f"""
     {nav_links()}
 
@@ -644,17 +642,13 @@ def plain_text_to_html_email(subject, body):
             return "Open Coordination Link"
 
         if url.rstrip("/") == BASE_URL.rstrip("/"):
-            if "request" in nearby_lower:
-                return "Open Request"
-            return "Start a New Request"
+            return "Open New Request"
 
-        if "/submit" in url:
-            if "new request" in nearby_lower or "start" in nearby_lower:
-                return "Start a New Request"
-            return "Open Request"
+        if "/new-request" in url:
+            return "Open New Request"
 
         if "request" in nearby_lower or "/invite" in url:
-            return "Open Request"
+            return "Open New Request"
 
         return "Open Link"
 
@@ -800,7 +794,7 @@ def plain_text_to_html_email(subject, body):
         button_url = button["url"]
 
         if button_url.rstrip("/") == BASE_URL.rstrip("/"):
-            button_url = BASE_URL.rstrip("/") + "/submit"
+            button_url = BASE_URL.rstrip("/") + "/new-request"
 
         if button_url in seen_urls:
             continue
@@ -886,7 +880,7 @@ def plain_text_to_html_email(subject, body):
         buttons_html = f"""
             <div style="border-top:1px solid #e5e7eb; padding-top:16px; margin-top:18px;">
                 <div style="font-size:13px; letter-spacing:.06em; text-transform:uppercase; color:#0f4c81; font-weight:bold; margin-bottom:8px;">
-                    Quick Actions
+                    Actions
                 </div>
                 {''.join(button_parts)}
             </div>
@@ -899,12 +893,6 @@ def plain_text_to_html_email(subject, body):
         <div style="max-width:720px; margin:0 auto; padding:22px;">
             <div style="background:#ffffff; border:1px solid #d5e0ea; border-radius:14px; overflow:hidden; box-shadow:0 2px 8px rgba(15,76,129,0.08);">
 
-                
-                <div style="background:#ffffff;">
-                    <img src="{header_image_url}"
-                    alt="Shore Home Header"
-                    style="display:block;width:100%;max-height:220px;object-fit:cover;">
-                </div>
                 <div style="background:#0f4c81; color:white; padding:20px 22px;">
                     <div style="font-size:13px; letter-spacing:.08em; text-transform:uppercase; opacity:.9; margin-bottom:6px;">
                         Shore Home
@@ -1188,6 +1176,7 @@ def require_admin_login():
 
     guest_public_prefixes = (
         "/invite/",
+        "/new-request",
         "/request/",
         "/coordination-member/",
         "/coordination-group-member/"
@@ -4903,6 +4892,7 @@ def admin_backup():
 
     return html
 
+@app.route("/new-request")
 @app.route("/")
 def home():
     conn = get_db_connection()
@@ -5077,17 +5067,19 @@ def home():
     </div>
     """
 
+    calendar_base_path = "/new-request" if request.path == "/new-request" else "/"
+
     calendar_html = f"""
     <h2>Capacity Calendar - {month_title}</h2>
 
     <p>
-        <a href="/?year={previous_year}&month={previous_month}">
+        <a href="{calendar_base_path}?year={previous_year}&month={previous_month}">
             Previous Month
         </a>
         |
         <strong>{month_title}</strong>
         |
-        <a href="/?year={next_year}&month={next_month}">
+        <a href="{calendar_base_path}?year={next_year}&month={next_month}">
             Next Month
         </a>
     </p>
@@ -5230,9 +5222,11 @@ def home():
     </p>
     """
 
-    html = nav_links()
+    html = ""
 
-    html += alert_box
+    if request.path != "/new-request":
+        html = nav_links()
+        html += alert_box
 
     html += """
     <h1 style="margin-bottom: 6px;">Request a Shore Visit</h1>
