@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_8"
+    "app_V28_9"
 )
 
 BASE_URL = os.environ.get(
@@ -642,13 +642,17 @@ def plain_text_to_html_email(subject, body):
             return "Open Coordination Link"
 
         if url.rstrip("/") == BASE_URL.rstrip("/"):
+            if "request" in nearby_lower:
+                return "Open Request"
             return "Start a New Request"
 
         if "/submit" in url:
-            return "Start a New Request"
+            if "new request" in nearby_lower or "start" in nearby_lower:
+                return "Start a New Request"
+            return "Open Request"
 
         if "request" in nearby_lower or "/invite" in url:
-            return "Open Request Link"
+            return "Open Request"
 
         return "Open Link"
 
@@ -767,6 +771,18 @@ def plain_text_to_html_email(subject, body):
         previous_blank = is_blank
 
     message_body = "\n".join(cleaned_message_lines).strip()
+
+    # Tighten common template spacing now that details are displayed in the card.
+    message_body = message_body.replace(
+        "WE’RE EXCITED YOUR VISIT TO STRATHMERE WILL WORK OUT!\n\n",
+        "WE’RE EXCITED YOUR VISIT TO STRATHMERE WILL WORK OUT!\n"
+    )
+
+    message_body = message_body.replace(
+        "WE'RE EXCITED YOUR VISIT TO STRATHMERE WILL WORK OUT!\n\n",
+        "WE'RE EXCITED YOUR VISIT TO STRATHMERE WILL WORK OUT!\n"
+    )
+
     escaped_message_body = html_escape_module.escape(message_body)
     linked_message_body = url_pattern.sub(
         make_inline_link,
@@ -7500,7 +7516,7 @@ def approve_request(request_id):
                 Back to Booking Handoff
             </a>
             |
-            <a href="/request/{request_id}">Done</a>
+            <strong style="color: #198754;">Done</strong>
             |
             <a href="/room-assignments">
                 Room Assignments
@@ -7716,7 +7732,7 @@ def approve_request(request_id):
             Back to Request Review
         </a>
         |
-        <a href="/request/{request_id}">Done</a>
+        <strong style="color: #198754;">Done</strong>
     </p>
     """
 
@@ -11016,7 +11032,7 @@ def decline_request(request_id):
 
         <p>
             <a href="/requests">Back to Request Review</a> |
-            <a href="/request/{request_id}">Done</a>
+            <strong style="color: #198754;">Done</strong>
         </p>
         """
 
@@ -11674,7 +11690,7 @@ def approve_change(request_id):
         </p>
 
         <p>
-            <a href="/request/{request_id}">Done</a>
+            <strong style="color: #198754;">Done</strong>
         </p>
         """
 
@@ -11742,7 +11758,7 @@ def approve_change(request_id):
         </p>
 
         <p>
-            <a href="/request/{request_id}">Done</a>
+            <strong style="color: #198754;">Done</strong>
         </p>
         """
 
@@ -11984,16 +12000,7 @@ def approve_change(request_id):
             Preview Update Email
         </a>
 
-        <a href="/request/{request_id}"
-           style="
-               background-color: #0d6efd;
-               color: white;
-               padding: 10px 14px;
-               text-decoration: none;
-               border-radius: 6px;
-               font-weight: bold;
-               margin-left: 8px;
-           ">Done</a>
+        <strong style="color: #198754;">Done</strong>
 
         <a href="/requests"
            style="
@@ -12121,16 +12128,7 @@ def approve_cancel(request_id):
             Preview Cancellation Email
         </a>
 
-        <a href="/request/{request_id}"
-           style="
-               background-color: #0d6efd;
-               color: white;
-               padding: 10px 14px;
-               text-decoration: none;
-               border-radius: 6px;
-               font-weight: bold;
-               margin-left: 8px;
-           ">Done</a>
+        <strong style="color: #198754;">Done</strong>
 
         <a href="/requests"
            style="
@@ -12489,7 +12487,7 @@ John & Mark
     <br>
 
     <p>
-        <a href="/request/{request_id}">Done</a> |
+        <strong style="color: #198754;">Done</strong> |
         <a href="/requests">Request Review</a>
     </p>
     """
@@ -15730,7 +15728,7 @@ Change Notes:
         </div>
 
         <p>
-            <a href="/request/{request_id}">Done</a>
+            <strong style="color: #198754;">Done</strong>
         </p>
         """
 
@@ -16322,7 +16320,7 @@ Change Notes:
     <br>
 
     <p>
-        <a href="/request/{request_id}">Done</a>
+        <strong style="color: #198754;">Done</strong>
     </p>
     """
 
@@ -16738,7 +16736,7 @@ John & Mark
     <br>
 
     <p>
-        <a href="/request/{request_id}">Done</a>
+        <strong style="color: #198754;">Done</strong>
     </p>
     """
 
