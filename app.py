@@ -8,6 +8,7 @@ import shutil
 import html as html_escape_module
 import logging
 import traceback
+import re
 import hmac
 from werkzeug.exceptions import HTTPException
 
@@ -35,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_3"
+    "app_V28_4"
 )
 
 BASE_URL = os.environ.get(
@@ -622,33 +623,53 @@ def plain_text_to_html_email(subject, body):
     escaped_subject = html_escape_module.escape(str(subject or ""))
     escaped_body = html_escape_module.escape(str(body or ""))
 
-    # Keep the text-template workflow, but provide a cleaner HTML layer for email clients.
+    # Make plain-text URLs clickable in the HTML version while keeping the
+    # text-template workflow intact.
+    url_pattern = re.compile(r"(https?://[^\s<]+)")
+
+    def make_link(match):
+        url = match.group(1)
+        safe_url = html_escape_module.escape(url, quote=True)
+        return (
+            f'<a href="{safe_url}" '
+            f'style="color:#0f4c81; font-weight:bold; text-decoration:underline;">'
+            f'{safe_url}</a>'
+        )
+
+    linked_body = url_pattern.sub(
+        make_link,
+        escaped_body
+    )
+
     return f"""
     <!doctype html>
     <html>
-    <body style="margin:0; padding:0; background-color:#f6f8fb; font-family: Arial, Helvetica, sans-serif; color:#1f2937;">
-        <div style="max-width:680px; margin:0 auto; padding:18px;">
-            <div style="background:#ffffff; border:1px solid #d9e2ec; border-radius:12px; overflow:hidden;">
-                <div style="background:#0f4c81; color:white; padding:14px 18px;">
-                    <div style="font-size:18px; font-weight:bold; line-height:1.3;">
-                        {escaped_subject}
+    <body style="margin:0; padding:0; background-color:#eef4f8; font-family: Arial, Helvetica, sans-serif; color:#1f2937;">
+        <div style="max-width:720px; margin:0 auto; padding:22px;">
+            <div style="background:#ffffff; border:1px solid #d5e0ea; border-radius:14px; overflow:hidden; box-shadow:0 2px 8px rgba(15,76,129,0.08);">
+
+                <div style="background:#0f4c81; color:white; padding:20px 22px;">
+                    <div style="font-size:13px; letter-spacing:.08em; text-transform:uppercase; opacity:.9; margin-bottom:6px;">
+                        Shore Home
                     </div>
-                    <div style="font-size:12px; opacity:.9; margin-top:4px;">
-                        Shore Home Visit Coordination
+                    <div style="font-size:22px; font-weight:bold; line-height:1.25;">
+                        Strathmere Visit Coordination
+                    </div>
+                    <div style="font-size:14px; opacity:.92; margin-top:8px; line-height:1.4;">
+                        {escaped_subject}
                     </div>
                 </div>
 
-                <div style="padding:18px; font-size:15px; line-height:1.55; white-space:pre-wrap;">{escaped_body}</div>
+                <div style="padding:22px; font-size:16px; line-height:1.6; white-space:pre-wrap;">{linked_body}</div>
 
-                <div style="border-top:1px solid #e5e7eb; padding:12px 18px; font-size:12px; color:#6b7280;">
-                    This message was sent by the Shore Home App.
+                <div style="border-top:1px solid #e5e7eb; background:#f8fafc; padding:14px 22px; font-size:12px; color:#64748b; line-height:1.45;">
+                    This message was sent by the Shore Home App for Strathmere visit coordination.
                 </div>
             </div>
         </div>
     </body>
     </html>
     """
-
 
 
 def write_email_audit(to_email, subject, status, detail=""):
