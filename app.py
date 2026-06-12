@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_12"
+    "app_V28_13"
 )
 
 BASE_URL = os.environ.get(
@@ -642,13 +642,13 @@ def plain_text_to_html_email(subject, body):
             return "Open Coordination Link"
 
         if url.rstrip("/") == BASE_URL.rstrip("/"):
-            return ""
+            return "Open New Request"
 
         if "/new-request" in url:
-            return ""
+            return "Open New Request"
 
         if "request" in nearby_lower or "/invite" in url:
-            return ""
+            return "Open New Request"
 
         return "Open Link"
 
