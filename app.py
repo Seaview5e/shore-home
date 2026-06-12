@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, render_template, render_template_string
+from flask import Flask, request, redirect, render_template, render_template_string, session
 from datetime import date, datetime, timedelta
 from database import get_db_connection, DATABASE_FILE
 import smtplib
@@ -8,10 +8,15 @@ import shutil
 import html as html_escape_module
 import logging
 import traceback
+import hmac
 from werkzeug.exceptions import HTTPException
 
 
 app = Flask(__name__)
+app.secret_key = os.environ.get(
+    "SECRET_KEY",
+    "shore-home-local-dev-key-change-in-production"
+)
 
 # Production hardening: basic file logging.
 os.makedirs("logs", exist_ok=True)
@@ -30,7 +35,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_2"
+    "app_V28_3"
 )
 
 BASE_URL = os.environ.get(
@@ -63,6 +68,18 @@ ADMIN_NOTIFICATIONS_ENABLED = os.environ.get(
     "1"
 ).strip().lower() not in ["0", "false", "no", "off"]
 
+ADMIN_USERNAME = os.environ.get(
+    "ADMIN_USERNAME",
+    "admin"
+)
+
+ADMIN_PASSWORD = os.environ.get(
+    "ADMIN_PASSWORD",
+    ""
+)
+
+ADMIN_AUTH_ENABLED = bool(ADMIN_PASSWORD)
+
 print("APP VERSION:", APP_VERSION)
 print("DATABASE FILE:", DATABASE_FILE)
 print("BASE URL:", BASE_URL)
@@ -70,6 +87,7 @@ print("EMAIL ADDRESS:", EMAIL_ADDRESS)
 print("EMAIL PASSWORD CONFIGURED:", bool(EMAIL_APP_PASSWORD))
 print("ADMIN NOTIFICATIONS ENABLED:", ADMIN_NOTIFICATIONS_ENABLED)
 print("ADMIN NOTIFICATION EMAIL:", ADMIN_NOTIFICATION_EMAIL)
+print("ADMIN AUTH ENABLED:", ADMIN_AUTH_ENABLED)
 
 # EMAIL TEMPLATES
 
@@ -846,6 +864,125 @@ def add_security_headers(response):
     return response
 
 
+PUBLIC_ENDPOINTS = {
+    "admin_login",
+    "static",
+    "invite_request",
+    "invitation_request_alias",
+    "submit",
+    "request_submitted_review",
+    "request_submitted_complete",
+    "change_request",
+    "change_request_bad_link",
+    "cancel_request",
+    "coordination_group_member_request",
+    "coordination_group_member_date_options",
+    "coordination_group_member_date_options_thanks",
+    "coordination_group_member_cannot_change_dates",
+    "coordination_group_member_clear_date_options",
+    "coordination_group_member_follow_up_dates_work",
+    "coordination_group_member_tentative_response",
+    "coordination_group_member_tentative_response_thanks"
+}
+
+
+def admin_is_logged_in():
+
+    return session.get("admin_logged_in") == True
+
+
+@app.before_request
+def require_admin_login():
+
+    endpoint = request.endpoint or ""
+
+    if endpoint in PUBLIC_ENDPOINTS:
+        return None
+
+    if endpoint.startswith("static"):
+        return None
+
+    if not ADMIN_AUTH_ENABLED:
+        return None
+
+    if admin_is_logged_in():
+        return None
+
+    return redirect(
+        "/admin-login?next=" + safe_text(request.path)
+    )
+
+
+@app.route("/admin-login", methods=["GET", "POST"])
+def admin_login():
+
+    error_message = ""
+
+    if request.method == "POST":
+
+        username = safe_text(request.form.get("username")).strip()
+        password = safe_text(request.form.get("password")).strip()
+
+        username_ok = hmac.compare_digest(
+            username,
+            safe_text(ADMIN_USERNAME)
+        )
+
+        password_ok = hmac.compare_digest(
+            password,
+            safe_text(ADMIN_PASSWORD)
+        )
+
+        if username_ok and password_ok:
+
+            session["admin_logged_in"] = True
+
+            next_path = safe_text(request.args.get("next")).strip()
+
+            if not next_path.startswith("/"):
+                next_path = "/dashboard"
+
+            return redirect(next_path)
+
+        error_message = "Invalid login."
+
+    return f"""
+    <h1>Shore Home Admin Login</h1>
+
+    <form method="POST">
+        <p>
+            <label>
+                Username<br>
+                <input type="text" name="username" autocomplete="username">
+            </label>
+        </p>
+
+        <p>
+            <label>
+                Password<br>
+                <input type="password" name="password" autocomplete="current-password">
+            </label>
+        </p>
+
+        <p style="color: red; font-weight: bold;">
+            {safe_text(error_message)}
+        </p>
+
+        <button type="submit">
+            Login
+        </button>
+    </form>
+    """
+
+
+@app.route("/admin-logout")
+def admin_logout():
+
+    session.clear()
+
+    return redirect("/admin-login")
+
+
 def nav_links():
     return f"""
     <div style="font-size: 14px; line-height: 1.8;">
@@ -870,7 +1007,7 @@ def nav_links():
         <a href="/manual-request">Manual Request</a> |
         <a href="/admin-backup">Admin Backup</a> |
         <a href="/production-check">Production Check</a> |
-        <a href="/system-health">System Health</a>
+        <a href="/system-health">System Health</a> |\n        <a href="/admin-logout">Logout</a>
     </div>
     <br>
     <small style="color: gray;">Version: {APP_VERSION}</small>
@@ -4313,8 +4450,8 @@ def production_check():
 
     checks.append((
         "Public access protection",
-        False,
-        "This app has no login layer. Do not expose it publicly until access protection is added."
+        ADMIN_AUTH_ENABLED,
+        "Admin login protection configured." if ADMIN_AUTH_ENABLED else "ADMIN_PASSWORD is missing; admin pages are not protected."
     ))
 
     rows = ""
