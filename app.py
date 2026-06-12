@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_4"
+    "app_V28_5"
 )
 
 BASE_URL = os.environ.get(
@@ -621,13 +621,33 @@ def render_email_template(template_name, **context):
 def plain_text_to_html_email(subject, body):
 
     escaped_subject = html_escape_module.escape(str(subject or ""))
-    escaped_body = html_escape_module.escape(str(body or ""))
+    body_text = str(body or "")
 
-    # Make plain-text URLs clickable in the HTML version while keeping the
-    # text-template workflow intact.
+    # Keep the text-template workflow, but make the HTML version clearer:
+    # consistent header, detail-card styling, clickable links, and button-style actions.
+    escaped_body = html_escape_module.escape(body_text)
+
     url_pattern = re.compile(r"(https?://[^\s<]+)")
 
-    def make_link(match):
+    def action_label_for_url(url, nearby_text=""):
+
+        nearby_lower = safe_text(nearby_text).lower()
+
+        if "change" in nearby_lower or "/change" in url:
+            return "Change Dates"
+
+        if "cancel" in nearby_lower or "/cancel" in url:
+            return "Cancel Visit"
+
+        if "coordination" in nearby_lower:
+            return "Open Coordination Link"
+
+        if "request" in nearby_lower or "/invite" in url:
+            return "Open Request Link"
+
+        return "Open Link"
+
+    def make_inline_link(match):
         url = match.group(1)
         safe_url = html_escape_module.escape(url, quote=True)
         return (
@@ -637,9 +657,160 @@ def plain_text_to_html_email(subject, body):
         )
 
     linked_body = url_pattern.sub(
-        make_link,
+        make_inline_link,
         escaped_body
     )
+
+    detail_labels = [
+        "Arrival:",
+        "Departure:",
+        "Nights:",
+        "Length of Stay:",
+        "Rooms:",
+        "Room(s):",
+        "Rooms Requested:",
+        "Room(s) Approved:",
+        "Assigned Room(s):",
+        "Additional Guests:",
+        "Additional Guests for Your Room(s):",
+        "Group members:",
+        "Current proposed dates:",
+        "Requested Stay"
+    ]
+
+    detail_lines = []
+    message_lines = []
+    action_buttons = []
+
+    lines = body_text.splitlines()
+    index = 0
+
+    while index < len(lines):
+
+        line = lines[index]
+        stripped = line.strip()
+
+        url_match = url_pattern.search(stripped)
+
+        if url_match:
+
+            label_source = ""
+
+            if index > 0:
+                label_source += lines[index - 1] + " "
+
+            label_source += stripped
+
+            action_buttons.append({
+                "label": action_label_for_url(url_match.group(1), label_source),
+                "url": url_match.group(1)
+            })
+
+            message_lines.append(line)
+            index += 1
+            continue
+
+        if any(stripped.startswith(label) for label in detail_labels):
+            detail_lines.append(stripped)
+        elif stripped.startswith("- "):
+            detail_lines.append(stripped[2:].strip())
+        else:
+            message_lines.append(line)
+
+        index += 1
+
+    # De-duplicate buttons while preserving order.
+    seen_urls = set()
+    final_buttons = []
+
+    for button in action_buttons:
+
+        if button["url"] in seen_urls:
+            continue
+
+        seen_urls.add(button["url"])
+        final_buttons.append(button)
+
+    details_html = ""
+
+    if detail_lines:
+
+        detail_rows = []
+
+        for detail_line in detail_lines:
+
+            if ":" in detail_line:
+                label, value = detail_line.split(":", 1)
+                label_html = html_escape_module.escape(label.strip())
+                value_html = html_escape_module.escape(value.strip())
+            else:
+                label_html = ""
+                value_html = html_escape_module.escape(detail_line.strip())
+
+            if label_html:
+                detail_rows.append(f"""
+                    <tr>
+                        <td style="padding:6px 10px 6px 0; color:#64748b; font-size:13px; vertical-align:top; width:38%;">
+                            {label_html}
+                        </td>
+                        <td style="padding:6px 0; color:#1f2937; font-size:14px; font-weight:bold; vertical-align:top;">
+                            {value_html}
+                        </td>
+                    </tr>
+                """)
+            else:
+                detail_rows.append(f"""
+                    <tr>
+                        <td colspan="2" style="padding:6px 0; color:#1f2937; font-size:14px; font-weight:bold;">
+                            {value_html}
+                        </td>
+                    </tr>
+                """)
+
+        details_html = f"""
+            <div style="background:#f8fbff; border:1px solid #d8e6f3; border-radius:12px; padding:14px 16px; margin:0 0 18px 0;">
+                <div style="font-size:13px; letter-spacing:.06em; text-transform:uppercase; color:#0f4c81; font-weight:bold; margin-bottom:6px;">
+                    Details
+                </div>
+                <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="width:100%; border-collapse:collapse;">
+                    {''.join(detail_rows)}
+                </table>
+            </div>
+        """
+
+    buttons_html = ""
+
+    if final_buttons:
+
+        button_parts = []
+
+        for button in final_buttons:
+
+            safe_url = html_escape_module.escape(button["url"], quote=True)
+            safe_label = html_escape_module.escape(button["label"])
+
+            button_parts.append(f"""
+                <a href="{safe_url}" style="
+                    display:inline-block;
+                    background:#0f4c81;
+                    color:#ffffff;
+                    text-decoration:none;
+                    font-weight:bold;
+                    font-size:14px;
+                    padding:10px 14px;
+                    border-radius:8px;
+                    margin:4px 8px 4px 0;
+                ">{safe_label}</a>
+            """)
+
+        buttons_html = f"""
+            <div style="border-top:1px solid #e5e7eb; padding-top:16px; margin-top:18px;">
+                <div style="font-size:13px; letter-spacing:.06em; text-transform:uppercase; color:#0f4c81; font-weight:bold; margin-bottom:8px;">
+                    Quick Actions
+                </div>
+                {''.join(button_parts)}
+            </div>
+        """
 
     return f"""
     <!doctype html>
@@ -660,10 +831,15 @@ def plain_text_to_html_email(subject, body):
                     </div>
                 </div>
 
-                <div style="padding:22px; font-size:16px; line-height:1.6; white-space:pre-wrap;">{linked_body}</div>
+                <div style="padding:22px;">
+                    {details_html}
+                    <div style="font-size:16px; line-height:1.6; white-space:pre-wrap;">{linked_body}</div>
+                    {buttons_html}
+                </div>
 
                 <div style="border-top:1px solid #e5e7eb; background:#f8fafc; padding:14px 22px; font-size:12px; color:#64748b; line-height:1.45;">
-                    This message was sent by the Shore Home App for Strathmere visit coordination.
+                    Questions? Just reply to this email.<br>
+                    Shore Home • Strathmere Visit Coordination
                 </div>
             </div>
         </div>
