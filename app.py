@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_9"
+    "app_V28_10"
 )
 
 BASE_URL = os.environ.get(
@@ -642,17 +642,13 @@ def plain_text_to_html_email(subject, body):
             return "Open Coordination Link"
 
         if url.rstrip("/") == BASE_URL.rstrip("/"):
-            if "request" in nearby_lower:
-                return "Open Request"
-            return "Start a New Request"
+            return "Open New Request"
 
         if "/submit" in url:
-            if "new request" in nearby_lower or "start" in nearby_lower:
-                return "Start a New Request"
-            return "Open Request"
+            return "Open New Request"
 
         if "request" in nearby_lower or "/invite" in url:
-            return "Open Request"
+            return "Open New Request"
 
         return "Open Link"
 
@@ -1180,6 +1176,7 @@ def require_admin_login():
 
     guest_public_prefixes = (
         "/invite/",
+        "/submit",
         "/request/",
         "/coordination-member/",
         "/coordination-group-member/"
