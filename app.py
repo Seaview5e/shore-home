@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_5"
+    "app_V28_6"
 )
 
 BASE_URL = os.environ.get(
@@ -623,10 +623,9 @@ def plain_text_to_html_email(subject, body):
     escaped_subject = html_escape_module.escape(str(subject or ""))
     body_text = str(body or "")
 
-    # Keep the text-template workflow, but make the HTML version clearer:
-    # consistent header, detail-card styling, clickable links, and button-style actions.
-    escaped_body = html_escape_module.escape(body_text)
-
+    # Keep TXT templates as the source of truth.
+    # HTML email cleans up presentation by moving detail rows into one card
+    # and URL lines into buttons, so those sections do not repeat below.
     url_pattern = re.compile(r"(https?://[^\s<]+)")
 
     def action_label_for_url(url, nearby_text=""):
@@ -648,18 +647,15 @@ def plain_text_to_html_email(subject, body):
         return "Open Link"
 
     def make_inline_link(match):
+
         url = match.group(1)
         safe_url = html_escape_module.escape(url, quote=True)
+
         return (
             f'<a href="{safe_url}" '
             f'style="color:#0f4c81; font-weight:bold; text-decoration:underline;">'
             f'{safe_url}</a>'
         )
-
-    linked_body = url_pattern.sub(
-        make_inline_link,
-        escaped_body
-    )
 
     detail_labels = [
         "Arrival:",
@@ -678,17 +674,35 @@ def plain_text_to_html_email(subject, body):
         "Requested Stay"
     ]
 
+    link_label_lines = [
+        "Change Dates:",
+        "Cancel Visit:",
+        "Cancel Request:",
+        "Start a New Request:",
+        "Change / Review Dates:",
+        "Cancel / Cannot Make These Dates:",
+        "Open Group:",
+        "Your link:",
+        "Review:",
+        "Change Dates",
+        "Cancel Visit",
+        "Start a New Request"
+    ]
+
     detail_lines = []
     message_lines = []
     action_buttons = []
 
     lines = body_text.splitlines()
-    index = 0
+    skip_next_blank_after_link_label = False
 
-    while index < len(lines):
+    for index, line in enumerate(lines):
 
-        line = lines[index]
         stripped = line.strip()
+
+        if not stripped and skip_next_blank_after_link_label:
+            skip_next_blank_after_link_label = False
+            continue
 
         url_match = url_pattern.search(stripped)
 
@@ -706,18 +720,43 @@ def plain_text_to_html_email(subject, body):
                 "url": url_match.group(1)
             })
 
-            message_lines.append(line)
-            index += 1
+            skip_next_blank_after_link_label = True
             continue
 
         if any(stripped.startswith(label) for label in detail_labels):
             detail_lines.append(stripped)
-        elif stripped.startswith("- "):
-            detail_lines.append(stripped[2:].strip())
-        else:
-            message_lines.append(line)
+            continue
 
-        index += 1
+        if stripped.startswith("- "):
+            detail_lines.append(stripped[2:].strip())
+            continue
+
+        if stripped in link_label_lines or any(stripped.startswith(label) for label in link_label_lines):
+            skip_next_blank_after_link_label = True
+            continue
+
+        message_lines.append(line)
+
+    # Clean repeated blank lines in message body.
+    cleaned_message_lines = []
+    previous_blank = False
+
+    for line in message_lines:
+
+        is_blank = not line.strip()
+
+        if is_blank and previous_blank:
+            continue
+
+        cleaned_message_lines.append(line)
+        previous_blank = is_blank
+
+    message_body = "\n".join(cleaned_message_lines).strip()
+    escaped_message_body = html_escape_module.escape(message_body)
+    linked_message_body = url_pattern.sub(
+        make_inline_link,
+        escaped_message_body
+    )
 
     # De-duplicate buttons while preserving order.
     seen_urls = set()
@@ -833,7 +872,7 @@ def plain_text_to_html_email(subject, body):
 
                 <div style="padding:22px;">
                     {details_html}
-                    <div style="font-size:16px; line-height:1.6; white-space:pre-wrap;">{linked_body}</div>
+                    <div style="font-size:16px; line-height:1.6; white-space:pre-wrap;">{linked_message_body}</div>
                     {buttons_html}
                 </div>
 
