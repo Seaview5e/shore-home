@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_7"
+    "app_V28_8"
 )
 
 BASE_URL = os.environ.get(
@@ -641,6 +641,12 @@ def plain_text_to_html_email(subject, body):
         if "coordination" in nearby_lower:
             return "Open Coordination Link"
 
+        if url.rstrip("/") == BASE_URL.rstrip("/"):
+            return "Start a New Request"
+
+        if "/submit" in url:
+            return "Start a New Request"
+
         if "request" in nearby_lower or "/invite" in url:
             return "Open Request Link"
 
@@ -687,6 +693,9 @@ def plain_text_to_html_email(subject, body):
         "VISIT DETAILS:",
         "Requested Stay",
         "Additional Notes:",
+        "Cancelled Visit Details:",
+        "Canceled Visit Details:",
+        "Cancellation Details:",
         "Current dates and analysis so far:",
         "Need to make a change?",
         "━━━━━━━━━━━━━━━━━━",
@@ -770,11 +779,19 @@ def plain_text_to_html_email(subject, body):
 
     for button in action_buttons:
 
-        if button["url"] in seen_urls:
+        button_url = button["url"]
+
+        if button_url.rstrip("/") == BASE_URL.rstrip("/"):
+            button_url = BASE_URL.rstrip("/") + "/submit"
+
+        if button_url in seen_urls:
             continue
 
-        seen_urls.add(button["url"])
-        final_buttons.append(button)
+        seen_urls.add(button_url)
+
+        final_button = dict(button)
+        final_button["url"] = button_url
+        final_buttons.append(final_button)
 
     details_html = ""
 
