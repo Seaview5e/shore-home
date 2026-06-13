@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_15C"
+    "app_V28_15D"
 )
 
 BASE_URL = os.environ.get(
@@ -5358,7 +5358,8 @@ def home():
                value="">
 
         <button type="button"
-                onclick="resetDateSelection();">
+                onclick="resetDateSelection();"
+                style="padding: 12px 18px; font-size: 22px; font-weight: bold; background-color: #0d6efd; color: white; border: none; border-radius: 8px;">
             Clear Selected Dates and Start Over
         </button>
 
@@ -5389,24 +5390,25 @@ def home():
         <br>
 
         <label>
-            <strong>Additional Guest Name(s) for Your Room(s)</strong>
+            <strong style="font-size: 32px;">Additional Guest Name(s) for Your Room(s)</strong>
         </label><br>
 
-        <small>
+        <small style="font-size: 22px;">
             Please include everyone expected to stay.
         </small><br>
 
         <textarea name="additional_names"
                   rows="2"
-                  style="width: 420px;"></textarea>
+                  style="width: 100%; max-width: 980px; font-size: 24px; padding: 10px; line-height: 1.35;"></textarea>
 
         <br>
 
         <label>
-            <strong style="font-size: 24px;">Bringing a pet?</strong>
+            <strong style="font-size: 32px;">Bringing a pet?</strong>
         </label><br>
 
-        <select name="pets">
+        <select name="pets"
+                style="font-size: 24px; padding: 10px; min-width: 120px;">
             <option value="No">No</option>
             <option value="Yes">Yes</option>
         </select>
@@ -5414,16 +5416,16 @@ def home():
         <br>
 
         <label>
-            <strong style="font-size: 24px;">Food Restrictions or Preferences</strong>
+            <strong style="font-size: 32px;">Food Restrictions or Preferences</strong>
         </label><br>
 
-        <small style="font-size: 18px;">
+        <small style="font-size: 22px;">
             Optional — dietary restrictions, allergies, etc.
         </small><br>
 
         <textarea name="food_restrictions"
                   rows="3"
-                  style="width: 420px; font-size: 22px; padding: 8px; line-height: 1.35;"></textarea>
+                  style="width: 100%; max-width: 980px; font-size: 24px; padding: 10px; line-height: 1.35;"></textarea>
 
         <br>
 
@@ -5433,7 +5435,7 @@ def home():
 
         <textarea name="comments"
                   rows="2"
-                  style="width: 420px; font-size: 22px; padding: 8px; line-height: 1.35;"></textarea>
+                  style="width: 100%; max-width: 980px; font-size: 24px; padding: 10px; line-height: 1.35;"></textarea>
 
         <br>
 
@@ -5469,7 +5471,7 @@ def home():
 
         <input type="submit"
                value="Submit Visit Request"
-               style="padding: 12px 18px; font-size: 22px; font-weight: bold;">
+               style="padding: 12px 18px; font-size: 22px; font-weight: bold; background-color: #0d6efd; color: white; border: none; border-radius: 8px;">
 
     </form>
     """
@@ -6316,7 +6318,7 @@ def invite_request(invitation_id):
                 <br>
 
                 <label>
-                    <strong>Additional Guest Name(s) for Your Room(s)</strong>
+                    <strong style="font-size: 32px;">Additional Guest Name(s) for Your Room(s)</strong>
                 </label><br>
 
                 <small>
@@ -6330,7 +6332,7 @@ def invite_request(invitation_id):
                 <br>
 
                 <label>
-                    <strong style="font-size: 24px;">Bringing a pet?</strong>
+                    <strong style="font-size: 32px;">Bringing a pet?</strong>
                 </label><br>
 
                 <select name="pets">
@@ -6341,7 +6343,7 @@ def invite_request(invitation_id):
                 <br>
 
                 <label>
-                    <strong style="font-size: 24px;">Food Restrictions or Preferences</strong>
+                    <strong style="font-size: 32px;">Food Restrictions or Preferences</strong>
                 </label><br>
 
                 <small>
@@ -25038,3 +25040,5 @@ if __name__ == "__main__":
 # V28_15_GUEST_UX_MENU_FONT_WORDING_ONLY
 
 # V28_15C_EXACT_GUEST_FIELD_FONT_PATCH
+
+# V28_15D_EXACT_GUEST_SECTION_UNIFORM_FONT_PATCH
