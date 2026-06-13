@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_13"
+    "app_V28_14A"
 )
 
 BASE_URL = os.environ.get(
@@ -144,7 +144,7 @@ Looking forward to seeing everyone at the shore!
 
 Need to make a change?
 
-Change Dates:
+Change Request:
 {{ change_link }}
 
 Cancel Visit:
@@ -633,7 +633,7 @@ def plain_text_to_html_email(subject, body):
         nearby_lower = safe_text(nearby_text).lower()
 
         if "change" in nearby_lower or "/change" in url:
-            return "Change Dates"
+            return "Change Request"
 
         if "cancel" in nearby_lower or "/cancel" in url:
             return "Cancel Visit"
@@ -680,7 +680,7 @@ def plain_text_to_html_email(subject, body):
     ]
 
     link_label_lines = [
-        "Change Dates:",
+        "Change Request:",
         "Cancel Visit:",
         "Cancel Request:",
         "Start a New Request:",
@@ -699,7 +699,7 @@ def plain_text_to_html_email(subject, body):
         "Current dates and analysis so far:",
         "Need to make a change?",
         "━━━━━━━━━━━━━━━━━━",
-        "Change Dates",
+        "Change Request",
         "Cancel Visit",
         "Start a New Request"
     ]
@@ -2581,7 +2581,7 @@ Cancel Visit:
 
 Need to make a change?
 
-Change Dates:
+Change Request:
 {change_url}
 {cancel_block}
 Start a New Request:
@@ -5156,7 +5156,7 @@ def home():
             cursor = "not-allowed"
 
         elif has_tentative_hold:
-            background = "#ffe8a1"
+            background = "#cfe8ff"
             status = "Coordination Hold"
             display_line_1 = f"{rooms_open} open"
             display_line_2 = "Coordination Hold"
@@ -5216,7 +5216,7 @@ def home():
         <strong>Legend:</strong>
         <span style="background-color: #d4edda; padding: 4px;">Open</span>
         <span style="background-color: #fff3cd; padding: 4px;">Almost Full</span>
-        <span style="background-color: #ffe8a1; padding: 4px;">Coordination Hold</span>
+        <span style="background-color: #cfe8ff; padding: 4px;">Coordination Hold</span>
         <span style="background-color: #f8d7da; padding: 4px;">Full / Blocked</span>
         <span style="background-color: #e9ecef; padding: 4px;">Past</span>
     </p>
@@ -5937,7 +5937,7 @@ def invite_request(invitation_id):
             cursor = "not-allowed"
 
         elif has_tentative_hold:
-            background = "#ffe8a1"
+            background = "#cfe8ff"
             status = "Coordination Hold"
             display_line_1 = f"{rooms_open} open"
             display_line_2 = "Coordination Hold"
@@ -5997,7 +5997,7 @@ def invite_request(invitation_id):
         <strong>Legend:</strong>
         <span style="background-color: #d4edda; padding: 3px;">Open</span>
         <span style="background-color: #fff3cd; padding: 3px;">Almost Full</span>
-        <span style="background-color: #ffe8a1; padding: 3px;">Coordination Hold</span>
+        <span style="background-color: #cfe8ff; padding: 3px;">Coordination Hold</span>
         <span style="background-color: #f8d7da; padding: 3px;">Full / Blocked</span>
         <span style="background-color: #e9ecef; padding: 3px;">Past</span>
     </p>
@@ -6878,7 +6878,7 @@ def submit():
             return f"""
             <h2>Request Not Submitted</h2>
             <p>{format_date(date_str)} is blocked and unavailable.</p>
-            <p><a href="javascript:history.back()">Go Back and Change Dates</a></p>
+            <p><a href="javascript:history.back()">Go Back and Change Request</a></p>
             """
 
         rooms_used = 0
@@ -6907,7 +6907,7 @@ def submit():
                 Only {rooms_open} room(s) are available on {format_date(date_str)}.
                 You requested {rooms_requested} room(s).
             </p>
-            <p><a href="javascript:history.back()">Go Back and Change Dates</a></p>
+            <p><a href="javascript:history.back()">Go Back and Change Request</a></p>
             """
 
         current += timedelta(days=1)
@@ -15930,7 +15930,7 @@ Change Notes:
             click_handler = ""
             cursor = "not-allowed"
         elif has_tentative_hold:
-            background = "#ffe8a1"
+            background = "#cfe8ff"
             display_line_1 = f"{rooms_open} open"
             display_line_2 = "Hold"
             click_handler = f"onclick=\"selectCalendarDate('{current_date_str}')\""
