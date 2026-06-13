@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_15B"
+    "app_V28_15C"
 )
 
 BASE_URL = os.environ.get(
@@ -5328,10 +5328,11 @@ def home():
     html += calendar_html
 
     html += """
-        <h3>Selected Stay</h3>
+        <h3 style="font-size: 28px; margin-bottom: 8px;">Selected Stay</h3>
 
         <p id="date_selection_message"
            style="
+               font-size: 24px;
                font-weight: bold;
                color: #0d6efd;
            ">
@@ -5340,6 +5341,7 @@ def home():
 
         <p id="nights_message"
            style="
+               font-size: 24px;
                font-weight: bold;
                color: #198754;
            ">
@@ -5401,7 +5403,7 @@ def home():
         <br>
 
         <label>
-            <strong>Bringing a pet?</strong>
+            <strong style="font-size: 24px;">Bringing a pet?</strong>
         </label><br>
 
         <select name="pets">
@@ -5412,41 +5414,42 @@ def home():
         <br>
 
         <label>
-            <strong>Food Restrictions or Preferences</strong>
+            <strong style="font-size: 24px;">Food Restrictions or Preferences</strong>
         </label><br>
 
-        <small>
+        <small style="font-size: 18px;">
             Optional — dietary restrictions, allergies, etc.
         </small><br>
 
         <textarea name="food_restrictions"
                   rows="3"
-                  style="width: 420px;"></textarea>
+                  style="width: 420px; font-size: 22px; padding: 8px; line-height: 1.35;"></textarea>
 
         <br>
 
         <label>
-            <strong>Comments or Notes</strong>
+            <strong style="font-size: 24px;">Comments or Notes</strong>
         </label><br>
 
         <textarea name="comments"
                   rows="2"
-                  style="width: 420px;"></textarea>
+                  style="width: 420px; font-size: 22px; padding: 8px; line-height: 1.35;"></textarea>
 
         <br>
 
         <label>
-            <strong>
+            <strong style="font-size: 24px;">
                 Who else are you hoping to visit with at the same time?
             </strong>
         </label><br>
 
-        <small>
+        <small style="font-size: 18px;">
             Optional — example: Jack Smith and family, Florida group etc.
         </small><br>
 
         <textarea name="coordination_notes"
-                  rows="3"></textarea>
+                  rows="3"
+                  style="width: 420px; font-size: 22px; padding: 8px; line-height: 1.35;"></textarea>
 
         <br>
 
@@ -5466,7 +5469,7 @@ def home():
 
         <input type="submit"
                value="Submit Visit Request"
-               style="padding: 8px 12px; font-weight: bold;">
+               style="padding: 12px 18px; font-size: 22px; font-weight: bold;">
 
     </form>
     """
@@ -6278,7 +6281,7 @@ def invite_request(invitation_id):
 
                 {calendar_html}
 
-                <h3>Selected Stay</h3>
+                <h3 style="font-size: 28px; margin-bottom: 8px;">Selected Stay</h3>
 
                 <p id="date_selection_message"
                    style="
@@ -6327,7 +6330,7 @@ def invite_request(invitation_id):
                 <br>
 
                 <label>
-                    <strong>Bringing a pet?</strong>
+                    <strong style="font-size: 24px;">Bringing a pet?</strong>
                 </label><br>
 
                 <select name="pets">
@@ -6338,7 +6341,7 @@ def invite_request(invitation_id):
                 <br>
 
                 <label>
-                    <strong>Food Restrictions or Preferences</strong>
+                    <strong style="font-size: 24px;">Food Restrictions or Preferences</strong>
                 </label><br>
 
                 <small>
@@ -6352,7 +6355,7 @@ def invite_request(invitation_id):
                 <br>
 
                 <label>
-                    <strong>Comments or Notes</strong>
+                    <strong style="font-size: 24px;">Comments or Notes</strong>
                 </label><br>
 
                 <textarea name="comments"
@@ -25033,3 +25036,5 @@ if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, use_reloader=False, debug=False)
 
 # V28_15_GUEST_UX_MENU_FONT_WORDING_ONLY
+
+# V28_15C_EXACT_GUEST_FIELD_FONT_PATCH
