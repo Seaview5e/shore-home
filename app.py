@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_15H"
+    "app_V28_15I"
 )
 
 BASE_URL = os.environ.get(
@@ -6221,7 +6221,6 @@ def invite_request(invitation_id):
                 <p style="
                     margin-bottom: 0;
                 ">
-                    You are responding to:
                     <strong>{invitation_title}</strong>
                 </p>
 
@@ -6262,15 +6261,12 @@ def invite_request(invitation_id):
                 <input type="hidden" name="children" value="0">
 
                 <label style="font-size: 18px; font-weight: bold;">
-                    <strong class="guest-bedroom-instruction">Choose the number of bedrooms you need first then the dates.</strong>
+                    <strong style="font-size: 24px; font-weight: bold;">Choose the number of bedrooms you need first then the dates.</strong>
                 </label><br>
 
-                <div style="font-size: 15px; font-weight: bold; margin-bottom: 4px;">
-                    Each bedroom sleeps up to 2 guests.
-                </div>
+                <div style="font-size: 20px; font-weight: bold; margin-bottom: 4px;">Each bedroom sleeps up to 2 guests.</div>
 
-                <select name="rooms_requested"
-                        id="rooms_requested">
+                <select name="rooms_requested" id="rooms_requested" style="font-size: 20px; padding: 8px; min-height: 44px;">
                     <option value="1">1 Bedroom</option>
                     <option value="2">2 Bedrooms</option>
                     <option value="3">3 Bedrooms</option>
@@ -6281,22 +6277,14 @@ def invite_request(invitation_id):
 
                 {calendar_html}
 
-                <h3 style="font-size: 28px; margin-bottom: 8px;">Selected Stay</h3>
+                <h3 style="font-size: 24px; font-weight: bold;">Selected Stay</h3>
 
-                <p id="date_selection_message"
-                   style="
-                       font-weight: bold;
-                       color: #0d6efd;
-                   ">
-                   No dates selected yet.
+                <p id="date_selection_message" style="font-size: 20px; font-weight: bold; color: #0d6efd;">
+           No dates selected yet.
                 </p>
 
-                <p id="nights_message"
-                   style="
-                       font-weight: bold;
-                       color: #198754;
-                   ">
-                </p>
+                <p id="nights_message" style="font-size: 20px; font-weight: bold; color: #198754;">
+        </p>
 
                 <input type="hidden"
                        id="arrival_date"
@@ -6308,45 +6296,25 @@ def invite_request(invitation_id):
                        name="departure_date"
                        value="">
 
-                <button type="button"
-                        onclick="resetDateSelection();">
-                    Clear Selected Dates and Start Over
-                </button>
+                <button type="button" onclick="resetDateSelection();" style="padding: 10px 14px; font-size: 20px; font-weight: bold; background-color: #0d6efd; color: white; border: none; border-radius: 8px;">Clear Selected Dates and Start Over</button>
 
                 <br>
 
                 <label>
-                    
-        <div style="
-            background-color: #fff3cd;
-            border: 2px solid #b26a00;
-            color: #7a4b00;
-            padding: 8px 10px;
-            margin: 8px 0;
-            font-weight: bold;
-            max-width: 760px;
-        ">
-            STYLE TEST V28.15H INVITE PAGE
-        </div>
-
-        <strong>Additional Guest Name(s) for Your Room(s)</strong>
+<strong style="font-size: 24px; font-weight: bold;">Additional Guest Name(s) for Your Room(s)</strong>
                 </label><br>
 
-                <small>
-                    Please include everyone expected to stay.
-                </small><br>
+                <small style="font-size: 20px; font-weight: bold;">Please include everyone expected to stay.</small><br>
 
-                <textarea name="additional_names"
-                          rows="2"
-                          style="width: 100%;">{profile_additional_names}</textarea>
+                <textarea name="additional_names" rows="2" style="width: 100%; max-width: 980px; font-size: 20px; padding: 10px; line-height: 1.35;">{profile_additional_names}</textarea>
 
                 <br>
 
                 <label>
-                    <strong style="font-size: 24px;">Bringing a pet?</strong>
+                    <strong style="font-size: 24px; font-weight: bold;">Bringing a pet?</strong>
                 </label><br>
 
-                <select name="pets">
+                <select name="pets" style="font-size: 20px; padding: 8px; min-height: 44px;">
                     <option value="No" {pet_no_selected}>No</option>
                     <option value="Yes" {pet_yes_selected}>Yes</option>
                 </select>
@@ -6354,31 +6322,24 @@ def invite_request(invitation_id):
                 <br>
 
                 <label>
-                    <strong style="font-size: 24px;">Food Restrictions or Preferences</strong>
+                    <strong style="font-size: 24px; font-weight: bold;">Food Restrictions or Preferences</strong>
                 </label><br>
 
-                <small>
-                    Optional — dietary restrictions, allergies, etc.
-                </small><br>
+                <small style="font-size: 20px; font-weight: bold;">Optional — dietary restrictions, allergies, etc.</small><br>
 
-                <textarea name="food_restrictions"
-                          rows="3"
-                          style="width: 100%;">{profile_food_notes}</textarea>
+                <textarea name="food_restrictions" rows="3" style="width: 100%; max-width: 980px; font-size: 20px; padding: 10px; line-height: 1.35;">{profile_food_notes}</textarea>
 
                 <br>
 
                 <label>
-                    <strong style="font-size: 24px;">Comments or Notes</strong>
+                    <strong style="font-size: 24px; font-weight: bold;">Comments or Notes</strong>
                 </label><br>
 
-                <textarea name="comments"
-                          rows="2"
-                          style="width: 100%;"></textarea>
+                <textarea name="comments" rows="2" style="width: 100%; max-width: 980px; font-size: 20px; padding: 10px; line-height: 1.35;"></textarea>
 
                 <br>
 
-                <input type="submit"
-                       value="Submit Visit Request">
+                <input type="submit" value="Submit Visit Request" style="padding: 10px 14px; font-size: 20px; font-weight: bold; background-color: #0d6efd; color: white; border: none; border-radius: 8px;">
 
             </form>
 
@@ -25052,4 +25013,6 @@ if __name__ == "__main__":
 
 # V28_15C_EXACT_GUEST_FIELD_FONT_PATCH
 
-# V28_15H_INVITE_PAGE_DIAGNOSTIC_MARKER_ONLY
+# 
+
+# V28_15I_INVITE_PAGE_CONFIRMED_TYPOGRAPHY
