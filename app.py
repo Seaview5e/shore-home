@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_15E"
+    "app_V28_15F"
 )
 
 BASE_URL = os.environ.get(
@@ -5307,7 +5307,7 @@ def home():
         <input type="hidden" name="children" value="0">
 
         <label style="font-size: 18px; font-weight: bold;">
-            <strong style="font-size: 1.5em; font-weight: bold;">Choose the number of bedrooms you need first then the dates.</strong>
+            <span style="font-size: 1.5em; font-weight: bold;">Choose the number of bedrooms you need first then the dates.</span>
         </label><br>
 
         <div style="font-size: 15px; font-weight: bold; margin-bottom: 4px;">
@@ -6235,7 +6235,7 @@ def invite_request(invitation_id):
                 <input type="hidden" name="children" value="0">
 
                 <label style="font-size: 18px; font-weight: bold;">
-                    <strong style="font-size: 1.5em; font-weight: bold;">Choose the number of bedrooms you need first then the dates.</strong>
+                    <span style="font-size: 1.5em; font-weight: bold;">Choose the number of bedrooms you need first then the dates.</span>
                 </label><br>
 
                 <div style="font-size: 15px; font-weight: bold; margin-bottom: 4px;">
@@ -24973,3 +24973,5 @@ if __name__ == "__main__":
 # V28_15D_EXACT_GUEST_SECTION_UNIFORM_FONT_PATCH
 
 # V28_15E_UNIFORM_GUEST_TYPOGRAPHY_PATCH
+
+# V28_15F_FIX_BEDROOM_INSTRUCTION_SIZE_ONLY
