@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_14A"
+    "app_V28_15"
 )
 
 BASE_URL = os.environ.get(
@@ -24975,3 +24975,5 @@ def email_audit():
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, use_reloader=False, debug=False)
+
+# V28_15_INVITATION_TEXT_UPDATED
