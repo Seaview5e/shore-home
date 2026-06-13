@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_15_FIXED"
+    "app_V28_14A"
 )
 
 BASE_URL = os.environ.get(
@@ -325,24 +325,20 @@ Looking forward to seeing everyone at the shore!
 John & Mark
 302-521-5401
 """,
-        "invitation.txt": """Hi {{ guest_name }} -
+    "invitation.txt": """Hi {{ guest_name }},
 
-**Welcome to the “beta” version of requesting a visit to the shore this season!**
+{{ message }}
 
-I’ve been having way too much fun experimenting with AI and built this little system to hopefully make planning visits easier — and maybe at least slightly more entertaining. Like any beta, I’m sure there are a few rough edges, so if anything feels confusing, awkward, or unexpectedly robotic, please let me know so I can keep improving it. Any mistakes are probably AI-generated, but customer support is still delightfully human. Send me a note and I’ll get things sorted out.
+Please use the request link below to submit your visit request:
 
-Of course, good old-fashioned email or a phone call still works too — we haven’t handed full control over to the robots… yet.
+{{ request_link }}
 
-**Please use the request link below to submit your visit request.** You can still use regular email or a phone call at any point if that’s easier. Once requests are reviewed, we’ll follow up with availability, room details, and next steps.
+You can still use regular email or a phone call at any point if that’s easier.
 
 Looking forward to hopefully seeing everyone down at the shore.
 
 John & Mark
 302-521-5401
-
-This message was sent by the Shore Home Request System.
-
-{{ request_link }}
 """,
     "coordination_invitation.txt": """Hi {{ guest_name }},
 
@@ -24979,5 +24975,3 @@ def email_audit():
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, use_reloader=False, debug=False)
-
-V28_15_FIXED_EMAIL_BETA_MARKER = "beta invitation installed"
