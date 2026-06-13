@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V29A"
+    "app_V29B"
 )
 
 BASE_URL = os.environ.get(
@@ -14088,10 +14088,14 @@ def preview_invitation_email(invitation_id):
 
         photo_email_html = ""
 
+    # V29B:
+    # Do not inject invitations.message into invitation.txt.
+    # Invitation email wording is now controlled by templates/emails/invitation.txt.
+    # The saved message field may still exist for notes/history but should not duplicate email body/footer.
     body = render_email_template(
         "invitation.txt",
         guest_name=safe_text(invite["primary_name"]),
-        message=safe_text(message),
+        message="",
         request_link=request_link,
         coordination_link=coordination_link
     )
@@ -25186,4 +25190,11 @@ if __name__ == "__main__":
 # Email text can now be edited in:
 #   templates/emails/*.txt
 # The app keeps DEFAULT_EMAIL_TEMPLATES as fallback only.
+# ============================================================
+
+# ============================================================
+# V29B
+# Invitation email template controls the message body.
+# Saved invitations.message is no longer injected into invitation.txt.
+# This prevents duplicate old custom message/footer text.
 # ============================================================
