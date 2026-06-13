@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, render_template, render_template_string, session
+xfrom flask import Flask, request, redirect, render_template, render_template_string, session
 from datetime import date, datetime, timedelta
 from database import get_db_connection, DATABASE_FILE
 import smtplib
@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_15G"
+    "app_V28_15C"
 )
 
 BASE_URL = os.environ.get(
@@ -5389,20 +5389,7 @@ def home():
         <br>
 
         <label>
-            
-        <div style="
-            background-color: #fff3cd;
-            border: 2px solid #b26a00;
-            color: #7a4b00;
-            padding: 8px 10px;
-            margin: 8px 0;
-            font-weight: bold;
-            max-width: 760px;
-        ">
-            STYLE TEST V28.15G
-        </div>
-
-        <strong>Additional Guest Name(s) for Your Room(s)</strong>
+            <strong>Additional Guest Name(s) for Your Room(s)</strong>
         </label><br>
 
         <small>
@@ -25051,5 +25038,3 @@ if __name__ == "__main__":
 # V28_15_GUEST_UX_MENU_FONT_WORDING_ONLY
 
 # V28_15C_EXACT_GUEST_FIELD_FONT_PATCH
-
-# V28_15G_DIAGNOSTIC_MARKER_ONLY
