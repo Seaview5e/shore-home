@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_15K_DIAGNOSTICS"
+    "app_V29A"
 )
 
 BASE_URL = os.environ.get(
@@ -248,7 +248,11 @@ EMAIL_TEMPLATE_METADATA = {
 
 
 
-EMAIL_TEMPLATE_FOLDER = os.path.join("templates", "emails")
+EMAIL_TEMPLATE_FOLDER = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "templates",
+    "emails"
+)
 
 DEFAULT_EMAIL_TEMPLATES = {
     "approval.txt": """Hi {{ guest_name }},
@@ -4783,6 +4787,65 @@ def calendar_diagnostics_summary():
         return False, "Calendar diagnostics failed: " + safe_text(error)
 
 
+
+
+def email_template_files_diagnostics_summary():
+
+    try:
+
+        expected_templates = sorted(DEFAULT_EMAIL_TEMPLATES.keys())
+
+        existing_templates = []
+
+        if os.path.isdir(EMAIL_TEMPLATE_FOLDER):
+
+            existing_templates = sorted(
+                [
+                    filename
+                    for filename in os.listdir(EMAIL_TEMPLATE_FOLDER)
+                    if filename.endswith(".txt")
+                ]
+            )
+
+        missing_templates = [
+            template_name
+            for template_name in expected_templates
+            if template_name not in existing_templates
+        ]
+
+        detail_lines = []
+
+        detail_lines.append(
+            "Email template folder: "
+            + safe_text(EMAIL_TEMPLATE_FOLDER)
+        )
+
+        detail_lines.append(
+            "Template files found: "
+            + str(len(existing_templates))
+            + " / "
+            + str(len(expected_templates))
+        )
+
+        if missing_templates:
+            detail_lines.append(
+                "Missing: "
+                + ", ".join(missing_templates)
+            )
+
+            return False, "<br>".join(detail_lines)
+
+        detail_lines.append(
+            "Email TXT templates are available as editable files."
+        )
+
+        return True, "<br>".join(detail_lines)
+
+    except Exception as error:
+
+        return False, "Email template diagnostics failed: " + safe_text(error)
+
+
 @app.route("/production-check")
 def production_check():
 
@@ -4852,6 +4915,15 @@ def production_check():
         "Calendar Diagnostics",
         calendar_diag_ok,
         calendar_diag_detail
+    ))
+
+
+    email_template_diag_ok, email_template_diag_detail = email_template_files_diagnostics_summary()
+
+    checks.append((
+        "Email Template Files",
+        email_template_diag_ok,
+        email_template_diag_detail
     ))
 
     rows = ""
@@ -25107,3 +25179,11 @@ if __name__ == "__main__":
 # V28_15J_INVITE_PAGE_SIZE_TUNING_ONLY
 
 # V28_15K_PRODUCTION_CHECK_CALENDAR_DIAGNOSTICS_ONLY
+
+# ============================================================
+# V29A
+# Real email template file foundation.
+# Email text can now be edited in:
+#   templates/emails/*.txt
+# The app keeps DEFAULT_EMAIL_TEMPLATES as fallback only.
+# ============================================================
