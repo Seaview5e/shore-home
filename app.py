@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_15D"
+    "app_V28_15E"
 )
 
 BASE_URL = os.environ.get(
@@ -5307,7 +5307,7 @@ def home():
         <input type="hidden" name="children" value="0">
 
         <label style="font-size: 18px; font-weight: bold;">
-            <strong class="guest-bedroom-instruction">Choose the number of bedrooms you need first then the dates.</strong>
+            <strong style="font-size: 1.5em; font-weight: bold;">Choose the number of bedrooms you need first then the dates.</strong>
         </label><br>
 
         <div style="font-size: 15px; font-weight: bold; margin-bottom: 4px;">
@@ -5328,23 +5328,13 @@ def home():
     html += calendar_html
 
     html += """
-        <h3 style="font-size: 28px; margin-bottom: 8px;">Selected Stay</h3>
+        <h3 style="font-size: 1.5em; font-weight: bold;">Selected Stay</h3>
 
-        <p id="date_selection_message"
-           style="
-               font-size: 24px;
-               font-weight: bold;
-               color: #0d6efd;
-           ">
+        <p id="date_selection_message" style="font-size: 1.25em; font-weight: bold; color: #0d6efd;">
            No dates selected yet.
         </p>
 
-        <p id="nights_message"
-           style="
-               font-size: 24px;
-               font-weight: bold;
-               color: #198754;
-           ">
+        <p id="nights_message" style="font-size: 1.25em; font-weight: bold; color: #198754;">
         </p>
 
         <input type="hidden"
@@ -5357,11 +5347,7 @@ def home():
                name="departure_date"
                value="">
 
-        <button type="button"
-                onclick="resetDateSelection();"
-                style="padding: 12px 18px; font-size: 22px; font-weight: bold; background-color: #0d6efd; color: white; border: none; border-radius: 8px;">
-            Clear Selected Dates and Start Over
-        </button>
+        <button type="button" onclick="resetDateSelection();" style="padding: 12px 18px; font-size: 1.25em; font-weight: bold; background-color: #0d6efd; color: white; border: none; border-radius: 8px;">Clear Selected Dates and Start Over</button>
 
         <br>
 
@@ -5390,25 +5376,20 @@ def home():
         <br>
 
         <label>
-            <strong style="font-size: 32px;">Additional Guest Name(s) for Your Room(s)</strong>
+            <strong style="font-size: 1.5em; font-weight: bold;">Additional Guest Name(s) for Your Room(s)</strong>
         </label><br>
 
-        <small style="font-size: 22px;">
-            Please include everyone expected to stay.
-        </small><br>
+        <small style="font-size: 1.25em; font-weight: bold;">Please include everyone expected to stay.</small><br>
 
-        <textarea name="additional_names"
-                  rows="2"
-                  style="width: 100%; max-width: 980px; font-size: 24px; padding: 10px; line-height: 1.35;"></textarea>
+        <textarea name="additional_names" rows="2" style="width: 100%; max-width: 980px; font-size: 1.25em; padding: 10px; line-height: 1.35;"></textarea>
 
         <br>
 
         <label>
-            <strong style="font-size: 32px;">Bringing a pet?</strong>
+            <strong style="font-size: 1.5em; font-weight: bold;">Bringing a pet?</strong>
         </label><br>
 
-        <select name="pets"
-                style="font-size: 24px; padding: 10px; min-width: 120px;">
+        <select name="pets" style="font-size: 1.25em; padding: 10px; min-height: 48px;">
             <option value="No">No</option>
             <option value="Yes">Yes</option>
         </select>
@@ -5416,26 +5397,20 @@ def home():
         <br>
 
         <label>
-            <strong style="font-size: 32px;">Food Restrictions or Preferences</strong>
+            <strong style="font-size: 1.5em; font-weight: bold;">Food Restrictions or Preferences</strong>
         </label><br>
 
-        <small style="font-size: 22px;">
-            Optional — dietary restrictions, allergies, etc.
-        </small><br>
+        <small style="font-size: 1.25em; font-weight: bold;">Optional — dietary restrictions, allergies, etc.</small><br>
 
-        <textarea name="food_restrictions"
-                  rows="3"
-                  style="width: 100%; max-width: 980px; font-size: 24px; padding: 10px; line-height: 1.35;"></textarea>
+        <textarea name="food_restrictions" rows="3" style="width: 100%; max-width: 980px; font-size: 1.25em; padding: 10px; line-height: 1.35;"></textarea>
 
         <br>
 
         <label>
-            <strong style="font-size: 24px;">Comments or Notes</strong>
+            <strong style="font-size: 1.5em; font-weight: bold;">Comments or Notes</strong>
         </label><br>
 
-        <textarea name="comments"
-                  rows="2"
-                  style="width: 100%; max-width: 980px; font-size: 24px; padding: 10px; line-height: 1.35;"></textarea>
+        <textarea name="comments" rows="2" style="width: 100%; max-width: 980px; font-size: 1.25em; padding: 10px; line-height: 1.35;"></textarea>
 
         <br>
 
@@ -5449,9 +5424,7 @@ def home():
             Optional — example: Jack Smith and family, Florida group etc.
         </small><br>
 
-        <textarea name="coordination_notes"
-                  rows="3"
-                  style="width: 420px; font-size: 22px; padding: 8px; line-height: 1.35;"></textarea>
+        <textarea name="coordination_notes" rows="3" style="width: 100%; max-width: 980px; font-size: 1.25em; padding: 10px; line-height: 1.35;"></textarea>
 
         <br>
 
@@ -5469,9 +5442,7 @@ def home():
             If something needs adjusting, I’ll follow up. Easy enough.
         </div>
 
-        <input type="submit"
-               value="Submit Visit Request"
-               style="padding: 12px 18px; font-size: 22px; font-weight: bold; background-color: #0d6efd; color: white; border: none; border-radius: 8px;">
+        <input type="submit" value="Submit Visit Request" style="padding: 12px 18px; font-size: 1.25em; font-weight: bold; background-color: #0d6efd; color: white; border: none; border-radius: 8px;">
 
     </form>
     """
@@ -6264,7 +6235,7 @@ def invite_request(invitation_id):
                 <input type="hidden" name="children" value="0">
 
                 <label style="font-size: 18px; font-weight: bold;">
-                    <strong class="guest-bedroom-instruction">Choose the number of bedrooms you need first then the dates.</strong>
+                    <strong style="font-size: 1.5em; font-weight: bold;">Choose the number of bedrooms you need first then the dates.</strong>
                 </label><br>
 
                 <div style="font-size: 15px; font-weight: bold; margin-bottom: 4px;">
@@ -6283,22 +6254,14 @@ def invite_request(invitation_id):
 
                 {calendar_html}
 
-                <h3 style="font-size: 28px; margin-bottom: 8px;">Selected Stay</h3>
+                <h3 style="font-size: 1.5em; font-weight: bold;">Selected Stay</h3>
 
-                <p id="date_selection_message"
-                   style="
-                       font-weight: bold;
-                       color: #0d6efd;
-                   ">
-                   No dates selected yet.
+                <p id="date_selection_message" style="font-size: 1.25em; font-weight: bold; color: #0d6efd;">
+           No dates selected yet.
                 </p>
 
-                <p id="nights_message"
-                   style="
-                       font-weight: bold;
-                       color: #198754;
-                   ">
-                </p>
+                <p id="nights_message" style="font-size: 1.25em; font-weight: bold; color: #198754;">
+        </p>
 
                 <input type="hidden"
                        id="arrival_date"
@@ -6310,32 +6273,25 @@ def invite_request(invitation_id):
                        name="departure_date"
                        value="">
 
-                <button type="button"
-                        onclick="resetDateSelection();">
-                    Clear Selected Dates and Start Over
-                </button>
+                <button type="button" onclick="resetDateSelection();" style="padding: 12px 18px; font-size: 1.25em; font-weight: bold; background-color: #0d6efd; color: white; border: none; border-radius: 8px;">Clear Selected Dates and Start Over</button>
 
                 <br>
 
                 <label>
-                    <strong style="font-size: 32px;">Additional Guest Name(s) for Your Room(s)</strong>
+                    <strong style="font-size: 1.5em; font-weight: bold;">Additional Guest Name(s) for Your Room(s)</strong>
                 </label><br>
 
-                <small>
-                    Please include everyone expected to stay.
-                </small><br>
+                <small style="font-size: 1.25em; font-weight: bold;">Please include everyone expected to stay.</small><br>
 
-                <textarea name="additional_names"
-                          rows="2"
-                          style="width: 100%;">{profile_additional_names}</textarea>
+                <textarea name="additional_names" rows="2" style="width: 100%; max-width: 980px; font-size: 1.25em; padding: 10px; line-height: 1.35;">{profile_additional_names}</textarea>
 
                 <br>
 
                 <label>
-                    <strong style="font-size: 32px;">Bringing a pet?</strong>
+                    <strong style="font-size: 1.5em; font-weight: bold;">Bringing a pet?</strong>
                 </label><br>
 
-                <select name="pets">
+                <select name="pets" style="font-size: 1.25em; padding: 10px; min-height: 48px;">
                     <option value="No" {pet_no_selected}>No</option>
                     <option value="Yes" {pet_yes_selected}>Yes</option>
                 </select>
@@ -6343,26 +6299,20 @@ def invite_request(invitation_id):
                 <br>
 
                 <label>
-                    <strong style="font-size: 32px;">Food Restrictions or Preferences</strong>
+                    <strong style="font-size: 1.5em; font-weight: bold;">Food Restrictions or Preferences</strong>
                 </label><br>
 
-                <small>
-                    Optional — dietary restrictions, allergies, etc.
-                </small><br>
+                <small style="font-size: 1.25em; font-weight: bold;">Optional — dietary restrictions, allergies, etc.</small><br>
 
-                <textarea name="food_restrictions"
-                          rows="3"
-                          style="width: 100%;">{profile_food_notes}</textarea>
+                <textarea name="food_restrictions" rows="3" style="width: 100%; max-width: 980px; font-size: 1.25em; padding: 10px; line-height: 1.35;">{profile_food_notes}</textarea>
 
                 <br>
 
                 <label>
-                    <strong style="font-size: 24px;">Comments or Notes</strong>
+                    <strong style="font-size: 1.5em; font-weight: bold;">Comments or Notes</strong>
                 </label><br>
 
-                <textarea name="comments"
-                          rows="2"
-                          style="width: 100%;"></textarea>
+                <textarea name="comments" rows="2" style="width: 100%; max-width: 980px; font-size: 1.25em; padding: 10px; line-height: 1.35;"></textarea>
 
                 <br>
 
@@ -15430,12 +15380,7 @@ def manual_request():
             Rooms Requested
         </label><br>
 
-        <select id="rooms_requested"
-                name="rooms_requested"
-                style="
-                    width: 180px;
-                    padding: 8px;
-                ">
+        <select id="rooms_requested" name="rooms_requested" style="font-size: 1.25em; padding: 10px; min-height: 48px;">
 
             <option value="1">
                 1 Room
@@ -15461,12 +15406,7 @@ def manual_request():
             Comments / Notes
         </label><br>
 
-        <textarea name="comments"
-                  rows="5"
-                  style="
-                      width: 480px;
-                      padding: 8px;
-                  "></textarea>
+        <textarea name="comments" rows="5" style="width: 100%; max-width: 980px; font-size: 1.25em; padding: 10px; line-height: 1.35;"></textarea>
 
         <br>
 
@@ -15474,12 +15414,7 @@ def manual_request():
             Coordination Notes
         </label><br>
 
-        <textarea name="coordination_notes"
-                  rows="2"
-                  style="
-                      width: 480px;
-                      padding: 8px;
-                  "></textarea>
+        <textarea name="coordination_notes" rows="2" style="width: 100%; max-width: 980px; font-size: 1.25em; padding: 10px; line-height: 1.35;"></textarea>
 
         <br>
 
@@ -16117,10 +16052,11 @@ Change Notes:
 
         {calendar_html}
 
-        <p id="date_selection_message" style="font-weight: bold; color: #0d6efd;">
-            Click an arrival date on the calendar.
+        <p id="date_selection_message" style="font-size: 1.25em; font-weight: bold; color: #0d6efd;">
+           Click an arrival date on the calendar.
         </p>
-        <p id="nights_message" style="color: #555;"></p>
+        <p id="nights_message" style="font-size: 1.25em; font-weight: bold; color: #198754;">
+        </p>
 
         <label>
             New Arrival Date
@@ -16156,12 +16092,7 @@ Change Notes:
             Rooms Requested
         </label><br>
 
-        <select id="rooms_requested"
-                name="rooms_requested"
-                style="
-                    width: 160px;
-                    padding: 8px;
-                ">
+        <select id="rooms_requested" name="rooms_requested" style="font-size: 1.25em; padding: 10px; min-height: 48px;">
     """
 
     for room_count in range(1, 5):
@@ -21507,9 +21438,7 @@ def coordination_group_member_request(member_id):
                         <label for="default_rooms" style="font-size: 18px; font-weight: bold;">
                             How many guest bedrooms do you need?
                         </label><br>
-                        <span style="font-size: 15px; font-weight: bold;">
-                            Each bedroom sleeps up to 2 guests.
-                        </span><br>
+                        <span style="font-size: 1.25em; font-weight: bold;">Each bedroom sleeps up to 2 guests.</span><br>
                         <select id="default_rooms"
                                 onchange="syncDefaultRooms(); validateGroupRoomCapacity(false);">
                             <option value="1">1 Bedroom</option>
@@ -25042,3 +24971,5 @@ if __name__ == "__main__":
 # V28_15C_EXACT_GUEST_FIELD_FONT_PATCH
 
 # V28_15D_EXACT_GUEST_SECTION_UNIFORM_FONT_PATCH
+
+# V28_15E_UNIFORM_GUEST_TYPOGRAPHY_PATCH
