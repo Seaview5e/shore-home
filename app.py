@@ -1,4 +1,4 @@
-xfrom flask import Flask, request, redirect, render_template, render_template_string, session
+from flask import Flask, request, redirect, render_template, render_template_string, session
 from datetime import date, datetime, timedelta
 from database import get_db_connection, DATABASE_FILE
 import smtplib
