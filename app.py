@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_15J"
+    "app_V28_15K_DIAGNOSTICS"
 )
 
 BASE_URL = os.environ.get(
@@ -4705,6 +4705,84 @@ def audit_routes_and_links():
         "routes": route_rules
     }
 
+
+
+def calendar_diagnostics_summary():
+
+    diagnostics = []
+
+    try:
+
+        conn = get_db_connection()
+
+        invitation_count = conn.execute("""
+            SELECT COUNT(*) AS count
+            FROM invitations
+        """).fetchone()["count"]
+
+        active_invitation_count = conn.execute("""
+            SELECT COUNT(*) AS count
+            FROM invitations
+            WHERE COALESCE(status, '') NOT IN ('cancelled', 'archived', 'closed')
+        """).fetchone()["count"]
+
+        approved_booking_count = conn.execute("""
+            SELECT COUNT(*) AS count
+            FROM bookings
+            WHERE status = 'approved'
+        """).fetchone()["count"]
+
+        blocked_date_count = conn.execute("""
+            SELECT COUNT(*) AS count
+            FROM blocked_dates
+        """).fetchone()["count"]
+
+        pending_request_count = conn.execute("""
+            SELECT COUNT(*) AS count
+            FROM booking_requests
+            WHERE COALESCE(status, '') IN ('pending', 'submitted', 'change_requested')
+        """).fetchone()["count"]
+
+        conn.close()
+
+        diagnostics.append(
+            "Invitations: "
+            + str(invitation_count)
+            + " total / "
+            + str(active_invitation_count)
+            + " active"
+        )
+
+        diagnostics.append(
+            "Approved bookings used by calendar capacity: "
+            + str(approved_booking_count)
+        )
+
+        diagnostics.append(
+            "Blocked date records: "
+            + str(blocked_date_count)
+        )
+
+        diagnostics.append(
+            "Pending/change requests: "
+            + str(pending_request_count)
+        )
+
+        diagnostics.append(
+            "Guest calendar JS expected fields: arrival_date, departure_date, rooms_requested"
+        )
+
+        diagnostics.append(
+            "Diagnostic note: this does not change guest behavior; it only confirms calendar data sources."
+        )
+
+        return True, "<br>".join(diagnostics)
+
+    except Exception as error:
+
+        return False, "Calendar diagnostics failed: " + safe_text(error)
+
+
 @app.route("/production-check")
 def production_check():
 
@@ -4765,6 +4843,15 @@ def production_check():
         "Public access protection",
         ADMIN_AUTH_ENABLED,
         "Admin login protection configured." if ADMIN_AUTH_ENABLED else "ADMIN_PASSWORD is missing; admin pages are not protected."
+    ))
+
+
+    calendar_diag_ok, calendar_diag_detail = calendar_diagnostics_summary()
+
+    checks.append((
+        "Calendar Diagnostics",
+        calendar_diag_ok,
+        calendar_diag_detail
     ))
 
     rows = ""
@@ -25018,3 +25105,5 @@ if __name__ == "__main__":
 # V28_15I_INVITE_PAGE_CONFIRMED_TYPOGRAPHY
 
 # V28_15J_INVITE_PAGE_SIZE_TUNING_ONLY
+
+# V28_15K_PRODUCTION_CHECK_CALENDAR_DIAGNOSTICS_ONLY
