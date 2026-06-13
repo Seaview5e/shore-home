@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_14"
+    "app_V28_13"
 )
 
 BASE_URL = os.environ.get(
@@ -5644,31 +5644,6 @@ def home():
 
         resetDateSelection();
     </script>
-    """
-
-    html += """
-
-<style>
-.guest-range-start,.guest-range-end{outline:3px solid #0f4c81!important;outline-offset:-3px;font-weight:800!important}
-.guest-range-middle{box-shadow:inset 0 0 0 9999px rgba(15,76,129,.14)!important}
-.guest-range-start::after{content:" Start";font-size:11px;font-weight:700;color:#0f4c81}
-.guest-range-end::after{content:" End";font-size:11px;font-weight:700;color:#0f4c81}
-.legend-coordination-hold,.coordination-hold-legend{background:#0f4c81!important;color:#fff!important}
-</style>
-<script>
-(function(){
-function p(v){if(!v)return null;var a=v.split("-");if(a.length!==3)return null;return new Date(+a[0],+a[1]-1,+a[2]);}
-function f(d){return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");}
-function q(v){return document.querySelector("[data-date='"+v+"'],[data-day='"+v+"']");}
-function clear(){document.querySelectorAll(".guest-range-start,.guest-range-middle,.guest-range-end").forEach(function(e){e.classList.remove("guest-range-start","guest-range-middle","guest-range-end");});}
-function mark(s,e){clear();var a=p(s),b=p(e||s);if(!a||!b)return;if(b<a){var t=a;a=b;b=t;}var c=new Date(a.getTime());while(c<=b){var x=f(c),el=q(x);if(el){if(x===f(a))el.classList.add("guest-range-start");else if(x===f(b))el.classList.add("guest-range-end");else el.classList.add("guest-range-middle");}c.setDate(c.getDate()+1);}}
-function sync(){var a=document.querySelector("[name='arrival'],[name='start_date'],[name='preferred_arrival']");var d=document.querySelector("[name='departure'],[name='end_date'],[name='preferred_departure']");mark(a&&a.value?a.value:"",d&&d.value?d.value:"");}
-document.addEventListener("change",sync);
-document.addEventListener("click",function(e){if(e.target.closest("[data-date],[data-day]"))setTimeout(sync,50);});
-document.addEventListener("DOMContentLoaded",sync);
-})();
-</script>
-
     """
 
     return html
