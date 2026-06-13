@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_15"
+    "app_V28_15_GUEST_UX"
 )
 
 BASE_URL = os.environ.get(
@@ -1276,6 +1276,27 @@ def admin_logout():
 
 
 def nav_links():
+
+    guest_path = safe_text(request.path)
+
+    guest_page_prefixes = (
+        "/new-request",
+        "/invite/",
+        "/invitation/",
+        "/request-submitted",
+        "/coordination-group-member/"
+    )
+
+    if any(guest_path.startswith(prefix) for prefix in guest_page_prefixes):
+        return ""
+
+    if guest_path.startswith("/request/") and (
+        "/submitted" in guest_path
+        or "/change" in guest_path
+        or "/cancel" in guest_path
+    ):
+        return ""
+
     return f"""
     <div style="font-size: 14px; line-height: 1.8;">
         <strong>Workflow:</strong>
@@ -5229,6 +5250,37 @@ def home():
         html += alert_box
 
     html += """
+    
+    <style>
+        .guest-request-page label,
+        .guest-request-page input,
+        .guest-request-page select,
+        .guest-request-page textarea,
+        .guest-request-page button {
+            font-size: 20px;
+        }
+
+        .guest-request-page select,
+        .guest-request-page input,
+        .guest-request-page textarea {
+            line-height: 1.35;
+        }
+
+        .guest-request-page .guest-bedroom-instruction {
+            font-size: 28px;
+            font-weight: 800;
+            line-height: 1.15;
+            margin-bottom: 4px;
+        }
+
+        .guest-request-page .guest-bedroom-subtext {
+            font-size: 22px;
+            font-weight: 700;
+            line-height: 1.2;
+        }
+    </style>
+
+    <div class="guest-request-page">
     <h1 style="margin-bottom: 6px;">Request a Shore Visit</h1>
 
     <div style="
@@ -5255,7 +5307,7 @@ def home():
         <input type="hidden" name="children" value="0">
 
         <label style="font-size: 18px; font-weight: bold;">
-            <strong>How many bedrooms do you need?</strong>
+            <strong class="guest-bedroom-instruction">Choose the number of bedrooms you need first then the dates.</strong>
         </label><br>
 
         <div style="font-size: 15px; font-weight: bold; margin-bottom: 4px;">
@@ -5644,6 +5696,10 @@ def home():
 
         resetDateSelection();
     </script>
+    """
+
+    html += """
+    </div>
     """
 
     return html
@@ -6203,7 +6259,7 @@ def invite_request(invitation_id):
                 <input type="hidden" name="children" value="0">
 
                 <label style="font-size: 18px; font-weight: bold;">
-                    <strong>How many bedrooms do you need?</strong>
+                    <strong class="guest-bedroom-instruction">Choose the number of bedrooms you need first then the dates.</strong>
                 </label><br>
 
                 <div style="font-size: 15px; font-weight: bold; margin-bottom: 4px;">
@@ -24976,4 +25032,4 @@ def email_audit():
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, use_reloader=False, debug=False)
 
-# V28_15_INVITATION_TEXT_UPDATED
+# V28_15_GUEST_UX_MENU_FONT_WORDING_ONLY
