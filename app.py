@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_15K"
+    "app_V28_15J"
 )
 
 BASE_URL = os.environ.get(
@@ -6347,29 +6347,6 @@ def invite_request(invitation_id):
 
     </div>
 
-
-    <style>
-        .calendar-range-start,
-        .calendar-range-end {
-            outline: 4px solid #0d6efd !important;
-            outline-offset: -4px;
-            font-weight: 800 !important;
-        }
-
-        .calendar-range-middle {
-            box-shadow: inset 0 0 0 9999px rgba(13, 110, 253, 0.18) !important;
-            font-weight: 700 !important;
-        }
-
-        .calendar-range-label {
-            display: block;
-            font-size: 12px;
-            font-weight: 800;
-            color: #0d6efd;
-            margin-top: 3px;
-        }
-    </style>
-
     <script>
         const blockedDates = {blocked_list};
         const roomCapacity = {room_capacity};
@@ -6453,106 +6430,6 @@ def invite_request(invitation_id):
                 + (getRequestedRooms() === 1 ? "" : "s");
         }}
 
-
-        function parseCalendarDateValue(dateString) {{
-            if (!dateString) {{
-                return null;
-            }}
-
-            const parts = dateString.split("-");
-
-            if (parts.length !== 3) {{
-                return null;
-            }}
-
-            return new Date(
-                parseInt(parts[0], 10),
-                parseInt(parts[1], 10) - 1,
-                parseInt(parts[2], 10)
-            );
-        }}
-
-        function dateValueFromDateObject(dateObj) {{
-            const year = dateObj.getFullYear();
-            const month = String(dateObj.getMonth() + 1).padStart(2, "0");
-            const day = String(dateObj.getDate()).padStart(2, "0");
-
-            return year + "-" + month + "-" + day;
-        }}
-
-        function calendarCellForDate(dateString) {{
-            const onclickSelector =
-                "[onclick=\\"selectCalendarDate('" + dateString + "')\\"]";
-
-            return document.querySelector(onclickSelector);
-        }}
-
-        function clearCalendarRangeHighlight() {{
-            document
-                .querySelectorAll(".calendar-range-start, .calendar-range-middle, .calendar-range-end")
-                .forEach(function (cell) {{
-                    cell.classList.remove(
-                        "calendar-range-start",
-                        "calendar-range-middle",
-                        "calendar-range-end"
-                    );
-
-                    const label = cell.querySelector(".calendar-range-label");
-
-                    if (label) {{
-                        label.remove();
-                    }}
-                }});
-        }}
-
-        function applyCalendarRangeHighlight() {{
-            clearCalendarRangeHighlight();
-
-            const arrivalField = document.getElementById("arrival_date");
-            const departureField = document.getElementById("departure_date");
-
-            if (!arrivalField || !departureField) {{
-                return;
-            }}
-
-            const arrival = parseCalendarDateValue(arrivalField.value);
-            const departure = parseCalendarDateValue(departureField.value);
-
-            if (!arrival || !departure || departure <= arrival) {{
-                return;
-            }}
-
-            const current = new Date(arrival.getTime());
-
-            while (current <= departure) {{
-                const dateString = dateValueFromDateObject(current);
-                const cell = calendarCellForDate(dateString);
-
-                if (cell) {{
-                    if (dateString === arrivalField.value) {{
-                        cell.classList.add("calendar-range-start");
-
-                        const label = document.createElement("span");
-                        label.className = "calendar-range-label";
-                        label.innerText = "Start";
-                        cell.appendChild(label);
-                    }} else if (dateString === departureField.value) {{
-                        cell.classList.add("calendar-range-end");
-
-                        const label = document.createElement("span");
-                        label.className = "calendar-range-label";
-                        label.innerText = "End";
-                        cell.appendChild(label);
-                    }} else {{
-                        cell.classList.add("calendar-range-middle");
-                    }}
-                }}
-
-                current.setDate(current.getDate() + 1);
-            }}
-        }}
-
-
         function selectCalendarDate(dateString) {{
             const requestedRooms = getRequestedRooms();
             const roomsOpen = getRoomsOpen(dateString);
@@ -6604,7 +6481,6 @@ def invite_request(invitation_id):
                     + ". Now click a departure date.";
 
                 updateNightsMessage();
-                applyCalendarRangeHighlight();
 
             }} else {{
 
@@ -6630,7 +6506,6 @@ def invite_request(invitation_id):
                     + ".";
 
                 updateNightsMessage();
-                applyCalendarRangeHighlight();
             }}
         }}
 
@@ -6638,7 +6513,6 @@ def invite_request(invitation_id):
             .addEventListener("change", function () {{
                 resetDateSelection();
                 updateNightsMessage();
-                applyCalendarRangeHighlight();
             }});
 
         function checkUnavailableDates() {{
@@ -25144,5 +25018,3 @@ if __name__ == "__main__":
 # V28_15I_INVITE_PAGE_CONFIRMED_TYPOGRAPHY
 
 # V28_15J_INVITE_PAGE_SIZE_TUNING_ONLY
-
-# V28_15K_INVITE_CALENDAR_RANGE_UX_ONLY
