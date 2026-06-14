@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V30_2"
+    "app_V30_3"
 )
 
 BASE_URL = os.environ.get(
@@ -751,6 +751,32 @@ def plain_text_to_html_email(subject, body):
     escaped_subject = html_escape_module.escape(str(subject or ""))
     body_text = str(body or "")
 
+    email_header_html = ""
+    email_header_relative_path = os.path.join(
+        "static",
+        "email_header",
+        "shore_home_header.jpeg"
+    )
+    email_header_disk_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        email_header_relative_path
+    )
+
+    if os.path.exists(email_header_disk_path):
+        email_header_url = BASE_URL.rstrip("/") + "/static/email_header/shore_home_header.jpeg"
+        safe_email_header_url = html_escape_module.escape(
+            email_header_url,
+            quote=True
+        )
+        email_header_html = f"""
+                <div style="background:#ffffff; border-bottom:1px solid #d5e0ea;">
+                    <img src="{safe_email_header_url}"
+                         alt="Shore Home"
+                         width="720"
+                         style="display:block; width:100%; max-width:720px; height:auto; border:0; margin:0;">
+                </div>
+        """
+
     # Keep TXT templates as the source of truth.
     # HTML email cleans up presentation by moving detail rows into one card
     # and URL lines into buttons, so those sections do not repeat below.
@@ -1021,14 +1047,16 @@ def plain_text_to_html_email(subject, body):
         <div style="max-width:720px; margin:0 auto; padding:22px;">
             <div style="background:#ffffff; border:1px solid #d5e0ea; border-radius:14px; overflow:hidden; box-shadow:0 2px 8px rgba(15,76,129,0.08);">
 
-                <div style="background:#0f4c81; color:white; padding:20px 22px;">
-                    <div style="font-size:13px; letter-spacing:.08em; text-transform:uppercase; opacity:.9; margin-bottom:6px;">
+                {email_header_html}
+
+                <div style="background:#0f4c81; color:white; padding:12px 18px;">
+                    <div style="font-size:10px; letter-spacing:.08em; text-transform:uppercase; opacity:.9; margin-bottom:3px;">
                         Shore Home
                     </div>
-                    <div style="font-size:22px; font-weight:bold; line-height:1.25;">
+                    <div style="font-size:16px; font-weight:bold; line-height:1.2;">
                         Strathmere Visit Coordination
                     </div>
-                    <div style="font-size:14px; opacity:.92; margin-top:8px; line-height:1.4;">
+                    <div style="font-size:12px; opacity:.92; margin-top:5px; line-height:1.3;">
                         {escaped_subject}
                     </div>
                 </div>
@@ -25440,4 +25468,12 @@ if __name__ == "__main__":
 # V30.2
 # Production Check template protection relaxed to essential placeholders only.
 # Read-only diagnostics; no email preview/send behavior changes.
+# ============================================================
+
+
+# ============================================================
+# V30.3
+# Email visual header only. Uses existing static/email_header/shore_home_header.jpeg
+# above the compact blue banner for all HTML emails.
+# Plain-text email body and TXT template rendering are unchanged.
 # ============================================================
