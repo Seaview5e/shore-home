@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V31_3"
+    "app_V31_4"
 )
 
 BASE_URL = os.environ.get(
@@ -5782,7 +5782,7 @@ def home():
     </style>
 
     <div class="guest-request-page">
-    <h1 style="margin-bottom: 6px;">Request a Shore Visit</h1>
+    <h1 style="margin-bottom: 6px;">Standard Visit Request</h1>
 
     <div style="
         background-color: #f8fbff;
@@ -5796,6 +5796,38 @@ def home():
         <strong>Pick your bedrooms, then pick your dates.</strong><br>
         This is just a request for now — no one is packing a beach bag until it is approved.
     </div>
+
+    <div style="
+        display: flex;
+        gap: 36px;
+        align-items: flex-start;
+        flex-wrap: wrap;
+        max-width: 1180px;
+    ">
+
+        <div style="
+            flex: 0 0 330px;
+            max-width: 360px;
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 12px 14px;
+            line-height: 1.35;
+        ">
+            <h2 style="margin-top: 0; margin-bottom: 8px;">Standard Visitor Request Page</h2>
+            <p style="margin-top: 0; margin-bottom: 8px;">
+                Use this form to start a new shore visit request.
+            </p>
+            <p style="margin-top: 0; margin-bottom: 0;">
+                Choose bedrooms first, then select arrival and departure dates from the calendar.
+            </p>
+        </div>
+
+        <div style="
+            flex: 1;
+            min-width: 340px;
+            max-width: 720px;
+        ">
 
     <h2 style="margin-bottom: 6px;">Visit Details</h2>
 
@@ -16786,6 +16818,9 @@ Change Notes:
         </button>
 
     </form>
+
+        </div>
+    </div>
 
     <script>
         const blockedDates = {blocked_list};
