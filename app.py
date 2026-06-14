@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V30_4"
+    "app_V30_5"
 )
 
 BASE_URL = os.environ.get(
@@ -751,20 +751,20 @@ def plain_text_to_html_email(subject, body):
     escaped_subject = html_escape_module.escape(str(subject or ""))
     body_text = str(body or "")
 
-    # V30.4: always include the public static image URL in HTML emails.
-    # Do not gate this on local file detection; Render/GitHub static files are the source of truth.
-    # If the image file is missing, the email still sends and the rest of the layout remains intact.
-    email_header_url = BASE_URL.rstrip("/") + "/static/email_header/shore_home_header.jpeg?v=30.4"
+    # V30.5: include the public static image URL in an email-safe, constrained header.
+    # Keep the image optional: if a mail client blocks or cannot load it, the email still sends
+    # and the compact blue banner remains intact underneath.
+    email_header_url = BASE_URL.rstrip("/") + "/static/email_header/shore_home_header.jpeg?v=30.5"
     safe_email_header_url = html_escape_module.escape(
         email_header_url,
         quote=True
     )
     email_header_html = f"""
-                <div style="background:#ffffff; border-bottom:1px solid #d5e0ea;">
+                <div style="background:#ffffff; border-bottom:1px solid #d5e0ea; text-align:center; line-height:0;">
                     <img src="{safe_email_header_url}"
                          alt="Shore Home"
-                         width="720"
-                         style="display:block; width:100%; max-width:720px; height:auto; border:0; margin:0;">
+                         width="600"
+                         style="display:block; width:100%; max-width:600px; height:auto; max-height:220px; object-fit:cover; border:0; margin:0 auto; line-height:0;">
                 </div>
     """
 
