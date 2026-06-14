@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V30_5"
+    "app_V30_6"
 )
 
 BASE_URL = os.environ.get(
@@ -751,10 +751,27 @@ def plain_text_to_html_email(subject, body):
     escaped_subject = html_escape_module.escape(str(subject or ""))
     body_text = str(body or "")
 
-    # V30.5: include the public static image URL in an email-safe, constrained header.
-    # Keep the image optional: if a mail client blocks or cannot load it, the email still sends
-    # and the compact blue banner remains intact underneath.
-    email_header_url = BASE_URL.rstrip("/") + "/static/email_header/shore_home_header.jpeg?v=30.5"
+    # V30.6: email clients need a fully public absolute image URL.
+    # Prefer PUBLIC_EMAIL_HEADER_URL when configured. Otherwise build from BASE_URL.
+    # If BASE_URL is still local in production, fall back to the current request host.
+    email_header_base_url = os.environ.get(
+        "PUBLIC_EMAIL_HEADER_URL",
+        ""
+    ).strip()
+
+    if email_header_base_url:
+        email_header_url = email_header_base_url
+    else:
+        public_base_url = BASE_URL.rstrip("/")
+
+        if public_base_url.startswith("http://127.0.0.1") or public_base_url.startswith("http://localhost"):
+            try:
+                public_base_url = request.url_root.rstrip("/")
+            except Exception:
+                public_base_url = BASE_URL.rstrip("/")
+
+        email_header_url = public_base_url + "/static/email_header/shore_home_header.jpeg?v=30.6"
+
     safe_email_header_url = html_escape_module.escape(
         email_header_url,
         quote=True
@@ -25467,4 +25484,11 @@ if __name__ == "__main__":
 # Email visual header URL is always included; no local file gate.
 # above the compact blue banner for all HTML emails.
 # Plain-text email body and TXT template rendering are unchanged.
+# ============================================================
+
+# ============================================================
+# V30.6
+# Email header image URL hardening. Uses a public absolute URL
+# for static/email_header/shore_home_header.jpeg and keeps sizing
+# from V30.5. No template text, send, preview, or database changes.
 # ============================================================
