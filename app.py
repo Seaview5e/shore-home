@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V31_4"
+    "app_V31_5"
 )
 
 BASE_URL = os.environ.get(
@@ -48,6 +48,29 @@ BASE_URL = os.environ.get(
 def standard_new_request_url():
 
     return BASE_URL.rstrip("/") + "/new-request"
+
+
+def invitation_request_url(invitation_id):
+
+    invitation_id_text = safe_text(invitation_id).strip()
+
+    if invitation_id_text.isdigit():
+        return BASE_URL.rstrip("/") + "/invite/" + invitation_id_text
+
+    return standard_new_request_url()
+
+
+def repeat_visit_request_url_for_row(request_row):
+
+    if not request_row:
+        return standard_new_request_url()
+
+    invitation_id = row_value(
+        request_row,
+        "invitation_id"
+    )
+
+    return invitation_request_url(invitation_id)
 
 EMAIL_ADDRESS = os.environ.get(
     "EMAIL_ADDRESS",
@@ -798,13 +821,19 @@ def plain_text_to_html_email(subject, body):
         if "coordination" in nearby_lower:
             return "Open Coordination Link"
 
+        if "another" in nearby_lower or "new invitation" in nearby_lower:
+            return "Request Another Visit"
+
         if url.rstrip("/") == BASE_URL.rstrip("/"):
             return "Open New Request"
 
         if "/new-request" in url:
             return "Open New Request"
 
-        if "request" in nearby_lower or "/invite" in url:
+        if "/invite" in url:
+            return "Request Another Visit"
+
+        if "request" in nearby_lower:
             return "Open New Request"
 
         return "Open Link"
@@ -841,6 +870,8 @@ def plain_text_to_html_email(subject, body):
         "Cancel Visit:",
         "Cancel Request:",
         "Start a New Request:",
+        "Request Another Visit:",
+        "Send a New Invitation:",
         "Change / Review Dates:",
         "Cancel / Cannot Make These Dates:",
         "Open Group:",
@@ -858,7 +889,9 @@ def plain_text_to_html_email(subject, body):
         "━━━━━━━━━━━━━━━━━━",
         "Change Request",
         "Cancel Visit",
-        "Start a New Request"
+        "Start a New Request",
+        "Request Another Visit",
+        "Send a New Invitation"
     ]
 
     detail_lines = []
@@ -2821,7 +2854,7 @@ def get_coordination_tentative_holds(conn, exclude_group_id=None, expand_rooms=F
 
     return holds
 
-def request_change_links(request_id):
+def request_change_links(request_id, repeat_visit_url=None):
 
     request_id_text = safe_text(request_id).strip()
 
@@ -2831,6 +2864,9 @@ def request_change_links(request_id):
     else:
         change_url = BASE_URL
         cancel_url = ""
+
+    if not repeat_visit_url:
+        repeat_visit_url = standard_new_request_url()
 
     cancel_block = ""
 
@@ -2849,21 +2885,21 @@ Need to make a change?
 Change Request:
 {change_url}
 {cancel_block}
-Start a New Request:
-{standard_new_request_url()}
+Request Another Visit:
+{repeat_visit_url}
 
 ━━━━━━━━━━━━━━━━━━
 """
 
 
-def ensure_guest_change_links(body, request_id):
+def ensure_guest_change_links(body, request_id, repeat_visit_url=None):
 
     body = safe_text(body)
 
     if "Need to make a change?" in body:
         return body
 
-    return body + request_change_links(request_id)
+    return body + request_change_links(request_id, repeat_visit_url)
 
 def short_date(date_string):
 
@@ -8243,6 +8279,8 @@ def approve_request(request_id):
         f"{BASE_URL}/request/{request_id}/cancel"
     )
 
+    repeat_visit_url = repeat_visit_request_url_for_row(request_row)
+
     approval_email_body = render_email_template(
         "approval.txt",
         guest_name=safe_text(request_row["name"]),
@@ -8260,26 +8298,11 @@ def approve_request(request_id):
         optional_admin_message=optional_admin_message
     )
 
-    approval_email_body += (
-        "\n\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        "Need to Change or Cancel?\n\n"
-        "If your plans change, please use one of the links below.\n\n"
-        f"Request a change:\n"
-        f"{BASE_URL}/request/{request_id}/change\n\n"
-        f"Cancel this visit:\n"
-        f"{BASE_URL}/request/{request_id}/cancel\n\n"
-        "Changes are not automatic. "
-        "We will review any requested changes "
-        "and follow up by email.\n\n"
-        "━━━━━━━━━━━━━━━━━━\n"
+    approval_email_body = ensure_guest_change_links(
+        approval_email_body,
+        request_id,
+        repeat_visit_url
     )
-
-    while "\n\n\n" in approval_email_body:
-        approval_email_body = approval_email_body.replace(
-            "\n\n\n",
-            "\n\n"
-        )
 
     html = nav_links() + f"""
     <h1>Request Approved</h1>
@@ -11646,7 +11669,8 @@ def decline_request(request_id):
         )
 
         decline_email_body += request_change_links(
-            request_id
+            request_id,
+            repeat_visit_request_url_for_row(request_row)
         )
 
         html = nav_links() + f"""
@@ -12874,6 +12898,8 @@ def request_email_preview(request_id):
     if not recipient_email:
         recipient_email = safe_text(req["primary_email"]).strip()
 
+    repeat_visit_url = repeat_visit_request_url_for_row(req)
+
     conn.close()
 
     rooms_requested = int(req["rooms_requested"] or 1)
@@ -12955,12 +12981,13 @@ John & Mark
             room_list=room_list,
             optional_admin_message=optional_admin_message,
             coordinating_with_section=coordinating_with_section,
-            change_links_section=request_change_links(request_id)
+            change_links_section=request_change_links(request_id, repeat_visit_url)
         )
 
         body = ensure_guest_change_links(
             body,
-            request_id
+            request_id,
+            repeat_visit_url
         )
 
         email_type_label = "Update Email"
@@ -12991,7 +13018,8 @@ John & Mark
         )
 
         body += request_change_links(
-            request_id
+            request_id,
+            repeat_visit_url
         )
 
         email_type_label = "Decline Email"
@@ -13011,12 +13039,13 @@ John & Mark
             room_list=room_list,
             coordinating_with_section=coordinating_with_section,
             optional_admin_message=optional_admin_message,
-            change_links_section=request_change_links(request_id)
+            change_links_section=request_change_links(request_id, repeat_visit_url)
         )
 
         body = ensure_guest_change_links(
             body,
-            request_id
+            request_id,
+            repeat_visit_url
         )
 
         email_type_label = "Approval Email"
