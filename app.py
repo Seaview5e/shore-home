@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V30_6"
+    "app_V30_7"
 )
 
 BASE_URL = os.environ.get(
@@ -751,7 +751,7 @@ def plain_text_to_html_email(subject, body):
     escaped_subject = html_escape_module.escape(str(subject or ""))
     body_text = str(body or "")
 
-    # V30.6: email clients need a fully public absolute image URL.
+    # V30.7: email clients need a fully public absolute image URL.
     # Prefer PUBLIC_EMAIL_HEADER_URL when configured. Otherwise build from BASE_URL.
     # If BASE_URL is still local in production, fall back to the current request host.
     email_header_base_url = os.environ.get(
@@ -770,7 +770,7 @@ def plain_text_to_html_email(subject, body):
             except Exception:
                 public_base_url = BASE_URL.rstrip("/")
 
-        email_header_url = public_base_url + "/static/email_header/shore_home_header.jpeg?v=30.6"
+        email_header_url = public_base_url + "/shore_home_header.jpeg?v=30.7"
 
     safe_email_header_url = html_escape_module.escape(
         email_header_url,
@@ -25487,8 +25487,8 @@ if __name__ == "__main__":
 # ============================================================
 
 # ============================================================
-# V30.6
+# V30.7
 # Email header image URL hardening. Uses a public absolute URL
-# for static/email_header/shore_home_header.jpeg and keeps sizing
+# for shore_home_header.jpeg at repo root and keeps sizing
 # from V30.5. No template text, send, preview, or database changes.
 # ============================================================
