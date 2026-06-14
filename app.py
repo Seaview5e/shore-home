@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, render_template, render_template_string, session
+from flask import Flask, request, redirect, render_template, render_template_string, session, send_from_directory
 from datetime import date, datetime, timedelta
 from database import get_db_connection, DATABASE_FILE
 import smtplib
@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V30_7"
+    "app_V30_8"
 )
 
 BASE_URL = os.environ.get(
@@ -770,7 +770,7 @@ def plain_text_to_html_email(subject, body):
             except Exception:
                 public_base_url = BASE_URL.rstrip("/")
 
-        email_header_url = public_base_url + "/shore_home_header.jpeg?v=30.7"
+        email_header_url = public_base_url + "/shore_home_header.jpeg?v=30.8"
 
     safe_email_header_url = html_escape_module.escape(
         email_header_url,
@@ -1277,6 +1277,31 @@ def test_email():
     <h2>Test email sent.</h2>
     <p><a href="/dashboard">Back to Dashboard</a></p>
     """
+
+
+
+@app.route("/shore_home_header.jpeg")
+def shore_home_header_image():
+
+    header_filename = "shore_home_header.jpeg"
+    header_path = os.path.join(
+        app.root_path,
+        header_filename
+    )
+
+    if not os.path.exists(header_path):
+        return (
+            "Header image not found. Confirm shore_home_header.jpeg exists in the GitHub repo root and redeploy.",
+            404
+        )
+
+    return send_from_directory(
+        app.root_path,
+        header_filename,
+        mimetype="image/jpeg",
+        max_age=3600
+    )
+
 
 @app.after_request
 def add_security_headers(response):
