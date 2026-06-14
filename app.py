@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V31_5"
+    "app_V31_6"
 )
 
 BASE_URL = os.environ.get(
@@ -1596,6 +1596,7 @@ def nav_links():
         <a href="/blocked">House Blocks</a> |
         <a href="/manual-request">Manual Request</a> |
         <a href="/admin-backup">Admin Backup</a> |
+        <a href="/admin-reset-test-data">Reset Test Data</a> |
         <a href="/production-check">Production Check</a> |
         <a href="/system-health">System Health</a> |\n        <a href="/admin-logout">Logout</a>
     </div>
@@ -5181,6 +5182,7 @@ def route_safety_diagnostics_summary():
         "/test-email",
         "/admin/rebuild-email-templates",
         "/admin-backup",
+        "/admin-reset-test-data",
         "/approve-cancel/<int:request_id>",
         "/invitation/<int:invitation_id>/status/<new_status>"
     ]
@@ -5448,7 +5450,204 @@ def admin_backup():
     </p>
     """
 
+
     return html
+
+
+def admin_reset_test_data_counts(conn):
+
+    table_names = [
+        "guest_profiles",
+        "rooms",
+        "blocked_dates",
+        "invitations",
+        "booking_requests",
+        "bookings",
+        "coordination_groups",
+        "coordination_group_members",
+        "coordination_date_options",
+        "activity_log",
+        "email_log"
+    ]
+
+    counts = []
+
+    for table_name in table_names:
+
+        try:
+            count = conn.execute(
+                f"SELECT COUNT(*) AS count FROM {table_name}"
+            ).fetchone()["count"]
+        except Exception:
+            count = "missing"
+
+        counts.append((
+            table_name,
+            count
+        ))
+
+    return counts
+
+
+def admin_reset_test_data_counts_html(counts):
+
+    rows = ""
+
+    for table_name, count in counts:
+
+        rows += f"""
+        <tr>
+            <td>{safe_text(table_name)}</td>
+            <td>{safe_text(count)}</td>
+        </tr>
+        """
+
+    return f"""
+    <table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; max-width: 560px; width: 100%;">
+        <tr style="background-color: #f5f5f5;">
+            <th align="left">Table</th>
+            <th align="left">Rows</th>
+        </tr>
+        {rows}
+    </table>
+    """
+
+
+@app.route("/admin-reset-test-data", methods=["GET", "POST"])
+def admin_reset_test_data():
+
+    conn = get_db_connection()
+    before_counts = admin_reset_test_data_counts(conn)
+
+    if request.method != "POST":
+
+        counts_html = admin_reset_test_data_counts_html(before_counts)
+        conn.close()
+
+        return f"""
+        {nav_links()}
+
+        <h1>Reset Test Data</h1>
+
+        <div style="
+            background-color: #fff3cd;
+            border: 2px solid #fd7e14;
+            padding: 14px;
+            border-radius: 8px;
+            max-width: 820px;
+            margin-bottom: 14px;
+        ">
+            <p style="font-weight: bold; margin-top: 0; color: #856404;">
+                This clears operational test data but keeps guest profiles, rooms, and blocked dates.
+            </p>
+
+            <p>
+                A database backup will be created automatically before the reset runs.
+            </p>
+
+            <p><strong>Preserved:</strong> guest_profiles, rooms, blocked_dates</p>
+            <p><strong>Cleared:</strong> invitations, booking_requests, bookings, coordination tables, activity_log, email_log</p>
+        </div>
+
+        <h2>Current Counts</h2>
+        {counts_html}
+
+        <form method="POST" action="/admin-reset-test-data" style="margin-top: 16px;">
+            <input type="hidden" name="confirm_action" value="yes">
+            <button type="submit" style="
+                background-color: #dc3545;
+                color: white;
+                border: none;
+                padding: 9px 14px;
+                border-radius: 5px;
+                font-weight: bold;
+            ">
+                Create Backup and Reset Test Data
+            </button>
+            &nbsp;
+            <a href="/dashboard">Cancel / Go Back</a>
+        </form>
+        """
+
+    try:
+
+        if request.form.get("confirm_action") != "yes":
+            conn.close()
+            return redirect("/admin-reset-test-data")
+
+        os.makedirs("backups", exist_ok=True)
+
+        timestamp = datetime.now().strftime(
+            "%Y_%m_%d__%H_%M_%S"
+        )
+
+        backup_filename = f"shore_backup_pre_test_reset_{timestamp}.db"
+        backup_path = os.path.join(
+            "backups",
+            backup_filename
+        )
+
+        shutil.copy2(
+            DATABASE_FILE,
+            backup_path
+        )
+
+        conn.execute("BEGIN")
+
+        # Clear child/detail tables before parent tables.
+        conn.execute("DELETE FROM activity_log")
+        conn.execute("DELETE FROM email_log")
+        conn.execute("DELETE FROM bookings")
+        conn.execute("DELETE FROM coordination_date_options")
+        conn.execute("DELETE FROM coordination_group_members")
+        conn.execute("DELETE FROM coordination_groups")
+        conn.execute("DELETE FROM booking_requests")
+        conn.execute("DELETE FROM invitations")
+
+        conn.commit()
+
+        after_counts = admin_reset_test_data_counts(conn)
+        conn.close()
+
+        before_html = admin_reset_test_data_counts_html(before_counts)
+        after_html = admin_reset_test_data_counts_html(after_counts)
+
+        return f"""
+        {nav_links()}
+
+        <h1>Reset Test Data Complete</h1>
+
+        <p style="color: green; font-weight: bold;">
+            Operational test data was cleared. Guest profiles, rooms, and blocked dates were preserved.
+        </p>
+
+        <p>
+            <strong>Automatic backup created before reset:</strong><br>
+            {safe_text(backup_filename)}<br>
+            <span style="color: #666;">{safe_text(backup_path)}</span>
+        </p>
+
+        <h2>Before Reset</h2>
+        {before_html}
+
+        <h2>After Reset</h2>
+        {after_html}
+
+        <p>
+            <a href="/dashboard">Back to Dashboard</a> |
+            <a href="/production-check">Open Production Check</a>
+        </p>
+        """
+
+    except Exception as error:
+
+        rollback_and_close(conn)
+
+        return transaction_error_page(
+            error,
+            "/admin-reset-test-data"
+        )
+
 
 @app.route("/new-request")
 @app.route("/")
@@ -25775,4 +25974,12 @@ if __name__ == "__main__":
 # Email header image URL hardening. Uses a public absolute URL
 # for shore_home_header.jpeg at repo root and keeps sizing
 # from V30.5. No template text, send, preview, or database changes.
+# ============================================================
+
+
+# ============================================================
+# V31.6
+# Admin Reset Test Data tool.
+# Preserves guest_profiles, rooms, blocked_dates.
+# Clears operational invitation/request/booking/coordination/log data after automatic backup.
 # ============================================================
