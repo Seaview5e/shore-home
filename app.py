@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V29C"
+    "app_V29D"
 )
 
 BASE_URL = os.environ.get(
@@ -331,7 +331,7 @@ John & Mark
 """,
     "invitation.txt": """Hi {{ guest_name }},
 
-{{ message }}
+We’d love to invite you to request a visit to Strathmere.
 
 Please use the request link below to submit your visit request:
 
@@ -507,7 +507,20 @@ def load_email_template(template_name):
     if os.path.exists(template_path):
 
         with open(template_path, "r", encoding="utf-8") as handle:
-            return handle.read()
+            template_text = handle.read()
+
+        # V29D safety guard:
+        # An older runtime invitation.txt may still contain {{ message }}.
+        # That placeholder is the exact path that allowed saved invitation text
+        # to control or blank the email body. Replace only that stale invitation
+        # template with the current app default.
+        if (
+            template_name == "invitation.txt"
+            and "{{ message }}" in template_text
+        ):
+            return DEFAULT_EMAIL_TEMPLATES.get(template_name, "")
+
+        return template_text
 
     return DEFAULT_EMAIL_TEMPLATES.get(template_name, "")
 
@@ -25217,4 +25230,12 @@ if __name__ == "__main__":
 # V29C
 # Invitation send now regenerates body from templates/emails/invitation.txt.
 # The preview textarea is display-only and is never trusted as send source.
+# ============================================================
+
+
+# ============================================================
+# V29D
+# Invitation template fallback and stale runtime invitation.txt guard.
+# If Render has an old invitation.txt containing {{ message }}, the app ignores
+# that stale file and uses the current app default invitation template instead.
 # ============================================================
