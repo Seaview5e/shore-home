@@ -1,9 +1,6 @@
 Hi {{ guest_name }},
 
-{% if message %}
 {{ message }}
-
-{% endif %}
 
 Welcome to the “beta” version of requesting a visit to the shore this season! 
 
