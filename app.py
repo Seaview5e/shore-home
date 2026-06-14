@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V29B"
+    "app_V29C"
 )
 
 BASE_URL = os.environ.get(
@@ -14174,7 +14174,7 @@ def preview_invitation_email(invitation_id):
             </strong>
         </label><br>
 
-        <textarea name="body"
+        <textarea readonly
                   rows="30"
                   cols="90"
                   style="
@@ -14216,7 +14216,6 @@ def send_invitation_email():
     invitation_id = request.form.get("invitation_id")
     to_email = clean_text(request.form.get("to_email")).lower()
     subject = request.form.get("subject")
-    body = request.form.get("body")
 
     conn = get_db_connection()
 
@@ -14253,6 +14252,21 @@ def send_invitation_email():
             "Invitation email was not sent because this guest profile does not have a valid email address.",
             f"/profile/{invite['guest_profile_id']}/edit"
         )
+
+    request_link = f"{BASE_URL}/invite/{invitation_id}"
+    coordination_link = f"{BASE_URL}/coordinate/{invitation_id}"
+
+    # V29C:
+    # Never send the posted preview textarea body.
+    # Rebuild the final email from the current invitation.txt template at send time
+    # so templates/emails/invitation.txt is the single source of truth.
+    body = render_email_template(
+        "invitation.txt",
+        guest_name=safe_text(invite["primary_name"]),
+        message="",
+        request_link=request_link,
+        coordination_link=coordination_link
+    )
 
     send_email(to_email, subject, body)
 
@@ -25199,3 +25213,8 @@ if __name__ == "__main__":
 # This prevents duplicate old custom message/footer text.
 # ============================================================
 
+# ============================================================
+# V29C
+# Invitation send now regenerates body from templates/emails/invitation.txt.
+# The preview textarea is display-only and is never trusted as send source.
+# ============================================================
