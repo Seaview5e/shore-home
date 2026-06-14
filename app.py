@@ -36,13 +36,18 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V31_1"
+    "app_V31_3"
 )
 
 BASE_URL = os.environ.get(
     "BASE_URL",
     "http://127.0.0.1:5000"
 ).rstrip("/")
+
+
+def standard_new_request_url():
+
+    return BASE_URL.rstrip("/") + "/new-request"
 
 EMAIL_ADDRESS = os.environ.get(
     "EMAIL_ADDRESS",
@@ -734,7 +739,12 @@ def email_template_metadata_html(template_key):
 def render_email_template(template_name, **context):
 
     if "base_url" not in context:
-        context["base_url"] = BASE_URL
+        # Guest-facing email templates use base_url in "Start a New Request" sections.
+        # Point it to the standard visitor request page, not the app root/dashboard-style page.
+        context["base_url"] = standard_new_request_url()
+
+    if "new_request_link" not in context:
+        context["new_request_link"] = standard_new_request_url()
 
     template_text = load_email_template(
         template_name
@@ -932,6 +942,10 @@ def plain_text_to_html_email(subject, body):
         escaped_message_body
     )
 
+    def final_button_label_is_new_request(button):
+
+        return safe_text(button.get("label")).strip().lower() == "open new request"
+
     # De-duplicate buttons while preserving order.
     seen_urls = set()
     final_buttons = []
@@ -940,8 +954,12 @@ def plain_text_to_html_email(subject, body):
 
         button_url = button["url"]
 
-        if button_url.rstrip("/") == BASE_URL.rstrip("/"):
-            button_url = BASE_URL.rstrip("/") + "/new-request"
+        if (
+            final_button_label_is_new_request(button)
+            or button_url.rstrip("/") == BASE_URL.rstrip("/")
+            or button_url.rstrip("/") == (BASE_URL.rstrip("/") + "/")
+        ):
+            button_url = standard_new_request_url()
 
         if button_url in seen_urls:
             continue
@@ -2832,7 +2850,7 @@ Change Request:
 {change_url}
 {cancel_block}
 Start a New Request:
-{BASE_URL}
+{standard_new_request_url()}
 
 ━━━━━━━━━━━━━━━━━━
 """
@@ -11579,7 +11597,7 @@ def decline_request(request_id):
         if request_row["invitation_id"]:
             request_link = f"{BASE_URL}/invite/{request_row['invitation_id']}"
         else:
-            request_link = f"{BASE_URL}/"
+            request_link = standard_new_request_url()
 
         decline_email_subject = "Your Strathmere Visit Request"
 
@@ -12926,7 +12944,7 @@ John & Mark
         if req["invitation_id"]:
             request_link = f"{BASE_URL}/invite/{req['invitation_id']}"
         else:
-            request_link = f"{BASE_URL}/"
+            request_link = standard_new_request_url()
 
         body = render_email_template(
             "decline.txt",
@@ -17006,10 +17024,7 @@ def cancel_request(request_id):
     if not rooms_requested:
         rooms_requested = 1
 
-    new_request_link = "/"
-
-    if request_row["invitation_id"]:
-        new_request_link = f"/invite/{request_row['invitation_id']}"
+    new_request_link = "/new-request"
 
     if request.method == "POST":
 
@@ -17206,7 +17221,7 @@ Cancelled Visit Details:
 - Rooms: {rooms_requested}
 
 If you would like to request different dates, please use this link:
-{BASE_URL}{new_request_link}
+{standard_new_request_url()}
 
 Thanks for letting us know.
 
@@ -24399,7 +24414,7 @@ Cancel / Cannot Make These Dates:
 {update_link}
 
 Start a New Request:
-{BASE_URL}
+{standard_new_request_url()}
 
 Nothing is fully booked yet. This just helps us coordinate the group before final approvals.
 
@@ -25038,7 +25053,7 @@ Pets:
 Need to change or cancel this visit?
 Change request: {BASE_URL}/request/{final_request['id']}/change
 Cancel request: {BASE_URL}/request/{final_request['id']}/cancel
-New request: {BASE_URL}
+New request: {standard_new_request_url()}
 
 If anything does not look right, just reply to this email.
 
