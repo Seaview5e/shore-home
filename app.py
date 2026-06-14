@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V30_9"
+    "app_V31_0"
 )
 
 BASE_URL = os.environ.get(
@@ -657,8 +657,16 @@ def admin_invitation_template_editor():
     """
 
 
-@app.route("/admin/rebuild-email-templates")
+@app.route("/admin/rebuild-email-templates", methods=["GET", "POST"])
 def admin_rebuild_email_templates():
+
+    if request.method != "POST":
+        return action_confirmation_page(
+            "Rebuild Email Templates",
+            "This resets template files from app defaults and can overwrite wording. Continue only if you intentionally want to rebuild templates.",
+            "/admin/rebuild-email-templates",
+            "/production-check"
+        )
 
     rebuild_email_template_files()
 
@@ -1284,8 +1292,17 @@ def format_datetime_display(value):
 
     return value
 
-@app.route("/test-email")
+@app.route("/test-email", methods=["GET", "POST"])
 def test_email():
+
+    if request.method != "POST":
+        return action_confirmation_page(
+            "Send Test Email",
+            "Send one test email to the configured Shore Home email address.",
+            "/test-email",
+            "/dashboard"
+        )
+
     send_email(
         EMAIL_ADDRESS,
         "Test email from Shore Home App",
@@ -1345,6 +1362,7 @@ def add_security_headers(response):
 
 PUBLIC_ENDPOINTS = {
     "admin_login",
+    "shore_home_header_image",
     "static",
     "invite_request",
     "invitation_request_alias",
@@ -5103,6 +5121,39 @@ def email_template_files_diagnostics_summary():
         return False, "Email template diagnostics failed: " + safe_text(error)
 
 
+def route_safety_diagnostics_summary():
+
+    sensitive_routes = [
+        "/test-email",
+        "/admin/rebuild-email-templates",
+        "/admin-backup",
+        "/approve-cancel/<int:request_id>",
+        "/invitation/<int:invitation_id>/status/<new_status>"
+    ]
+
+    try:
+        route_methods = {}
+
+        for rule in app.url_map.iter_rules():
+            route_methods[rule.rule] = set(rule.methods or [])
+
+        missing_post = []
+
+        for route in sensitive_routes:
+            methods = route_methods.get(route, set())
+
+            if "POST" not in methods:
+                missing_post.append(route)
+
+        if missing_post:
+            return False, "Sensitive route(s) missing POST confirmation: " + ", ".join(missing_post)
+
+        return True, "Sensitive admin actions require POST confirmation before side effects."
+
+    except Exception as error:
+        return False, "Route safety diagnostics failed: " + safe_text(error)
+
+
 @app.route("/production-check")
 def production_check():
 
@@ -5163,6 +5214,14 @@ def production_check():
         "Public access protection",
         ADMIN_AUTH_ENABLED,
         "Admin login protection configured." if ADMIN_AUTH_ENABLED else "ADMIN_PASSWORD is missing; admin pages are not protected."
+    ))
+
+    route_safety_ok, route_safety_detail = route_safety_diagnostics_summary()
+
+    checks.append((
+        "Route Safety",
+        route_safety_ok,
+        route_safety_detail
     ))
 
 
@@ -5267,8 +5326,16 @@ def production_checklist():
     """
 
 
-@app.route("/admin-backup")
+@app.route("/admin-backup", methods=["GET", "POST"])
 def admin_backup():
+
+    if request.method != "POST":
+        return action_confirmation_page(
+            "Create Admin Backup",
+            "Create a timestamped copy of the current database in the backups folder.",
+            "/admin-backup",
+            "/dashboard"
+        )
 
     import shutil
 
@@ -10956,8 +11023,16 @@ def edit_invitation(invitation_id):
     return html
 
 
-@app.route("/invitation/<int:invitation_id>/status/<new_status>")
+@app.route("/invitation/<int:invitation_id>/status/<new_status>", methods=["GET", "POST"])
 def update_invitation_status(invitation_id, new_status):
+
+    if request.method != "POST":
+        return action_confirmation_page(
+            "Change Invitation Status",
+            f"Change invitation {invitation_id} status to {safe_text(new_status)}.",
+            f"/invitation/{invitation_id}/status/{safe_text(new_status)}",
+            "/invitations"
+        )
 
     allowed_statuses = [
         "draft",
@@ -12471,8 +12546,16 @@ def approve_change(request_id):
 
     return html
 
-@app.route("/approve-cancel/<int:request_id>")
+@app.route("/approve-cancel/<int:request_id>", methods=["GET", "POST"])
 def approve_cancel(request_id):
+
+    if request.method != "POST":
+        return action_confirmation_page(
+            "Approve Cancellation",
+            f"Approve cancellation for request {request_id}, release assigned bookings, and mark cancellation email as needed.",
+            f"/approve-cancel/{request_id}",
+            f"/request/{request_id}"
+        )
 
     conn = get_db_connection()
 
@@ -25275,6 +25358,14 @@ def system_health():
             if not duplicate_endpoint_names
             else f"Conflicting endpoint names: {', '.join(duplicate_endpoint_names)}"
         )
+    )
+
+    route_safety_ok, route_safety_detail = route_safety_diagnostics_summary()
+
+    rows += hardening_status_row(
+        "Route Safety",
+        "OK" if route_safety_ok else "Error",
+        route_safety_detail
     )
 
     rows += hardening_status_row(
