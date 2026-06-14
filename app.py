@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V29E"
+    "app_V29F"
 )
 
 BASE_URL = os.environ.get(
@@ -501,14 +501,19 @@ def ensure_email_template_files():
                 handle.write(template_text)
 
 
+def email_template_path(template_name):
+
+    return os.path.join(
+        EMAIL_TEMPLATE_FOLDER,
+        template_name
+    )
+
+
 def load_email_template(template_name):
 
     ensure_email_template_files()
 
-    template_path = os.path.join(
-        EMAIL_TEMPLATE_FOLDER,
-        template_name
-    )
+    template_path = email_template_path(template_name)
 
     if os.path.exists(template_path):
 
@@ -523,6 +528,49 @@ def load_email_template(template_name):
         )
 
     return DEFAULT_EMAIL_TEMPLATES.get(template_name, "")
+
+
+def save_email_template(template_name, template_text):
+
+    os.makedirs(
+        EMAIL_TEMPLATE_FOLDER,
+        exist_ok=True
+    )
+
+    template_path = email_template_path(template_name)
+
+    with open(template_path, "w", encoding="utf-8") as handle:
+        handle.write(safe_text(template_text))
+
+
+def invitation_template_admin_box():
+
+    template_path = email_template_path("invitation.txt")
+
+    try:
+        template_text = load_email_template("invitation.txt")
+        first_lines = "\n".join(template_text.splitlines()[:10])
+        status = "READING REAL FILE"
+    except Exception as error:
+        first_lines = safe_text(error)
+        status = "ERROR"
+
+    return f"""
+    <div style="
+        border: 3px solid #dc3545;
+        background: #fff5f5;
+        padding: 12px;
+        max-width: 950px;
+        margin: 12px 0;
+        font-size: 13px;
+    ">
+        <strong>Invitation Template Source Check</strong><br>
+        Status: {safe_text(status)}<br>
+        File: <code>{safe_text(template_path)}</code><br>
+        <a href="/admin/invitation-template" style="font-weight:bold;">Open / Edit Actual invitation.txt</a>
+        <pre style="white-space: pre-wrap; background: white; padding: 8px; border: 1px solid #ddd;">{safe_text(first_lines)}</pre>
+    </div>
+    """
 
 
 ensure_email_template_files()
@@ -549,6 +597,64 @@ def rebuild_email_template_files():
 
         with open(template_path, "w", encoding="utf-8") as handle:
             handle.write(template_text)
+
+
+@app.route("/admin/invitation-template", methods=["GET", "POST"])
+def admin_invitation_template_editor():
+
+    message = ""
+
+    if request.method == "POST":
+
+        template_text = request.form.get("template_text")
+
+        save_email_template(
+            "invitation.txt",
+            template_text
+        )
+
+        message = "Saved. Preview/send will now use this exact invitation.txt file."
+
+    try:
+        current_template = load_email_template("invitation.txt")
+    except Exception:
+        current_template = ""
+
+    template_path = email_template_path("invitation.txt")
+
+    return f"""
+    {nav_links()}
+
+    <h1>Edit Actual Invitation Template</h1>
+
+    <p style="font-weight:bold; color:#dc3545;">
+        This is the exact file used by invitation preview and invitation send.
+    </p>
+
+    <p>
+        File: <code>{safe_text(template_path)}</code>
+    </p>
+
+    <p style="color: green; font-weight: bold;">
+        {safe_text(message)}
+    </p>
+
+    <form method="POST">
+        <textarea name="template_text" rows="28" cols="100" style="width:100%; max-width:950px; font-family:monospace; font-size:14px; line-height:1.45;">{safe_text(current_template)}</textarea>
+        <br><br>
+        <button type="submit" style="font-weight:bold; padding:8px 14px;">
+            Save invitation.txt
+        </button>
+    </form>
+
+    <p>
+        Required variables you can use: <code>{{{{ guest_name }}}}</code>, <code>{{{{ request_link }}}}</code>, <code>{{{{ coordination_link }}}}</code>
+    </p>
+
+    <p>
+        <a href="/invitations">Back to Invitations</a>
+    </p>
+    """
 
 
 @app.route("/admin/rebuild-email-templates")
@@ -14119,6 +14225,7 @@ def preview_invitation_email(invitation_id):
     )
 
     template_metadata = email_template_metadata_html("invitation")
+    template_admin_box = invitation_template_admin_box()
 
     html = nav_links() + f"""
     <h1>
@@ -14126,6 +14233,7 @@ def preview_invitation_email(invitation_id):
     </h1>
 
     {template_metadata}
+    {template_admin_box}
 
     <div style="
         border: 1px solid #ccc;
@@ -25251,4 +25359,12 @@ if __name__ == "__main__":
 # Invitation email never falls back to hardcoded app.py wording.
 # If templates/emails/invitation.txt is missing, preview/send stops
 # instead of showing or sending text John did not create.
+# ============================================================
+
+
+# ============================================================
+# V29F
+# Adds a proof/edit page for the actual Render invitation.txt.
+# Invitation preview shows the exact template path and first lines.
+# This exposes stale Render template files instead of guessing.
 # ============================================================
