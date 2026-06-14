@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V29F"
+    "app_V30_0"
 )
 
 BASE_URL = os.environ.get(
@@ -14212,14 +14212,15 @@ def preview_invitation_email(invitation_id):
 
         photo_email_html = ""
 
-    # V29B:
-    # Do not inject invitations.message into invitation.txt.
-    # Invitation email wording is now controlled by templates/emails/invitation.txt.
-    # The saved message field may still exist for notes/history but should not duplicate email body/footer.
+    # V30.0:
+    # Invitation wording is controlled by templates/emails/invitation.txt.
+    # The optional saved invitation message is available ONLY if the template
+    # explicitly includes {{ message }}. This prevents hidden/automatic leakage
+    # while restoring your ability to add a custom invite note.
     body = render_email_template(
         "invitation.txt",
         guest_name=safe_text(invite["primary_name"]),
-        message="",
+        message=safe_text(row_value(invite, "message")),
         request_link=request_link,
         coordination_link=coordination_link
     )
@@ -14382,14 +14383,15 @@ def send_invitation_email():
     request_link = f"{BASE_URL}/invite/{invitation_id}"
     coordination_link = f"{BASE_URL}/coordinate/{invitation_id}"
 
-    # V29C:
-    # Never send the posted preview textarea body.
-    # Rebuild the final email from the current invitation.txt template at send time
-    # so templates/emails/invitation.txt is the single source of truth.
+    # V30.0:
+    # Never send a posted preview textarea body.
+    # Rebuild the final email from the current invitation.txt template at send time.
+    # The optional saved invitation message is available only where the template
+    # explicitly includes {{ message }}.
     body = render_email_template(
         "invitation.txt",
         guest_name=safe_text(invite["primary_name"]),
-        message="",
+        message=safe_text(row_value(invite, "message")),
         request_link=request_link,
         coordination_link=coordination_link
     )
@@ -25367,4 +25369,15 @@ if __name__ == "__main__":
 # Adds a proof/edit page for the actual Render invitation.txt.
 # Invitation preview shows the exact template path and first lines.
 # This exposes stale Render template files instead of guessing.
+# ============================================================
+
+
+# ============================================================
+# V30.0
+# Hardened invitation email/template behavior.
+# - Email wording lives in templates/emails/*.txt.
+# - invitation.txt is never auto-created or overwritten by rebuild.
+# - Preview is display-only; send rebuilds from the template at send time.
+# - Optional invitations.message is restored, but only appears if
+#   invitation.txt explicitly includes {{ message }}.
 # ============================================================
