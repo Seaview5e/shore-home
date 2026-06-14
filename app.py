@@ -25198,3 +25198,4 @@ if __name__ == "__main__":
 # Saved invitations.message is no longer injected into invitation.txt.
 # This prevents duplicate old custom message/footer text.
 # ============================================================
+
