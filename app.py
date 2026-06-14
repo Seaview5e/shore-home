@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V29D"
+    "app_V29E"
 )
 
 BASE_URL = os.environ.get(
@@ -489,6 +489,12 @@ def ensure_email_template_files():
             template_name
         )
 
+        # V29E: Never auto-create invitation.txt from app.py defaults.
+        # The invitation preview/email must come from the real editable
+        # templates/emails/invitation.txt file only.
+        if template_name == "invitation.txt":
+            continue
+
         if not os.path.exists(template_path):
 
             with open(template_path, "w", encoding="utf-8") as handle:
@@ -509,18 +515,12 @@ def load_email_template(template_name):
         with open(template_path, "r", encoding="utf-8") as handle:
             template_text = handle.read()
 
-        # V29D safety guard:
-        # An older runtime invitation.txt may still contain {{ message }}.
-        # That placeholder is the exact path that allowed saved invitation text
-        # to control or blank the email body. Replace only that stale invitation
-        # template with the current app default.
-        if (
-            template_name == "invitation.txt"
-            and "{{ message }}" in template_text
-        ):
-            return DEFAULT_EMAIL_TEMPLATES.get(template_name, "")
-
         return template_text
+
+    if template_name == "invitation.txt":
+        raise RuntimeError(
+            "templates/emails/invitation.txt is missing. Invitation preview/email stopped so app.py default text cannot replace your template."
+        )
 
     return DEFAULT_EMAIL_TEMPLATES.get(template_name, "")
 
@@ -536,6 +536,11 @@ def rebuild_email_template_files():
     )
 
     for template_name, template_text in DEFAULT_EMAIL_TEMPLATES.items():
+
+        # V29E: do not overwrite the real invitation template with
+        # hardcoded app.py wording during rebuild.
+        if template_name == "invitation.txt":
+            continue
 
         template_path = os.path.join(
             EMAIL_TEMPLATE_FOLDER,
@@ -25238,4 +25243,12 @@ if __name__ == "__main__":
 # Invitation template fallback and stale runtime invitation.txt guard.
 # If Render has an old invitation.txt containing {{ message }}, the app ignores
 # that stale file and uses the current app default invitation template instead.
+# ============================================================
+
+
+# ============================================================
+# V29E
+# Invitation email never falls back to hardcoded app.py wording.
+# If templates/emails/invitation.txt is missing, preview/send stops
+# instead of showing or sending text John did not create.
 # ============================================================
