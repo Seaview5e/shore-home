@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V30_0"
+    "app_V30_1"
 )
 
 BASE_URL = os.environ.get(
@@ -4919,6 +4919,87 @@ def email_template_files_diagnostics_summary():
 
         expected_templates = sorted(DEFAULT_EMAIL_TEMPLATES.keys())
 
+        required_placeholders = {
+            "admin_alert.txt": [
+                "{{ group_name }}",
+                "{{ current_status }}",
+                "{{ next_step }}",
+                "{{ group_link }}"
+            ],
+            "approval.txt": [
+                "{{ guest_name }}",
+                "{{ arrival_date }}",
+                "{{ departure_date }}",
+                "{{ nights }}",
+                "{{ rooms_requested }}",
+                "{{ room_list }}",
+                "{{ additional_names }}",
+                "{{ change_links_section }}"
+            ],
+            "booking_confirmation.txt": [
+                "{{ guest_name }}",
+                "{{ arrival_date }}",
+                "{{ departure_date }}",
+                "{{ nights }}",
+                "{{ room_list }}",
+                "{{ additional_names }}",
+                "{{ change_links_section }}"
+            ],
+            "coordination_follow_up.txt": [
+                "{{ guest_name }}",
+                "{{ tentative_dates }}",
+                "{{ request_link }}"
+            ],
+            "coordination_invitation.txt": [
+                "{{ guest_name }}",
+                "{{ group_title }}",
+                "{{ guest_role }}",
+                "{{ group_member_text }}",
+                "{{ suggestion_text }}",
+                "{{ request_link }}"
+            ],
+            "date_change.txt": [
+                "{{ guest_name }}",
+                "{{ arrival_date }}",
+                "{{ departure_date }}",
+                "{{ nights }}",
+                "{{ rooms_requested }}",
+                "{{ room_list }}",
+                "{{ additional_names }}",
+                "{{ change_links_section }}"
+            ],
+            "decline.txt": [
+                "{{ guest_name }}",
+                "{{ arrival_date }}",
+                "{{ departure_date }}",
+                "{{ nights }}",
+                "{{ rooms_requested }}",
+                "{{ additional_names }}",
+                "{{ decline_reason }}",
+                "{{ request_link }}"
+            ],
+            "invitation.txt": [
+                "{{ guest_name }}",
+                "{{ request_link }}"
+            ],
+            "planning_failed.txt": [
+                "{{ group_name }}",
+                "{{ group_link }}"
+            ],
+            "reminder.txt": [
+                "{{ guest_name }}",
+                "{{ group_title }}",
+                "{{ response_count }}",
+                "{{ request_link }}"
+            ],
+            "tentative_confirmation.txt": [
+                "{{ guest_name }}",
+                "{{ tentative_dates }}",
+                "{{ request_link }}",
+                "{{ base_url }}"
+            ]
+        }
+
         existing_templates = []
 
         if os.path.isdir(EMAIL_TEMPLATE_FOLDER):
@@ -4937,6 +5018,37 @@ def email_template_files_diagnostics_summary():
             if template_name not in existing_templates
         ]
 
+        placeholder_warnings = []
+
+        for template_name, placeholders in required_placeholders.items():
+
+            if template_name in missing_templates:
+                continue
+
+            template_path = os.path.join(
+                EMAIL_TEMPLATE_FOLDER,
+                template_name
+            )
+
+            if not os.path.exists(template_path):
+                continue
+
+            with open(template_path, "r", encoding="utf-8") as handle:
+                template_text = handle.read()
+
+            missing_placeholders = [
+                placeholder
+                for placeholder in placeholders
+                if placeholder not in template_text
+            ]
+
+            if missing_placeholders:
+                placeholder_warnings.append(
+                    template_name
+                    + " missing "
+                    + ", ".join(missing_placeholders)
+                )
+
         detail_lines = []
 
         detail_lines.append(
@@ -4953,14 +5065,25 @@ def email_template_files_diagnostics_summary():
 
         if missing_templates:
             detail_lines.append(
-                "Missing: "
+                "Missing files: "
                 + ", ".join(missing_templates)
+            )
+
+        if placeholder_warnings:
+            detail_lines.append(
+                "Missing required placeholders: "
+                + " | ".join(placeholder_warnings)
+            )
+
+        if missing_templates or placeholder_warnings:
+            detail_lines.append(
+                "Template protection is read-only. Fix template files in GitHub, commit, deploy, then recheck."
             )
 
             return False, "<br>".join(detail_lines)
 
         detail_lines.append(
-            "Email TXT templates are available as editable files."
+            "Email TXT templates are available and required placeholders are present."
         )
 
         return True, "<br>".join(detail_lines)
