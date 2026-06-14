@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V30_8"
+    "app_V30_9"
 )
 
 BASE_URL = os.environ.get(
@@ -751,34 +751,11 @@ def plain_text_to_html_email(subject, body):
     escaped_subject = html_escape_module.escape(str(subject or ""))
     body_text = str(body or "")
 
-    # V30.7: email clients need a fully public absolute image URL.
-    # Prefer PUBLIC_EMAIL_HEADER_URL when configured. Otherwise build from BASE_URL.
-    # If BASE_URL is still local in production, fall back to the current request host.
-    email_header_base_url = os.environ.get(
-        "PUBLIC_EMAIL_HEADER_URL",
-        ""
-    ).strip()
-
-    if email_header_base_url:
-        email_header_url = email_header_base_url
-    else:
-        public_base_url = BASE_URL.rstrip("/")
-
-        if public_base_url.startswith("http://127.0.0.1") or public_base_url.startswith("http://localhost"):
-            try:
-                public_base_url = request.url_root.rstrip("/")
-            except Exception:
-                public_base_url = BASE_URL.rstrip("/")
-
-        email_header_url = public_base_url + "/shore_home_header.jpeg?v=30.8"
-
-    safe_email_header_url = html_escape_module.escape(
-        email_header_url,
-        quote=True
-    )
-    email_header_html = f"""
+    # V30.9: embed the header image as an inline CID attachment.
+    # This avoids email clients blocking or failing to fetch the public URL.
+    email_header_html = """
                 <div style="background:#ffffff; border-bottom:1px solid #d5e0ea; text-align:center; line-height:0;">
-                    <img src="{safe_email_header_url}"
+                    <img src="cid:shore_home_header"
                          alt="Shore Home"
                          width="600"
                          style="display:block; width:100%; max-width:600px; height:auto; max-height:220px; object-fit:cover; border:0; margin:0 auto; line-height:0;">
@@ -1099,6 +1076,46 @@ def write_email_audit(to_email, subject, status, detail=""):
         pass
 
 
+def add_email_header_image_if_available(msg):
+
+    header_filename = "shore_home_header.jpeg"
+    header_path = os.path.join(
+        app.root_path,
+        header_filename
+    )
+
+    if not os.path.exists(header_path):
+        write_email_audit(
+            msg.get("To", ""),
+            msg.get("Subject", ""),
+            "HEADER_IMAGE_MISSING",
+            header_path
+        )
+        return
+
+    try:
+        with open(header_path, "rb") as handle:
+            header_bytes = handle.read()
+
+        # The HTML alternative is the last payload after add_alternative().
+        html_part = msg.get_payload()[-1]
+        html_part.add_related(
+            header_bytes,
+            maintype="image",
+            subtype="jpeg",
+            cid="<shore_home_header>",
+            filename=header_filename
+        )
+
+    except Exception as error:
+        write_email_audit(
+            msg.get("To", ""),
+            msg.get("Subject", ""),
+            "HEADER_IMAGE_FAILED",
+            error
+        )
+
+
 def send_email(to_email, subject, body, html_body=None):
 
     if not EMAIL_APP_PASSWORD:
@@ -1125,6 +1142,8 @@ def send_email(to_email, subject, body, html_body=None):
             html_body,
             subtype="html"
         )
+
+        add_email_header_image_if_available(msg)
 
     try:
         with smtplib.SMTP("smtp.gmail.com", 587) as smtp:
