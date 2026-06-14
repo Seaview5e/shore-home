@@ -9,7 +9,7 @@ Welcome to the “beta” version of requesting a visit to the shore this season
 I’ve been having way too much fun experimenting with AI and built this little system to (hopefully) make planning visits easier — and maybe at least slightly more entertaining. Like any beta, I’m sure there are a few rough edges, so if anything feels confusing, awkward, or unexpectedly robotic, please let me know so I can keep improving it. Any mistakes are probably AI-generated, but customer support is still delightfully human. Send me a note and I’ll get things sorted. Of course, good old-fashioned email or a phone call still works too — we haven’t handed full control over to the robots… yet. 
 
 Please use the request link below to submit your visit request.
-You can still use regular email or a phone call at any point if that’s easier. 
+You can still use regular email or a phone call at any point if that’s easier!
 
 Once requests are reviewed, we’ll follow up with availability, room details, and next steps.  
 
