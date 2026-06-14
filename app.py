@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V30_3"
+    "app_V30_4"
 )
 
 BASE_URL = os.environ.get(
@@ -751,31 +751,22 @@ def plain_text_to_html_email(subject, body):
     escaped_subject = html_escape_module.escape(str(subject or ""))
     body_text = str(body or "")
 
-    email_header_html = ""
-    email_header_relative_path = os.path.join(
-        "static",
-        "email_header",
-        "shore_home_header.jpeg"
+    # V30.4: always include the public static image URL in HTML emails.
+    # Do not gate this on local file detection; Render/GitHub static files are the source of truth.
+    # If the image file is missing, the email still sends and the rest of the layout remains intact.
+    email_header_url = BASE_URL.rstrip("/") + "/static/email_header/shore_home_header.jpeg?v=30.4"
+    safe_email_header_url = html_escape_module.escape(
+        email_header_url,
+        quote=True
     )
-    email_header_disk_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        email_header_relative_path
-    )
-
-    if os.path.exists(email_header_disk_path):
-        email_header_url = BASE_URL.rstrip("/") + "/static/email_header/shore_home_header.jpeg"
-        safe_email_header_url = html_escape_module.escape(
-            email_header_url,
-            quote=True
-        )
-        email_header_html = f"""
+    email_header_html = f"""
                 <div style="background:#ffffff; border-bottom:1px solid #d5e0ea;">
                     <img src="{safe_email_header_url}"
                          alt="Shore Home"
                          width="720"
                          style="display:block; width:100%; max-width:720px; height:auto; border:0; margin:0;">
                 </div>
-        """
+    """
 
     # Keep TXT templates as the source of truth.
     # HTML email cleans up presentation by moving detail rows into one card
@@ -25472,8 +25463,8 @@ if __name__ == "__main__":
 
 
 # ============================================================
-# V30.3
-# Email visual header only. Uses existing static/email_header/shore_home_header.jpeg
+# V30.4
+# Email visual header URL is always included; no local file gate.
 # above the compact blue banner for all HTML emails.
 # Plain-text email body and TXT template rendering are unchanged.
 # ============================================================
