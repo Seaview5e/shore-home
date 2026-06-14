@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V31_0"
+    "app_V31_1"
 )
 
 BASE_URL = os.environ.get(
@@ -7828,14 +7828,105 @@ def approve_request(request_id):
         </p>
         """
 
+    # V31.1: tentative coordination holds reserve capacity before final booking.
+    # For coordination handoff approvals, ignore that request's own group hold.
+    exclude_coordination_group_id = None
+
+    try:
+        exclude_coordination_group_id = request_row["coordination_group_id"]
+    except Exception:
+        exclude_coordination_group_id = None
+
+    tentative_holds = get_coordination_tentative_holds(
+        conn,
+        exclude_group_id=exclude_coordination_group_id
+    )
+
+    total_rooms_row = conn.execute("""
+        SELECT COUNT(*) AS count
+        FROM rooms
+    """).fetchone()
+
+    total_rooms = int(total_rooms_row["count"] or 4)
+
+    try:
+        check_start = datetime.strptime(effective_arrival_date, "%Y-%m-%d").date()
+        check_end = datetime.strptime(effective_departure_date, "%Y-%m-%d").date()
+    except Exception:
+        check_start = None
+        check_end = None
+
+    if check_start and check_end:
+
+        current_check_date = check_start
+
+        while current_check_date < check_end:
+
+            current_date_string = current_check_date.strftime("%Y-%m-%d")
+
+            approved_rooms_used_row = conn.execute("""
+                SELECT COUNT(*) AS count
+                FROM bookings
+                WHERE status = 'approved'
+                  AND request_id != ?
+                  AND arrival_date <= ?
+                  AND departure_date > ?
+            """, (
+                request_id,
+                current_date_string,
+                current_date_string
+            )).fetchone()
+
+            approved_rooms_used = int(approved_rooms_used_row["count"] or 0)
+            tentative_rooms_held = 0
+
+            for tentative_hold in tentative_holds:
+                try:
+                    hold_start = datetime.strptime(tentative_hold["arrival_date"], "%Y-%m-%d").date()
+                    hold_end = datetime.strptime(tentative_hold["departure_date"], "%Y-%m-%d").date()
+                    hold_rooms = int(tentative_hold.get("rooms_held", 1) or 1)
+                except Exception:
+                    continue
+
+                if hold_start <= current_check_date < hold_end:
+                    tentative_rooms_held += hold_rooms
+
+            rooms_open_after_holds = total_rooms - approved_rooms_used - tentative_rooms_held
+
+            if rooms_open_after_holds < rooms_requested:
+
+                conn.close()
+
+                return f"""
+                <h2>Not enough room capacity for those dates.</h2>
+
+                <p>
+                    {format_date(current_date_string)} has only
+                    {rooms_open_after_holds} room(s) open after approved bookings
+                    and tentative coordination holds are counted.
+                </p>
+
+                <p>
+                    This protects coordination dates before final booking is complete.
+                </p>
+
+                <p>
+                    <a href='/requests'>
+                        Back to requests
+                    </a>
+                </p>
+                """
+
+            current_check_date += timedelta(days=1)
+
     blocked_conflict = conn.execute("""
         SELECT *
         FROM blocked_dates
         WHERE start_date < ?
           AND end_date > ?
     """, (
-        request_row["departure_date"],
-        request_row["arrival_date"]
+        effective_departure_date,
+        effective_arrival_date
     )).fetchone()
 
     if blocked_conflict:
@@ -7872,8 +7963,8 @@ def approve_request(request_id):
         """, (
             room_id,
             request_id,
-            request_row["departure_date"],
-            request_row["arrival_date"]
+            effective_departure_date,
+            effective_arrival_date
         )).fetchone()
 
         if conflict:
@@ -7926,12 +8017,18 @@ def approve_request(request_id):
         conn.execute("""
             UPDATE booking_requests
             SET status = ?,
+                arrival_date = ?,
+                departure_date = ?,
+                rooms_requested = ?,
                 response_message = ?,
                 email_status = ?,
                 email_needed_type = ?
             WHERE id = ?
         """, (
             "approved",
+            effective_arrival_date,
+            effective_departure_date,
+            rooms_requested,
             response_message,
             approval_email_status,
             approval_email_needed_type,
@@ -7952,8 +8049,8 @@ def approve_request(request_id):
             """, (
                 request_id,
                 room_id,
-                request_row["arrival_date"],
-                request_row["departure_date"],
+                effective_arrival_date,
+                effective_departure_date,
                 "approved"
             ))
 
@@ -8044,12 +8141,12 @@ def approve_request(request_id):
 
     nights = (
         datetime.strptime(
-            request_row["departure_date"],
+            effective_departure_date,
             "%Y-%m-%d"
         )
         -
         datetime.strptime(
-            request_row["arrival_date"],
+            effective_arrival_date,
             "%Y-%m-%d"
         )
     ).days
@@ -8100,10 +8197,10 @@ def approve_request(request_id):
         "approval.txt",
         guest_name=safe_text(request_row["name"]),
         arrival_date=format_date(
-            request_row["arrival_date"]
+            effective_arrival_date
         ),
         departure_date=format_date(
-            request_row["departure_date"]
+            effective_departure_date
         ),
         nights=nights,
         rooms_requested=rooms_requested,
@@ -16551,62 +16648,63 @@ Change Notes:
 
     <hr>
 
-    <h3>
-        Current Approved Details
-    </h3>
+    <div style="display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; max-width: 1180px;">
 
-    <p>
-        <strong>
-            Guest:
-        </strong>
+        <div style="flex: 0 0 285px; background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 10px 12px; line-height: 1.25; font-size: 13px;">
+            <h3 style="margin: 0 0 8px 0; font-size: 16px;">
+                Current Approved Details
+            </h3>
+            <div><strong>Guest:</strong> {request_row['name']}</div>
+            <div><strong>Email:</strong> {request_row['email']}</div>
+            <div><strong>Arrival:</strong> {format_date(request_row['arrival_date'])}</div>
+            <div><strong>Departure:</strong> {format_date(request_row['departure_date'])}</div>
+            <div><strong>Rooms:</strong> {current_rooms}</div>
+        </div>
 
-        {request_row['name']}
-    </p>
+        <div style="flex: 1 1 650px; min-width: 320px;">
 
-    <p>
-        <strong>
-            Email:
-        </strong>
-
-        {request_row['email']}
-    </p>
-
-    <p>
-        <strong>
-            Current Arrival:
-        </strong>
-
-        {format_date(request_row['arrival_date'])}
-    </p>
-
-    <p>
-        <strong>
-            Current Departure:
-        </strong>
-
-        {format_date(request_row['departure_date'])}
-    </p>
-
-    <p>
-        <strong>
-            Current Rooms Requested:
-        </strong>
-
-        {current_rooms}
-    </p>
-
-    <hr>
-
-    <form method="POST">
+    <form method="POST" onsubmit="return checkUnavailableDates();">
 
         <h3>
             Requested Change
         </h3>
 
         <div style="background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px 12px; border-radius: 8px; max-width: 760px; margin-bottom: 12px;">
-            <strong>Use the calendar before submitting.</strong><br>
+            <strong>Use the room count first, then choose dates on the calendar.</strong><br>
             This shows blocked dates, full dates, and coordination holds so you are not guessing.
         </div>
+
+        <label>
+            Rooms Requested
+        </label><br>
+
+        <select id="rooms_requested"
+                name="rooms_requested"
+                style="
+                    width: 160px;
+                    padding: 8px;
+                    margin-bottom: 12px;
+                ">
+    """
+
+    for room_count in range(1, 5):
+
+        selected = ""
+
+        if int(current_rooms) == room_count:
+            selected = "selected"
+
+        html += f"""
+            <option value="{room_count}" {selected}>
+                {room_count} Room{"s" if room_count != 1 else ""}
+            </option>
+        """
+
+    html += f"""
+
+        </select>
+
+        <br>
 
         {calendar_html}
 
@@ -16642,37 +16740,6 @@ Change Notes:
                style="
                    padding: 8px;
                ">
-
-        <br>
-
-        <label>
-            Rooms Requested
-        </label><br>
-
-        <select id="rooms_requested"
-                name="rooms_requested"
-                style="
-                    width: 160px;
-                    padding: 8px;
-                ">
-    """
-
-    for room_count in range(1, 5):
-
-        selected = ""
-
-        if int(current_rooms) == room_count:
-            selected = "selected"
-
-        html += f"""
-            <option value="{room_count}" {selected}>
-                {room_count} Room{"s" if room_count != 1 else ""}
-            </option>
-        """
-
-    html += f"""
-
-        </select>
 
         <br>
 
@@ -16872,6 +16939,9 @@ Change Notes:
 
         updateNightsMessage();
     </script>
+
+        </div>
+    </div>
 
     <br>
 
