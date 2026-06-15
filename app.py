@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V31_7"
+    "app_V31_9"
 )
 
 BASE_URL = os.environ.get(
@@ -7048,7 +7048,7 @@ def invite_request(invitation_id):
     return f"""
     {nav_links()}
 
-    <h1>Standard Visit Request</h1>
+    <h1>Request a Visit</h1>
 
     <div style="
         display: flex;
@@ -7499,7 +7499,7 @@ def render_request_submitted_page(request_id):
     if invitation_id:
         another_link = f"/invite/{invitation_id}"
     else:
-        another_link = "/"
+        another_link = "/new-request"
 
     nights = date_range_nights(
         request_row["arrival_date"],
@@ -7543,7 +7543,7 @@ def render_request_submitted_page(request_id):
 
     <p>
         <a href="{another_link}">
-            Submit an Additional Request
+            Request a Visit
         </a>
     </p>
 
@@ -9326,6 +9326,7 @@ def bookings_page():
                 <th style="min-width: 140px;">Request Status</th>
                 <th style="min-width: 110px;">Email Status</th>
                 <th style="min-width: 70px;">View</th>
+                <th style="min-width: 110px;">Admin Cancel</th>
             </tr>
         """
 
@@ -9356,7 +9357,7 @@ def bookings_page():
 
                 html += f"""
                 <tr>
-                    <td colspan="12"
+                    <td colspan="13"
                         style="
                             background-color: #eee;
                             font-weight: bold;
@@ -9495,6 +9496,13 @@ def bookings_page():
                 </a>
                 """
 
+                admin_cancel_html = f"""
+                <a href="/request/{booking['request_id']}/admin-cancel-confirmed"
+                   style="color:#dc3545; font-weight:bold;">
+                    Cancel Visit
+                </a>
+                """
+
             else:
 
                 guest_name_html = ""
@@ -9508,6 +9516,8 @@ def bookings_page():
                 email_status_html = ""
 
                 view_html = ""
+
+                admin_cancel_html = ""
 
             html += f"""
             <tr>
@@ -9577,6 +9587,10 @@ def bookings_page():
 
                 <td style="vertical-align: top;">
                     {view_html}
+                </td>
+
+                <td style="vertical-align: top;">
+                    {admin_cancel_html}
                 </td>
 
             </tr>
@@ -13119,6 +13133,231 @@ def approve_change(request_id):
     """
 
     return html
+
+
+@app.route("/request/<int:request_id>/admin-cancel-confirmed", methods=["GET", "POST"])
+def admin_cancel_confirmed_visit(request_id):
+
+    if request.method != "POST":
+        return action_confirmation_page(
+            "Cancel Confirmed Visit",
+            f"Cancel confirmed visit for request {request_id}, release assigned rooms, and send the cancellation email.",
+            f"/request/{request_id}/admin-cancel-confirmed",
+            "/bookings"
+        )
+
+    conn = get_db_connection()
+
+    req = conn.execute("""
+        SELECT
+            booking_requests.*,
+            guest_profiles.primary_name,
+            guest_profiles.primary_email
+        FROM booking_requests
+        LEFT JOIN guest_profiles
+            ON booking_requests.guest_profile_id = guest_profiles.id
+        WHERE booking_requests.id = ?
+    """, (
+        request_id,
+    )).fetchone()
+
+    if not req:
+        conn.close()
+        return profile_error_page(
+            "Request not found.",
+            "/bookings"
+        )
+
+    if safe_text(req["status"]) != "approved":
+        conn.close()
+        return transaction_error_page(
+            "Only approved confirmed visits can be cancelled from Confirmed Stays.",
+            "/bookings"
+        )
+
+    recipient_email = resolve_request_recipient_email(
+        conn,
+        req
+    )
+
+    if not is_valid_email_address(recipient_email):
+        conn.close()
+        return profile_error_page(
+            "Cancellation email was not sent because this guest does not have a valid email address.",
+            f"/request/{request_id}"
+        )
+
+    guest_name = safe_text(req["name"]).strip()
+
+    if not guest_name:
+        guest_name = safe_text(row_value(req, "primary_name")).strip()
+
+    rooms_requested = normalize_rooms_requested(
+        row_value(req, "rooms_requested") or 1
+    )
+
+    nights = date_range_nights(
+        req["arrival_date"],
+        req["departure_date"]
+    )
+
+    subject = "Your Strathmere Visit Cancellation"
+
+    body = f"""Hi {guest_name},
+
+Your Strathmere visit has been cancelled.
+
+Cancelled Visit Details:
+- Arrival: {format_date(req['arrival_date'])}
+- Departure: {format_date(req['departure_date'])}
+- Nights: {nights}
+- Rooms: {rooms_requested}
+
+Thanks for letting us know.
+
+John & Mark
+302-521-5401
+"""
+
+    backup_path = create_database_backup(
+        "before_admin_cancel_confirmed"
+    )
+
+    old_status = safe_text(req["status"])
+
+    try:
+        conn.execute("BEGIN")
+
+        conn.execute("""
+            UPDATE booking_requests
+            SET status = ?,
+                email_status = ?,
+                email_needed_type = ?
+            WHERE id = ?
+        """, (
+            "cancelled",
+            "needs_email",
+            "cancellation",
+            request_id
+        ))
+
+        conn.execute("""
+            DELETE FROM bookings
+            WHERE request_id = ?
+        """, (
+            request_id,
+        ))
+
+        write_activity_log(
+            conn,
+            request_id,
+            "admin_cancel_confirmed_started",
+            old_status,
+            "cancelled",
+            f"Confirmed visit cancelled from Confirmed Stays. Backup: {backup_path}"
+        )
+
+        conn.commit()
+
+    except Exception as error:
+        rollback_and_close(conn)
+        return transaction_error_page(
+            error,
+            "/bookings"
+        )
+
+    try:
+        send_email(
+            recipient_email,
+            subject,
+            body
+        )
+
+        conn.execute("BEGIN")
+
+        conn.execute("""
+            INSERT INTO email_log
+            (request_id, email_type, recipient, subject, body)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            request_id,
+            "cancellation",
+            recipient_email,
+            subject,
+            body
+        ))
+
+        conn.execute("""
+            UPDATE booking_requests
+            SET email_status = ?,
+                email_needed_type = ?
+            WHERE id = ?
+        """, (
+            "sent",
+            "",
+            request_id
+        ))
+
+        write_activity_log(
+            conn,
+            request_id,
+            "admin_cancel_confirmed_email_sent",
+            "cancelled",
+            "cancelled",
+            "Cancellation email sent from Confirmed Stays."
+        )
+
+        conn.commit()
+
+    except Exception as error:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+        conn.close()
+
+        return f"""
+        {nav_links()}
+
+        <h1>Visit Cancelled, Email Needs Attention</h1>
+
+        <p style="color: red; font-weight: bold;">
+            The confirmed visit was cancelled and rooms were released, but the cancellation email did not send.
+        </p>
+
+        <p>
+            Error: {safe_text(error)}
+        </p>
+
+        <p>
+            <a href="/request/{request_id}/email-preview">Preview / Send Cancellation Email</a> |
+            <a href="/bookings">Back to Confirmed Stays</a>
+        </p>
+        """
+
+    conn.close()
+
+    return f"""
+    {nav_links()}
+
+    <h1>Confirmed Visit Cancelled</h1>
+
+    <p style="color: green; font-weight: bold;">
+        The visit was cancelled, assigned rooms were released, and the cancellation email was sent.
+    </p>
+
+    <p>
+        <strong>Guest:</strong> {safe_text(guest_name)}<br>
+        <strong>Email:</strong> {safe_text(recipient_email)}<br>
+        <strong>Subject:</strong> {safe_text(subject)}
+    </p>
+
+    <p>
+        <a href="/bookings">Back to Confirmed Stays</a> |
+        <a href="/request/{request_id}">Open Request</a>
+    </p>
+    """
 
 @app.route("/approve-cancel/<int:request_id>", methods=["GET", "POST"])
 def approve_cancel(request_id):
