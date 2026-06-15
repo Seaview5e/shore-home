@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V31_9"
+    "app_V31_10"
 )
 
 BASE_URL = os.environ.get(
@@ -977,7 +977,7 @@ def plain_text_to_html_email(subject, body):
 
     def final_button_label_is_new_request(button):
 
-        return safe_text(button.get("label")).strip().lower() in ("open new request", "request a visit")
+        return safe_text(button.get("label")).strip().lower() == "open new request"
 
     # De-duplicate buttons while preserving order.
     seen_urls = set()
@@ -986,13 +986,19 @@ def plain_text_to_html_email(subject, body):
     for button in action_buttons:
 
         button_url = button["url"]
+        normalized_button_url = button_url.rstrip("/")
 
+        # V31.10: Do not rewrite invitation links just because their label is
+        # "Request a Visit". Invitation/repeat-visit links must stay on
+        # /invite/<id> so the guest gets the prefilled invitation request flow.
+        # Only true generic root/new-request links should go to /new-request.
         if (
-            final_button_label_is_new_request(button)
-            or button_url.rstrip("/") == BASE_URL.rstrip("/")
-            or button_url.rstrip("/") == (BASE_URL.rstrip("/") + "/")
+            normalized_button_url == BASE_URL.rstrip("/")
+            or normalized_button_url == (BASE_URL.rstrip("/") + "/new-request")
+            or final_button_label_is_new_request(button)
         ):
-            button_url = standard_new_request_url()
+            if "/invite/" not in normalized_button_url:
+                button_url = standard_new_request_url()
 
         if button_url in seen_urls:
             continue
@@ -13134,7 +13140,6 @@ def approve_change(request_id):
 
     return html
 
-
 @app.route("/request/<int:request_id>/admin-cancel-confirmed", methods=["GET", "POST"])
 def admin_cancel_confirmed_visit(request_id):
 
@@ -13358,6 +13363,7 @@ John & Mark
         <a href="/request/{request_id}">Open Request</a>
     </p>
     """
+
 
 @app.route("/approve-cancel/<int:request_id>", methods=["GET", "POST"])
 def approve_cancel(request_id):
