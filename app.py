@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V32_0"
+    "app_V32_1"
 )
 
 BASE_URL = os.environ.get(
@@ -1558,6 +1558,55 @@ def admin_logout():
     return redirect("/admin-login")
 
 
+def compact_admin_table_css():
+
+    return """
+    <style>
+        /* V32.1: tighter admin tables so columns do not overflow. */
+        .shore-admin-nav + br + small + hr + table,
+        table {
+            max-width: 100%;
+            table-layout: fixed;
+        }
+
+        th, td {
+            padding: 4px 6px !important;
+            font-size: 12px;
+            line-height: 1.25;
+            vertical-align: top;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
+        th {
+            white-space: normal;
+        }
+
+        td a, th a {
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
+        td form, td button, td input, td select {
+            max-width: 100%;
+            box-sizing: border-box;
+        }
+
+        .admin-action-cell,
+        td:last-child {
+            width: auto;
+        }
+
+        @media (max-width: 760px) {
+            th, td {
+                padding: 3px 4px !important;
+                font-size: 11px;
+            }
+        }
+    </style>
+    """
+
+
 def nav_links():
 
     guest_path = safe_text(request.path)
@@ -1581,7 +1630,8 @@ def nav_links():
         return ""
 
     return f"""
-    <div style="font-size: 14px; line-height: 1.8;">
+    {compact_admin_table_css()}
+    <div class="shore-admin-nav" style="font-size: 14px; line-height: 1.8;">
         <strong>Workflow:</strong>
         <a href="/dashboard">Dashboard</a> |
         <a href="/invitations">Invitations</a> |
