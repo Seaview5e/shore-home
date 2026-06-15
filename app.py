@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V31_6"
+    "app_V31_7"
 )
 
 BASE_URL = os.environ.get(
@@ -178,7 +178,7 @@ Change Request:
 Cancel Visit:
 {{ cancel_link }}
 
-Start a New Request:
+Request a Visit:
 {{ new_request_link }}
 
 John & Mark
@@ -430,7 +430,7 @@ Change / Review Dates:
 Cancel / Cannot Make These Dates:
 {{ request_link }}
 
-Start a New Request:
+Request a Visit:
 {{ base_url }}
 
 Thanks!
@@ -762,7 +762,7 @@ def email_template_metadata_html(template_key):
 def render_email_template(template_name, **context):
 
     if "base_url" not in context:
-        # Guest-facing email templates use base_url in "Start a New Request" sections.
+        # Guest-facing email templates use base_url in "Request a Visit" sections.
         # Point it to the standard visitor request page, not the app root/dashboard-style page.
         context["base_url"] = standard_new_request_url()
 
@@ -822,19 +822,19 @@ def plain_text_to_html_email(subject, body):
             return "Open Coordination Link"
 
         if "another" in nearby_lower or "new invitation" in nearby_lower:
-            return "Request Another Visit"
+            return "Request a Visit"
 
         if url.rstrip("/") == BASE_URL.rstrip("/"):
-            return "Open New Request"
+            return "Request a Visit"
 
         if "/new-request" in url:
-            return "Open New Request"
+            return "Request a Visit"
 
         if "/invite" in url:
-            return "Request Another Visit"
+            return "Request a Visit"
 
         if "request" in nearby_lower:
-            return "Open New Request"
+            return "Request a Visit"
 
         return "Open Link"
 
@@ -869,9 +869,9 @@ def plain_text_to_html_email(subject, body):
         "Change Request:",
         "Cancel Visit:",
         "Cancel Request:",
-        "Start a New Request:",
-        "Request Another Visit:",
-        "Send a New Invitation:",
+        "Request a Visit:",
+        "Request a Visit:",
+        "Request a Visit:",
         "Change / Review Dates:",
         "Cancel / Cannot Make These Dates:",
         "Open Group:",
@@ -889,9 +889,9 @@ def plain_text_to_html_email(subject, body):
         "━━━━━━━━━━━━━━━━━━",
         "Change Request",
         "Cancel Visit",
-        "Start a New Request",
-        "Request Another Visit",
-        "Send a New Invitation"
+        "Request a Visit",
+        "Request a Visit",
+        "Request a Visit"
     ]
 
     detail_lines = []
@@ -977,7 +977,7 @@ def plain_text_to_html_email(subject, body):
 
     def final_button_label_is_new_request(button):
 
-        return safe_text(button.get("label")).strip().lower() == "open new request"
+        return safe_text(button.get("label")).strip().lower() in ("open new request", "request a visit")
 
     # De-duplicate buttons while preserving order.
     seen_urls = set()
@@ -2762,6 +2762,94 @@ def coordination_round_number(group):
 
 
 
+
+
+def ensure_house_block_columns(conn):
+
+    try:
+        conn.execute("ALTER TABLE blocked_dates ADD COLUMN is_full_block INTEGER DEFAULT 1")
+    except Exception:
+        pass
+
+    try:
+        conn.execute("ALTER TABLE blocked_dates ADD COLUMN rooms_available INTEGER")
+    except Exception:
+        pass
+
+    try:
+        conn.commit()
+    except Exception:
+        pass
+
+
+def block_is_full(block):
+
+    value = row_value(block, "is_full_block")
+
+    if safe_text(value).strip() == "0":
+        return False
+
+    return True
+
+
+def block_rooms_available(block, total_rooms):
+
+    if block_is_full(block):
+        return 0
+
+    try:
+        rooms_available = int(row_value(block, "rooms_available") or total_rooms)
+    except Exception:
+        rooms_available = total_rooms
+
+    if rooms_available < 0:
+        rooms_available = 0
+
+    if rooms_available > total_rooms:
+        rooms_available = total_rooms
+
+    return rooms_available
+
+
+def build_blocked_date_capacity(blocked_rows, total_rooms):
+
+    blocked_dates = set()
+    room_limit_by_date = {}
+
+    for block in blocked_rows:
+
+        try:
+            start = datetime.strptime(block["start_date"], "%Y-%m-%d").date()
+            end = datetime.strptime(block["end_date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+
+        full_block = block_is_full(block)
+        rooms_available = block_rooms_available(block, total_rooms)
+        current = start
+
+        while current <= end:
+            date_key = current.strftime("%Y-%m-%d")
+
+            if full_block or rooms_available <= 0:
+                blocked_dates.add(date_key)
+                room_limit_by_date[date_key] = 0
+            else:
+                existing_limit = room_limit_by_date.get(date_key, total_rooms)
+                room_limit_by_date[date_key] = min(existing_limit, rooms_available)
+
+            current += timedelta(days=1)
+
+    return blocked_dates, room_limit_by_date
+
+
+def room_capacity_limit_for_date(room_limit_by_date, date_key, total_rooms):
+
+    try:
+        return int(room_limit_by_date.get(date_key, total_rooms))
+    except Exception:
+        return total_rooms
+
 def get_coordination_tentative_holds(conn, exclude_group_id=None, expand_rooms=False):
 
     ensure_coordination_tables(conn)
@@ -2886,7 +2974,7 @@ Need to make a change?
 Change Request:
 {change_url}
 {cancel_block}
-Request Another Visit:
+Request a Visit:
 {repeat_visit_url}
 
 ━━━━━━━━━━━━━━━━━━
@@ -3543,6 +3631,8 @@ def dashboard():
         FROM guest_profiles
         WHERE status = 'archived'
     """).fetchone()["count"]
+
+    ensure_house_block_columns(conn)
 
     blocked_ranges = conn.execute("""
         SELECT *
@@ -5684,6 +5774,8 @@ def home():
         selected_year += 1
 
 
+    ensure_house_block_columns(conn)
+
     blocked = conn.execute("""
         SELECT * FROM blocked_dates
         ORDER BY start_date
@@ -5703,17 +5795,10 @@ def home():
 
     conn.close()
 
-    blocked_dates = set()
-
-    for b in blocked:
-        start = datetime.strptime(b["start_date"], "%Y-%m-%d")
-        end = datetime.strptime(b["end_date"], "%Y-%m-%d")
-
-        current = start
-
-        while current <= end:
-            blocked_dates.add(current.strftime("%Y-%m-%d"))
-            current += timedelta(days=1)
+    blocked_dates, room_limit_by_date = build_blocked_date_capacity(
+        blocked,
+        total_rooms
+    )
 
     blocked_list = sorted(blocked_dates)
 
@@ -5781,9 +5866,16 @@ def home():
             if hold_start <= current < hold_end:
                 tentative_rooms_held += int(tentative_hold.get("rooms_held", 1) or 1)
 
-        room_capacity[current.strftime("%Y-%m-%d")] = max(
+        current_date_key = current.strftime("%Y-%m-%d")
+        capacity_limit = room_capacity_limit_for_date(
+            room_limit_by_date,
+            current_date_key,
+            total_rooms
+        )
+
+        room_capacity[current_date_key] = max(
             0,
-            total_rooms - rooms_used - tentative_rooms_held
+            capacity_limit - rooms_used - tentative_rooms_held
         )
 
         current += timedelta(days=1)
@@ -5841,7 +5933,7 @@ def home():
         </a>
     </p>
 
-    <table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse;">
+    <table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse;">
         <tr>
             <th>Sun</th>
             <th>Mon</th>
@@ -5944,15 +6036,15 @@ def home():
             style="
                 background-color: {background};
                 vertical-align: top;
-                width: 42px;
-                height: 32px;
-                font-size: 11px;
+                width: 56px;
+                height: 44px;
+                font-size: 12px;
                 text-align: center;
                 cursor: {cursor};
                 padding: 2px;
             " title="{display_line_1} {display_line_2}">
             <strong>{day}</strong><br>
-            <span style="font-size: 9px;">{display_line_2 if has_tentative_hold else ''}</span>
+            <span style="font-size: 10px;">{display_line_2 if has_tentative_hold else ''}</span>
         </td>
         """
 
@@ -6534,6 +6626,8 @@ def invite_request(invitation_id):
         selected_month = 1
         selected_year += 1
 
+    ensure_house_block_columns(conn)
+
     blocked = conn.execute("""
         SELECT * FROM blocked_dates
         ORDER BY start_date
@@ -6592,17 +6686,10 @@ def invite_request(invitation_id):
 
     conn.close()
 
-    blocked_dates = set()
-
-    for b in blocked:
-        start = datetime.strptime(b["start_date"], "%Y-%m-%d")
-        end = datetime.strptime(b["end_date"], "%Y-%m-%d")
-
-        current = start
-
-        while current <= end:
-            blocked_dates.add(current.strftime("%Y-%m-%d"))
-            current += timedelta(days=1)
+    blocked_dates, room_limit_by_date = build_blocked_date_capacity(
+        blocked,
+        total_rooms
+    )
 
     blocked_list = sorted(blocked_dates)
 
@@ -6670,9 +6757,16 @@ def invite_request(invitation_id):
             if hold_start <= current < hold_end:
                 tentative_rooms_held += int(tentative_hold.get("rooms_held", 1) or 1)
 
-        room_capacity[current.strftime("%Y-%m-%d")] = max(
+        current_date_key = current.strftime("%Y-%m-%d")
+        capacity_limit = room_capacity_limit_for_date(
+            room_limit_by_date,
+            current_date_key,
+            total_rooms
+        )
+
+        room_capacity[current_date_key] = max(
             0,
-            total_rooms - rooms_used - tentative_rooms_held
+            capacity_limit - rooms_used - tentative_rooms_held
         )
 
         current += timedelta(days=1)
@@ -6692,7 +6786,7 @@ def invite_request(invitation_id):
         </a>
     </p>
 
-    <table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse; width: 100%; max-width: 760px;">
+    <table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; max-width: 760px;">
         <tr>
             <th>Sun</th>
             <th>Mon</th>
@@ -6795,15 +6889,15 @@ def invite_request(invitation_id):
             style="
                 background-color: {background};
                 vertical-align: top;
-                width: 42px;
-                height: 32px;
-                font-size: 11px;
+                width: 56px;
+                height: 44px;
+                font-size: 12px;
                 text-align: center;
                 cursor: {cursor};
                 padding: 2px;
             " title="{display_line_1} {display_line_2}">
             <strong>{day}</strong><br>
-            <span style="font-size: 9px;">{display_line_2 if has_tentative_hold else ''}</span>
+            <span style="font-size: 10px;">{display_line_2 if has_tentative_hold else ''}</span>
         </td>
         """
 
@@ -7625,6 +7719,8 @@ def submit():
             "javascript:history.back()"
         )
 
+    ensure_house_block_columns(conn)
+
     blocked = conn.execute("""
         SELECT * FROM blocked_dates
         ORDER BY start_date
@@ -8204,11 +8300,14 @@ def approve_request(request_id):
 
             current_check_date += timedelta(days=1)
 
+    ensure_house_block_columns(conn)
+
     blocked_conflict = conn.execute("""
         SELECT *
         FROM blocked_dates
         WHERE start_date < ?
           AND end_date > ?
+          AND COALESCE(is_full_block, 1) = 1
     """, (
         effective_departure_date,
         effective_arrival_date
@@ -12705,11 +12804,14 @@ def approve_change(request_id):
         </p>
         """
 
+    ensure_house_block_columns(conn)
+
     blocked_conflict = conn.execute("""
         SELECT *
         FROM blocked_dates
         WHERE start_date < ?
           AND end_date > ?
+          AND COALESCE(is_full_block, 1) = 1
     """, (
         effective_departure_date,
         effective_arrival_date
@@ -13546,11 +13648,14 @@ def edit_request(request_id):
             </p>
             """
 
+        ensure_house_block_columns(conn)
+
         blocked_conflict = conn.execute("""
             SELECT *
             FROM blocked_dates
             WHERE start_date < ?
               AND end_date > ?
+              AND COALESCE(is_full_block, 1) = 1
         """, (
             departure_date,
             arrival_date
@@ -14233,24 +14338,47 @@ def room_assignments_page():
 @app.route("/blocked", methods=["GET", "POST"])
 def blocked_page():
     conn = get_db_connection()
+    ensure_house_block_columns(conn)
     error_message = ""
 
     if request.method == "POST":
         start_date = clean_text(request.form.get("start_date"))
         end_date = clean_text(request.form.get("end_date"))
         reason = clean_text(request.form.get("reason"))
+        block_type = clean_text(request.form.get("block_type") or "full")
+        rooms_available_text = clean_text(request.form.get("rooms_available"))
 
-        if not valid_date_range(start_date, end_date):
+        is_full_block = 1
+        rooms_available = 0
+
+        if block_type == "partial":
+            is_full_block = 0
+            try:
+                rooms_available = int(rooms_available_text)
+            except Exception:
+                rooms_available = 0
+
+            total_rooms_row = conn.execute("SELECT COUNT(*) AS count FROM rooms").fetchone()
+            total_rooms_for_block = int(total_rooms_row["count"] or 4)
+
+            if rooms_available < 1 or rooms_available >= total_rooms_for_block:
+                error_message = "Partial house block must leave at least 1 room available and fewer than the full house room count."
+
+        if error_message:
+            pass
+        elif not valid_date_range(start_date, end_date):
             error_message = "Start date and end date are required, and end date cannot be before start date."
         else:
             conn.execute("""
                 INSERT INTO blocked_dates
-                (start_date, end_date, reason)
-                VALUES (?, ?, ?)
+                (start_date, end_date, reason, is_full_block, rooms_available)
+                VALUES (?, ?, ?, ?, ?)
             """, (
                 start_date,
                 end_date,
-                reason
+                reason,
+                is_full_block,
+                rooms_available
             ))
 
             conn.commit()
@@ -14288,6 +14416,15 @@ def blocked_page():
         <label>End Date:</label><br>
         <input type="date" name="end_date" required><br>
 
+        <label>Block Type:</label><br>
+        <select name="block_type">
+            <option value="full">Full house block (calendar pink / unavailable)</option>
+            <option value="partial">Partial capacity limit (calendar not pink)</option>
+        </select><br>
+
+        <label>Rooms Available During Block (partial only):</label><br>
+        <input type="number" name="rooms_available" min="1" max="4"><br>
+
         <label>Reason:</label><br>
         <input type="text" name="reason"><br>
 
@@ -14309,6 +14446,8 @@ def blocked_page():
             <tr style="background-color: #f2f2f2;">
                 <th>Start</th>
                 <th>End</th>
+                <th>Type</th>
+                <th>Rooms Available</th>
                 <th>Reason</th>
                 <th>Action</th>
             </tr>
@@ -14331,6 +14470,9 @@ def blocked_page():
             else:
                 end_short = "Invalid / blank"
 
+            block_type_label = "Full Block" if block_is_full(block) else "Partial Capacity"
+            rooms_available_label = "0" if block_is_full(block) else safe_text(block_rooms_available(block, 4))
+
             invalid_note = ""
 
             if not parsed_start or not parsed_end:
@@ -14340,6 +14482,8 @@ def blocked_page():
             <tr>
                 <td>{safe_text(start_short)}</td>
                 <td>{safe_text(end_short)}</td>
+                <td>{safe_text(block_type_label)}</td>
+                <td>{safe_text(rooms_available_label)}</td>
                 <td>{safe_text(block['reason'])}{invalid_note}</td>
                 <td>
                     <a href="/blocked/{block['id']}/edit">Edit</a>
@@ -14374,6 +14518,7 @@ def delete_blocked(block_id):
 @app.route("/blocked/<int:block_id>/edit", methods=["GET", "POST"])
 def edit_blocked(block_id):
     conn = get_db_connection()
+    ensure_house_block_columns(conn)
 
     block = conn.execute(
         "SELECT * FROM blocked_dates WHERE id = ?",
@@ -14393,20 +14538,44 @@ def edit_blocked(block_id):
         start_date = clean_text(request.form.get("start_date"))
         end_date = clean_text(request.form.get("end_date"))
         reason = clean_text(request.form.get("reason"))
+        block_type = clean_text(request.form.get("block_type") or "full")
+        rooms_available_text = clean_text(request.form.get("rooms_available"))
 
-        if not valid_date_range(start_date, end_date):
+        is_full_block = 1
+        rooms_available = 0
+
+        if block_type == "partial":
+            is_full_block = 0
+            try:
+                rooms_available = int(rooms_available_text)
+            except Exception:
+                rooms_available = 0
+
+            total_rooms_row = conn.execute("SELECT COUNT(*) AS count FROM rooms").fetchone()
+            total_rooms_for_block = int(total_rooms_row["count"] or 4)
+
+            if rooms_available < 1 or rooms_available >= total_rooms_for_block:
+                error_message = "Partial house block must leave at least 1 room available and fewer than the full house room count."
+
+        if error_message:
+            pass
+        elif not valid_date_range(start_date, end_date):
             error_message = "Start date and end date are required, and end date cannot be before start date."
         else:
             conn.execute("""
                 UPDATE blocked_dates
                 SET start_date = ?,
                     end_date = ?,
-                    reason = ?
+                    reason = ?,
+                    is_full_block = ?,
+                    rooms_available = ?
                 WHERE id = ?
             """, (
                 start_date,
                 end_date,
                 reason,
+                is_full_block,
+                rooms_available,
                 block_id
             ))
 
@@ -14418,6 +14587,9 @@ def edit_blocked(block_id):
     start_value = safe_text(block["start_date"]).strip()
     end_value = safe_text(block["end_date"]).strip()
     reason_value = safe_text(block["reason"]).strip()
+    full_selected = "selected" if block_is_full(block) else ""
+    partial_selected = "selected" if not block_is_full(block) else ""
+    rooms_available_value = "" if block_is_full(block) else safe_text(block_rooms_available(block, 4))
 
     error_html = ""
 
@@ -14439,6 +14611,15 @@ def edit_blocked(block_id):
 
         <label>End Date:</label><br>
         <input type="date" name="end_date" value="{safe_text(end_value)}" required><br>
+
+        <label>Block Type:</label><br>
+        <select name="block_type">
+            <option value="full" {full_selected}>Full house block (calendar pink / unavailable)</option>
+            <option value="partial" {partial_selected}>Partial capacity limit (calendar not pink)</option>
+        </select><br>
+
+        <label>Rooms Available During Block (partial only):</label><br>
+        <input type="number" name="rooms_available" min="1" max="4" value="{safe_text(rooms_available_value)}"><br>
 
         <label>Reason:</label><br>
         <input type="text" name="reason" value="{safe_text(reason_value)}"><br>
@@ -15069,6 +15250,8 @@ def coordinate_request(invitation_id):
         selected_month = 1
         selected_year += 1
 
+    ensure_house_block_columns(conn)
+
     blocked_rows = conn.execute("""
         SELECT
             start_date,
@@ -15352,7 +15535,7 @@ Coordinating With:
     </p>
 
     <table border="1"
-           cellpadding="3"
+           cellpadding="5"
            cellspacing="0"
            style="
                border-collapse: collapse;
@@ -16384,7 +16567,7 @@ def change_request_bad_link(request_id):
 
     <p>Use the new request link from the email, or reply to the email and I’ll help fix it.</p>
 
-    <p><a href="/">Start a New Request</a></p>
+    <p><a href="/">Request a Visit</a></p>
     """
 
 
@@ -16674,6 +16857,8 @@ Change Notes:
         selected_month = 1
         selected_year += 1
 
+    ensure_house_block_columns(conn)
+
     blocked = conn.execute("""
         SELECT * FROM blocked_dates
         ORDER BY start_date
@@ -16696,17 +16881,10 @@ Change Notes:
 
     conn.close()
 
-    blocked_dates = set()
-
-    for b in blocked:
-        start = datetime.strptime(b["start_date"], "%Y-%m-%d")
-        end = datetime.strptime(b["end_date"], "%Y-%m-%d")
-
-        current = start
-
-        while current <= end:
-            blocked_dates.add(current.strftime("%Y-%m-%d"))
-            current += timedelta(days=1)
+    blocked_dates, room_limit_by_date = build_blocked_date_capacity(
+        blocked,
+        total_rooms
+    )
 
     blocked_list = sorted(blocked_dates)
 
@@ -16774,9 +16952,16 @@ Change Notes:
             if hold_start <= current < hold_end:
                 tentative_rooms_held += int(tentative_hold.get("rooms_held", 1) or 1)
 
-        room_capacity[current.strftime("%Y-%m-%d")] = max(
+        current_date_key = current.strftime("%Y-%m-%d")
+        capacity_limit = room_capacity_limit_for_date(
+            room_limit_by_date,
+            current_date_key,
+            total_rooms
+        )
+
+        room_capacity[current_date_key] = max(
             0,
-            total_rooms - rooms_used - tentative_rooms_held
+            capacity_limit - rooms_used - tentative_rooms_held
         )
 
         current += timedelta(days=1)
@@ -16801,7 +16986,7 @@ Change Notes:
         The calendar checks blocked days, approved bookings, and coordination holds.
     </p>
 
-    <table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse; width: 100%; max-width: 920px; font-size: 12px;">
+    <table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; max-width: 920px; font-size: 12px;">
         <tr style="background-color: #f5f5f5;">
             <th>Sun</th>
             <th>Mon</th>
@@ -20734,6 +20919,8 @@ def coordination_group_follow_up_unmatched_preview(group_id):
         WHERE status = 'approved'
     """).fetchall()
 
+    ensure_house_block_columns(conn)
+
     blocked_ranges = conn.execute("""
         SELECT start_date, end_date
         FROM blocked_dates
@@ -20899,6 +21086,8 @@ def coordination_group_send_follow_up_unmatched(group_id):
         FROM bookings
         WHERE status = 'approved'
     """).fetchall()
+
+    ensure_house_block_columns(conn)
 
     blocked_ranges = conn.execute("""
         SELECT start_date, end_date
@@ -21437,6 +21626,8 @@ def coordination_group_member_request(member_id):
         selected_month = 1
         selected_year += 1
 
+    ensure_house_block_columns(conn)
+
     blocked = conn.execute("""
         SELECT * FROM blocked_dates
         ORDER BY start_date
@@ -21571,17 +21762,10 @@ def coordination_group_member_request(member_id):
 
     conn.close()
 
-    blocked_dates = set()
-
-    for b in blocked:
-        start = datetime.strptime(b["start_date"], "%Y-%m-%d")
-        end = datetime.strptime(b["end_date"], "%Y-%m-%d")
-
-        current = start
-
-        while current <= end:
-            blocked_dates.add(current.strftime("%Y-%m-%d"))
-            current += timedelta(days=1)
+    blocked_dates, room_limit_by_date = build_blocked_date_capacity(
+        blocked,
+        total_rooms
+    )
 
     blocked_list = sorted(blocked_dates)
 
@@ -21715,9 +21899,9 @@ def coordination_group_member_request(member_id):
             style="
                 background-color: {background};
                 vertical-align: top;
-                width: 42px;
-                height: 32px;
-                font-size: 11px;
+                width: 56px;
+                height: 44px;
+                font-size: 12px;
                 text-align: center;
                 cursor: {cursor};
                 padding: 2px;
@@ -24676,7 +24860,7 @@ Change / Review Dates:
 Cancel / Cannot Make These Dates:
 {update_link}
 
-Start a New Request:
+Request a Visit:
 {standard_new_request_url()}
 
 Nothing is fully booked yet. This just helps us coordinate the group before final approvals.
