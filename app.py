@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V32_1"
+    "app_V32_2"
 )
 
 BASE_URL = os.environ.get(
@@ -20232,6 +20232,24 @@ def coordination_group_detail(group_id):
         </small>
     </div>
 
+    <div style="
+        background-color: #fff3cd;
+        border: 1px solid #ffc107;
+        padding: 10px;
+        border-radius: 8px;
+        margin-bottom: 14px;
+        max-width: 1080px;
+        font-size: 13px;
+    ">
+        <strong>Admin Cleanup:</strong>
+        <a href="/coordination-group/{group_id}/delete"
+           style="color:#842029; font-weight:bold; margin-left:8px;">
+            Delete Coordination Process
+        </a>
+        <br>
+        <small>Deletes the planning/coordination process only. Guest profiles are never deleted. Confirmed bookings block deletion.</small>
+    </div>
+
     {planning_workflow_html}
 
     <h2>Current Coordination Status</h2>
@@ -20458,6 +20476,125 @@ def coordination_group_detail(group_id):
     return html
 
 
+
+
+
+@app.route("/coordination-group/<int:group_id>/delete", methods=["GET", "POST"])
+def coordination_group_delete(group_id):
+
+    conn = get_db_connection()
+    ensure_coordination_tables(conn)
+
+    group = conn.execute("""
+        SELECT *
+        FROM coordination_groups
+        WHERE id = ?
+    """, (group_id,)).fetchone()
+
+    if not group:
+        conn.close()
+        return f"""
+        {nav_links()}
+        <h1>Coordination Group Not Found</h1>
+        <p><a href="/coordination-groups">Back to Coordination Groups</a></p>
+        """
+
+    members = conn.execute("""
+        SELECT id, converted_request_id
+        FROM coordination_group_members
+        WHERE coordination_group_id = ?
+    """, (group_id,)).fetchall()
+
+    converted_request_ids = [
+        safe_text(member["converted_request_id"]).strip()
+        for member in members
+        if safe_text(member["converted_request_id"]).strip().isdigit()
+    ]
+
+    approved_booking_count = 0
+
+    if converted_request_ids:
+        placeholders = ",".join(["?"] * len(converted_request_ids))
+        approved_booking_count = conn.execute(f"""
+            SELECT COUNT(*) AS count
+            FROM bookings
+            WHERE request_id IN ({placeholders})
+              AND status = 'approved'
+        """, converted_request_ids).fetchone()["count"]
+
+    if approved_booking_count:
+        conn.close()
+        return f"""
+        {nav_links()}
+        <h1>Coordination Process Not Deleted</h1>
+        <div style="background:#f8d7da; border:2px solid #dc3545; padding:12px; border-radius:8px; max-width:850px;">
+            <p style="font-weight:bold; margin-top:0;">This coordination group has confirmed/approved bookings.</p>
+            <p>Cancel or remove those confirmed stays first. This safety check prevents deleting planning history while bookings still exist.</p>
+        </div>
+        <p><a href="/coordination-group/{group_id}/handoff">Back to Booking Handoff</a></p>
+        <p><a href="/coordination-group/{group_id}">Back to Planning Page</a></p>
+        """
+
+    if request.method != "POST":
+        conn.close()
+        return action_confirmation_page(
+            "Delete Coordination Process",
+            f"Delete coordination group '{safe_text(group['title'])}' and its planning responses/date options? Guest profiles will not be deleted. Converted booking requests without approved bookings will be unlinked, not deleted.",
+            f"/coordination-group/{group_id}/delete",
+            f"/coordination-group/{group_id}"
+        )
+
+    backup_path = create_database_backup(
+        f"before_delete_coordination_group_{group_id}"
+    )
+
+    try:
+        if converted_request_ids:
+            placeholders = ",".join(["?"] * len(converted_request_ids))
+            conn.execute(f"""
+                UPDATE booking_requests
+                SET coordination_group_id = NULL,
+                    coordination_group_member_id = NULL
+                WHERE id IN ({placeholders})
+            """, converted_request_ids)
+
+        conn.execute("""
+            DELETE FROM coordination_date_options
+            WHERE coordination_group_member_id IN (
+                SELECT id
+                FROM coordination_group_members
+                WHERE coordination_group_id = ?
+            )
+        """, (group_id,))
+
+        conn.execute("""
+            DELETE FROM coordination_group_members
+            WHERE coordination_group_id = ?
+        """, (group_id,))
+
+        conn.execute("""
+            DELETE FROM coordination_groups
+            WHERE id = ?
+        """, (group_id,))
+
+        conn.commit()
+        conn.close()
+
+    except Exception as error:
+        rollback_and_close(conn)
+        return transaction_error_page(
+            error,
+            f"/coordination-group/{group_id}"
+        )
+
+    return f"""
+    {nav_links()}
+    <h1>Coordination Process Deleted</h1>
+    <p>The coordination process was deleted.</p>
+    <p>Guest profiles were preserved.</p>
+    <p>Backup created before deletion: <code>{safe_text(backup_path)}</code></p>
+    <p><a href="/coordination-groups">Back to Coordination Groups</a></p>
+    """
 
 
 @app.route("/coordination-group/<int:group_id>/handoff")
