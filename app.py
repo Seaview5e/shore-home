@@ -2072,31 +2072,12 @@ def build_coordination_match_suggestions(date_options, approved_bookings, blocke
     if not date_options:
         return []
 
-    blocked_dates = set()
-
-    for block in blocked_ranges:
-
-        try:
-            current = datetime.strptime(
-                block["start_date"],
-                "%Y-%m-%d"
-            ).date()
-
-            end = datetime.strptime(
-                block["end_date"],
-                "%Y-%m-%d"
-            ).date()
-
-        except:
-            continue
-
-        while current <= end:
-
-            blocked_dates.add(
-                current.strftime("%Y-%m-%d")
-            )
-
-            current += timedelta(days=1)
+    # V31.8: House blocks may be full blocks or partial room-capacity limits.
+    # Full blocks make dates unavailable; partial blocks only reduce room capacity.
+    blocked_dates, room_limit_by_date = build_blocked_date_capacity(
+        blocked_ranges,
+        total_rooms
+    )
 
     approved_by_date = {}
 
@@ -2301,7 +2282,13 @@ def build_coordination_match_suggestions(date_options, approved_bookings, blocke
                         f"{format_date(date_string)} is blocked"
                     )
 
-                rooms_open = total_rooms - approved_by_date.get(date_string, 0)
+                capacity_limit = room_capacity_limit_for_date(
+                    room_limit_by_date,
+                    date_string,
+                    total_rooms
+                )
+
+                rooms_open = capacity_limit - approved_by_date.get(date_string, 0)
 
                 if rooms_open < min_rooms_open:
                     min_rooms_open = rooms_open
@@ -4021,10 +4008,16 @@ def dashboard():
             )
         ).days
 
-    blocked_dates = set()
+    blocked_dates, room_limit_by_date = build_blocked_date_capacity(
+        blocked_ranges,
+        total_rooms
+    )
     blocked_reasons_by_date = {}
 
     for block in blocked_ranges:
+
+        if not block_is_full(block):
+            continue
 
         start = parse_iso_date_safe(block["start_date"])
         end = parse_iso_date_safe(block["end_date"])
@@ -4043,7 +4036,6 @@ def dashboard():
         while current <= end:
 
             current_date_key = current.strftime("%Y-%m-%d")
-            blocked_dates.add(current_date_key)
 
             if block_reason:
                 blocked_reasons_by_date[current_date_key] = block_reason
@@ -4285,7 +4277,13 @@ def dashboard():
                 </div>
                 """
 
-        rooms_open = total_rooms - rooms_used - tentative_hold_rooms
+        capacity_limit = room_capacity_limit_for_date(
+            room_limit_by_date,
+            current_date_str,
+            total_rooms
+        )
+
+        rooms_open = capacity_limit - rooms_used - tentative_hold_rooms
 
         blocked_reason_html = ""
 
@@ -7726,17 +7724,10 @@ def submit():
         ORDER BY start_date
     """).fetchall()
 
-    blocked_dates = set()
-
-    for b in blocked:
-        start = datetime.strptime(b["start_date"], "%Y-%m-%d")
-        end = datetime.strptime(b["end_date"], "%Y-%m-%d")
-
-        current = start
-
-        while current <= end:
-            blocked_dates.add(current.strftime("%Y-%m-%d"))
-            current += timedelta(days=1)
+    blocked_dates, room_limit_by_date = build_blocked_date_capacity(
+        blocked,
+        int(conn.execute("SELECT COUNT(*) AS count FROM rooms").fetchone()["count"] or 4)
+    )
 
     bookings = conn.execute("""
         SELECT arrival_date, departure_date
@@ -7794,7 +7785,13 @@ def submit():
             if booking_start <= current < booking_end:
                 rooms_used += 1
 
-        rooms_open = total_rooms - rooms_used
+        capacity_limit = room_capacity_limit_for_date(
+            room_limit_by_date,
+            date_str,
+            total_rooms
+        )
+
+        rooms_open = capacity_limit - rooms_used
 
         if rooms_open < rooms_requested:
             conn.close()
@@ -8230,6 +8227,17 @@ def approve_request(request_id):
 
     total_rooms = int(total_rooms_row["count"] or 4)
 
+    ensure_house_block_columns(conn)
+    blocked_for_capacity = conn.execute("""
+        SELECT *
+        FROM blocked_dates
+        ORDER BY start_date
+    """).fetchall()
+    blocked_dates_for_capacity, room_limit_by_date = build_blocked_date_capacity(
+        blocked_for_capacity,
+        total_rooms
+    )
+
     try:
         check_start = datetime.strptime(effective_arrival_date, "%Y-%m-%d").date()
         check_end = datetime.strptime(effective_departure_date, "%Y-%m-%d").date()
@@ -8272,7 +8280,13 @@ def approve_request(request_id):
                 if hold_start <= current_check_date < hold_end:
                     tentative_rooms_held += hold_rooms
 
-            rooms_open_after_holds = total_rooms - approved_rooms_used - tentative_rooms_held
+            capacity_limit = room_capacity_limit_for_date(
+                room_limit_by_date,
+                current_date_string,
+                total_rooms
+            )
+
+            rooms_open_after_holds = capacity_limit - approved_rooms_used - tentative_rooms_held
 
             if rooms_open_after_holds < rooms_requested:
 
@@ -12805,6 +12819,94 @@ def approve_change(request_id):
         """
 
     ensure_house_block_columns(conn)
+
+    total_rooms_row = conn.execute("""
+        SELECT COUNT(*) AS count
+        FROM rooms
+    """).fetchone()
+    total_rooms = int(total_rooms_row["count"] or 4)
+
+    blocked_for_capacity = conn.execute("""
+        SELECT *
+        FROM blocked_dates
+        ORDER BY start_date
+    """).fetchall()
+    blocked_dates_for_capacity, room_limit_by_date = build_blocked_date_capacity(
+        blocked_for_capacity,
+        total_rooms
+    )
+
+    tentative_holds = get_coordination_tentative_holds(conn)
+
+    try:
+        check_start = datetime.strptime(effective_arrival_date, "%Y-%m-%d").date()
+        check_end = datetime.strptime(effective_departure_date, "%Y-%m-%d").date()
+    except Exception:
+        check_start = None
+        check_end = None
+
+    if check_start and check_end:
+
+        current_check_date = check_start
+
+        while current_check_date < check_end:
+
+            current_date_string = current_check_date.strftime("%Y-%m-%d")
+
+            approved_rooms_used_row = conn.execute("""
+                SELECT COUNT(*) AS count
+                FROM bookings
+                WHERE status = 'approved'
+                  AND request_id != ?
+                  AND arrival_date <= ?
+                  AND departure_date > ?
+            """, (
+                request_id,
+                current_date_string,
+                current_date_string
+            )).fetchone()
+
+            approved_rooms_used = int(approved_rooms_used_row["count"] or 0)
+            tentative_rooms_held = 0
+
+            for tentative_hold in tentative_holds:
+                try:
+                    hold_start = datetime.strptime(tentative_hold["arrival_date"], "%Y-%m-%d").date()
+                    hold_end = datetime.strptime(tentative_hold["departure_date"], "%Y-%m-%d").date()
+                    hold_rooms = int(tentative_hold.get("rooms_held", 1) or 1)
+                except Exception:
+                    continue
+
+                if hold_start <= current_check_date < hold_end:
+                    tentative_rooms_held += hold_rooms
+
+            capacity_limit = room_capacity_limit_for_date(
+                room_limit_by_date,
+                current_date_string,
+                total_rooms
+            )
+
+            rooms_open_after_holds = capacity_limit - approved_rooms_used - tentative_rooms_held
+
+            if rooms_open_after_holds < rooms_requested:
+
+                conn.close()
+
+                return f"""
+                <h2>Not enough room capacity for those changed dates.</h2>
+
+                <p>
+                    {format_date(current_date_string)} has only
+                    {rooms_open_after_holds} room(s) open after house blocks,
+                    approved bookings, and tentative coordination holds are counted.
+                </p>
+
+                <p>
+                    <a href='/request/{request_id}'>Done</a>
+                </p>
+                """
+
+            current_check_date += timedelta(days=1)
 
     blocked_conflict = conn.execute("""
         SELECT *
@@ -18213,7 +18315,7 @@ def coordination_group_detail(group_id):
     """).fetchall()
 
     blocked_ranges_for_matching = conn.execute("""
-        SELECT start_date, end_date
+        SELECT *
         FROM blocked_dates
         ORDER BY start_date
     """).fetchall()
@@ -20668,7 +20770,7 @@ def coordination_group_email_preview(group_id):
     """).fetchall()
 
     blocked_ranges_for_matching = conn.execute("""
-        SELECT start_date, end_date
+        SELECT *
         FROM blocked_dates
         ORDER BY start_date
     """).fetchall()
@@ -20922,7 +21024,7 @@ def coordination_group_follow_up_unmatched_preview(group_id):
     ensure_house_block_columns(conn)
 
     blocked_ranges = conn.execute("""
-        SELECT start_date, end_date
+        SELECT *
         FROM blocked_dates
     """).fetchall()
 
@@ -21090,7 +21192,7 @@ def coordination_group_send_follow_up_unmatched(group_id):
     ensure_house_block_columns(conn)
 
     blocked_ranges = conn.execute("""
-        SELECT start_date, end_date
+        SELECT *
         FROM blocked_dates
     """).fetchall()
 
@@ -21360,7 +21462,7 @@ def coordination_group_send_update_email(group_id):
     """).fetchall()
 
     blocked_ranges_for_matching = conn.execute("""
-        SELECT start_date, end_date
+        SELECT *
         FROM blocked_dates
         ORDER BY start_date
     """).fetchall()
@@ -21815,7 +21917,17 @@ def coordination_group_member_request(member_id):
             if booking_start <= current < booking_end:
                 rooms_used += 1
 
-        room_capacity[current.strftime("%Y-%m-%d")] = total_rooms - rooms_used
+        current_date_key = current.strftime("%Y-%m-%d")
+        capacity_limit = room_capacity_limit_for_date(
+            room_limit_by_date,
+            current_date_key,
+            total_rooms
+        )
+
+        room_capacity[current_date_key] = max(
+            0,
+            capacity_limit - rooms_used
+        )
 
         current += timedelta(days=1)
 
