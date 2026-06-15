@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V31_10"
+    "app_V31_11"
 )
 
 BASE_URL = os.environ.get(
@@ -5569,38 +5569,96 @@ def admin_reset_test_data_counts(conn):
     for table_name in table_names:
 
         try:
-            count = conn.execute(
-                f"SELECT COUNT(*) AS count FROM {table_name}"
-            ).fetchone()["count"]
+            row = conn.execute(
+                f"SELECT COUNT(*) AS count, MAX(id) AS max_id FROM {table_name}"
+            ).fetchone()
+            count = row["count"]
+            max_id = row["max_id"]
         except Exception:
             count = "missing"
+            max_id = "missing"
 
-        counts.append((
-            table_name,
-            count
-        ))
+        counts.append({
+            "table_name": table_name,
+            "count": count,
+            "max_id": max_id
+        })
 
     return counts
+
+
+def admin_reset_test_data_snapshot(counts):
+
+    snapshot = {}
+
+    for row in counts:
+
+        snapshot[row["table_name"]] = (
+            safe_text(row["count"]),
+            safe_text(row["max_id"])
+        )
+
+    return snapshot
+
+
+def admin_reset_test_data_preserved_ok(before_counts, after_counts):
+
+    preserved_tables = [
+        "guest_profiles",
+        "rooms",
+        "blocked_dates"
+    ]
+
+    before_snapshot = admin_reset_test_data_snapshot(before_counts)
+    after_snapshot = admin_reset_test_data_snapshot(after_counts)
+    problems = []
+
+    for table_name in preserved_tables:
+
+        if before_snapshot.get(table_name) != after_snapshot.get(table_name):
+            problems.append(
+                f"{table_name} changed from {before_snapshot.get(table_name)} to {after_snapshot.get(table_name)}"
+            )
+
+    return (
+        len(problems) == 0,
+        problems
+    )
 
 
 def admin_reset_test_data_counts_html(counts):
 
     rows = ""
 
-    for table_name, count in counts:
+    preserved_tables = {
+        "guest_profiles",
+        "rooms",
+        "blocked_dates"
+    }
+
+    for row in counts:
+
+        table_name = row["table_name"]
+        count = row["count"]
+        max_id = row["max_id"]
+        role = "Preserved" if table_name in preserved_tables else "Cleared"
 
         rows += f"""
         <tr>
             <td>{safe_text(table_name)}</td>
+            <td>{safe_text(role)}</td>
             <td>{safe_text(count)}</td>
+            <td>{safe_text(max_id)}</td>
         </tr>
         """
 
     return f"""
-    <table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; max-width: 560px; width: 100%;">
+    <table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; max-width: 760px; width: 100%;">
         <tr style="background-color: #f5f5f5;">
             <th align="left">Table</th>
+            <th align="left">Reset Role</th>
             <th align="left">Rows</th>
+            <th align="left">Max ID</th>
         </tr>
         {rows}
     </table>
@@ -5637,9 +5695,10 @@ def admin_reset_test_data():
 
             <p>
                 A database backup will be created automatically before the reset runs.
+                The backup is copied outward only; this tool never restores or copies an older database back over the current one.
             </p>
 
-            <p><strong>Preserved:</strong> guest_profiles, rooms, blocked_dates</p>
+            <p><strong>Preserved and verified before/after:</strong> guest_profiles, rooms, blocked_dates</p>
             <p><strong>Cleared:</strong> invitations, booking_requests, bookings, coordination tables, activity_log, email_log</p>
         </div>
 
@@ -5681,6 +5740,8 @@ def admin_reset_test_data():
             backup_filename
         )
 
+        # Backup is copy-out only. This reset tool must never copy or restore
+        # a database file back over DATABASE_FILE.
         shutil.copy2(
             DATABASE_FILE,
             backup_path
@@ -5701,18 +5762,29 @@ def admin_reset_test_data():
         conn.commit()
 
         after_counts = admin_reset_test_data_counts(conn)
+        preserved_ok, preserved_problems = admin_reset_test_data_preserved_ok(
+            before_counts,
+            after_counts
+        )
         conn.close()
 
         before_html = admin_reset_test_data_counts_html(before_counts)
         after_html = admin_reset_test_data_counts_html(after_counts)
+
+        if preserved_ok:
+            preserved_message = "Operational test data was cleared. Guest profiles, rooms, and blocked dates were preserved."
+            preserved_color = "green"
+        else:
+            preserved_message = "RESET WARNING: Preserved table counts changed. Review before continuing: " + " | ".join(preserved_problems)
+            preserved_color = "red"
 
         return f"""
         {nav_links()}
 
         <h1>Reset Test Data Complete</h1>
 
-        <p style="color: green; font-weight: bold;">
-            Operational test data was cleared. Guest profiles, rooms, and blocked dates were preserved.
+        <p style="color: {preserved_color}; font-weight: bold;">
+            {safe_text(preserved_message)}
         </p>
 
         <p>
