@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V31_11"
+    "app_V32_0"
 )
 
 BASE_URL = os.environ.get(
@@ -5304,6 +5304,201 @@ def route_safety_diagnostics_summary():
         return False, "Route safety diagnostics failed: " + safe_text(error)
 
 
+
+def database_schema_diagnostics_summary():
+
+    required_columns = {
+        "guest_profiles": ["id", "primary_name", "primary_email", "status"],
+        "rooms": ["id", "name"],
+        "blocked_dates": ["id", "start_date", "end_date", "is_full_block", "rooms_available"],
+        "invitations": ["id", "guest_profile_id"],
+        "booking_requests": ["id", "name", "email", "arrival_date", "departure_date", "status", "rooms_requested", "invitation_id"],
+        "bookings": ["id", "request_id", "room_id", "arrival_date", "departure_date", "status"],
+        "coordination_groups": ["id", "title", "status", "tentative_arrival_date", "tentative_departure_date"],
+        "coordination_group_members": ["id", "coordination_group_id", "guest_profile_id", "invitation_status"],
+        "coordination_date_options": ["id", "coordination_group_member_id", "arrival_date", "departure_date", "rooms_requested"],
+        "activity_log": ["id", "action_type", "created_at"],
+        "email_log": ["id"]
+    }
+
+    conn = None
+
+    try:
+        conn = get_db_connection()
+        existing_tables = set(
+            row["name"]
+            for row in conn.execute("""
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'table'
+            """).fetchall()
+        )
+
+        problems = []
+
+        for table_name, columns in required_columns.items():
+
+            if table_name not in existing_tables:
+                problems.append(f"missing table {table_name}")
+                continue
+
+            table_columns = set(
+                row["name"]
+                for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+            )
+
+            for column_name in columns:
+                if column_name not in table_columns:
+                    problems.append(f"{table_name}.{column_name}")
+
+        if problems:
+            return False, "Schema issue(s): " + ", ".join(problems)
+
+        return True, "Critical database tables and columns are present, including partial house-block capacity fields."
+
+    except Exception as error:
+        return False, "Database schema diagnostics failed: " + safe_text(error)
+
+    finally:
+        if conn:
+            conn.close()
+
+
+def critical_guest_route_diagnostics_summary():
+
+    required_routes = [
+        "/invite/<int:invitation_id>",
+        "/invitation/<int:invitation_id>/request",
+        "/new-request",
+        "/submit",
+        "/request/<request_id>/change",
+        "/request/<int:request_id>/cancel",
+        "/coordination-group-member/<int:member_id>/request",
+        "/coordination-group-member/<int:member_id>/tentative-response"
+    ]
+
+    try:
+        routes = set(rule.rule for rule in app.url_map.iter_rules())
+        missing = [route for route in required_routes if route not in routes]
+
+        if missing:
+            return False, "Missing guest route(s): " + ", ".join(missing)
+
+        return True, "Critical guest-facing invitation, request, change, cancel, and coordination routes are registered."
+
+    except Exception as error:
+        return False, "Guest route diagnostics failed: " + safe_text(error)
+
+
+def email_header_asset_diagnostics_summary():
+
+    try:
+        header_path = os.path.join(
+            app.root_path,
+            "shore_home_header.jpeg"
+        )
+
+        routes = set(rule.rule for rule in app.url_map.iter_rules())
+
+        problems = []
+
+        if "/shore_home_header.jpeg" not in routes:
+            problems.append("missing /shore_home_header.jpeg route")
+
+        if not os.path.exists(header_path):
+            problems.append("missing shore_home_header.jpeg in app root")
+
+        if problems:
+            return False, "; ".join(problems)
+
+        return True, "Email header image exists and the public image route is registered."
+
+    except Exception as error:
+        return False, "Email header asset diagnostics failed: " + safe_text(error)
+
+
+def booking_consistency_diagnostics_summary():
+
+    conn = None
+
+    try:
+        conn = get_db_connection()
+
+        mismatches = conn.execute("""
+            SELECT
+                booking_requests.id,
+                booking_requests.name,
+                COALESCE(booking_requests.rooms_requested, 1) AS rooms_requested,
+                COUNT(bookings.id) AS approved_booking_rows
+            FROM booking_requests
+            LEFT JOIN bookings
+                ON booking_requests.id = bookings.request_id
+               AND bookings.status = 'approved'
+            WHERE booking_requests.status = 'approved'
+            GROUP BY booking_requests.id
+            HAVING approved_booking_rows != rooms_requested
+            ORDER BY booking_requests.id
+        """).fetchall()
+
+        if mismatches:
+            details = []
+
+            for row in mismatches[:8]:
+                details.append(
+                    f"Request {row['id']} {safe_text(row['name'])}: approved rooms {row['rooms_requested']} / booking rows {row['approved_booking_rows']}"
+                )
+
+            return False, "Booking mismatch detected: " + " | ".join(details)
+
+        return True, "Approved booking requests match approved booking rows."
+
+    except Exception as error:
+        return False, "Booking consistency diagnostics failed: " + safe_text(error)
+
+    finally:
+        if conn:
+            conn.close()
+
+
+def reset_tool_contract_diagnostics_summary():
+
+    try:
+        preserved_tables = [
+            "guest_profiles",
+            "rooms",
+            "blocked_dates"
+        ]
+
+        operational_tables = [
+            "activity_log",
+            "email_log",
+            "invitations",
+            "booking_requests",
+            "bookings",
+            "coordination_date_options",
+            "coordination_group_members",
+            "coordination_groups"
+        ]
+
+        route_methods = {}
+        for rule in app.url_map.iter_rules():
+            route_methods[rule.rule] = set(rule.methods or [])
+
+        if "POST" not in route_methods.get("/admin-reset-test-data", set()):
+            return False, "Reset Test Data route does not require POST."
+
+        return True, (
+            "Reset Test Data contract loaded: backup outward only; preserve "
+            + ", ".join(preserved_tables)
+            + "; clear operational tables "
+            + ", ".join(operational_tables)
+            + "."
+        )
+
+    except Exception as error:
+        return False, "Reset tool diagnostics failed: " + safe_text(error)
+
+
 @app.route("/production-check")
 def production_check():
 
@@ -5372,6 +5567,46 @@ def production_check():
         "Route Safety",
         route_safety_ok,
         route_safety_detail
+    ))
+
+    schema_diag_ok, schema_diag_detail = database_schema_diagnostics_summary()
+
+    checks.append((
+        "Database Schema",
+        schema_diag_ok,
+        schema_diag_detail
+    ))
+
+    guest_route_diag_ok, guest_route_diag_detail = critical_guest_route_diagnostics_summary()
+
+    checks.append((
+        "Guest Route Coverage",
+        guest_route_diag_ok,
+        guest_route_diag_detail
+    ))
+
+    header_diag_ok, header_diag_detail = email_header_asset_diagnostics_summary()
+
+    checks.append((
+        "Email Header Asset",
+        header_diag_ok,
+        header_diag_detail
+    ))
+
+    booking_diag_ok, booking_diag_detail = booking_consistency_diagnostics_summary()
+
+    checks.append((
+        "Booking Consistency",
+        booking_diag_ok,
+        booking_diag_detail
+    ))
+
+    reset_diag_ok, reset_diag_detail = reset_tool_contract_diagnostics_summary()
+
+    checks.append((
+        "Reset Tool Contract",
+        reset_diag_ok,
+        reset_diag_detail
     ))
 
 
