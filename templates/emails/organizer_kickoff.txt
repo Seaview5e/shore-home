@@ -1,0 +1,19 @@
+Hi {{ guest_name }},
+
+A group visit planning process has started for:
+
+{{ group_title }}
+
+Your role: Organizer
+
+Please use the link below to help set up the group. You can suggest who should be included and one preferred date range to start the planning process.
+
+Organizer Planning Link:
+{{ planning_link }}
+
+After you submit this first setup information, John and Mark will review it. Then everyone in the group, including you, will receive individual requests to submit or confirm dates.
+
+Nothing is confirmed or booked yet.
+
+John & Mark
+302-521-5401

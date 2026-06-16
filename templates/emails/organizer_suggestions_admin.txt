@@ -1,0 +1,25 @@
+Organizer setup submitted for {{ group_title }}
+
+Organizer:
+{{ organizer_name }} <{{ organizer_email }}>
+
+Suggested group members:
+{{ suggested_guests }}
+
+Preferred dates to start planning:
+{{ preferred_dates }}
+
+Expected rooms:
+{{ rooms_requested }}
+
+Organizer notes:
+{{ date_notes }}
+
+Admin actions:
+Open Group Planning Page:
+{{ group_link }}
+
+Open Guest Profiles:
+{{ guest_profiles_link }}
+
+Next step: review the suggested people and dates, then add/confirm guest profiles before sending broader coordination invitations.
