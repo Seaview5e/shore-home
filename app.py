@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V32_2"
+    "app_V32_3"
 )
 
 BASE_URL = os.environ.get(
@@ -2538,6 +2538,55 @@ def tentative_response_color(status):
     return "#f8f9fa"
 
 
+def coordination_role_display(role):
+
+    role = safe_text(role).strip().lower()
+
+    if role == "organizer":
+        return "Organizer"
+
+    if role in ("participant", "guest", "member", ""):
+        return "Participant"
+
+    if role == "admin":
+        return "Admin"
+
+    return safe_text(role).title()
+
+
+def coordination_role_badge(role):
+
+    label = coordination_role_display(role)
+    role_key = safe_text(role).strip().lower()
+
+    if role_key == "organizer":
+        background = "#e7f1ff"
+        border = "#0d6efd"
+        color = "#084298"
+    elif role_key == "admin":
+        background = "#fff3cd"
+        border = "#ffc107"
+        color = "#664d03"
+    else:
+        background = "#f8f9fa"
+        border = "#ced4da"
+        color = "#495057"
+
+    return f"""
+    <span style="
+        display:inline-block;
+        background:{background};
+        border:1px solid {border};
+        color:{color};
+        border-radius:999px;
+        padding:2px 8px;
+        font-size:12px;
+        font-weight:bold;
+        white-space:nowrap;
+    ">{safe_text(label)}</span>
+    """
+
+
 def date_range_nights(arrival_date, departure_date):
 
     try:
@@ -3095,7 +3144,7 @@ def ensure_coordination_tables(conn):
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             coordination_group_id INTEGER NOT NULL,
             guest_profile_id INTEGER NOT NULL,
-            role TEXT NOT NULL DEFAULT 'guest',
+            role TEXT NOT NULL DEFAULT 'participant',
             invitation_status TEXT NOT NULL DEFAULT 'draft',
             last_response_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -19122,6 +19171,7 @@ def coordination_group_detail(group_id):
             response_rows.append(f"""
             <tr style="background-color: {tentative_response_color(response_status)};">
                 <td>{safe_text(member['primary_name'])}</td>
+                <td>{coordination_role_badge(member['role'])}</td>
                 <td>{safe_text(member['primary_email'])}</td>
                 <td>{tentative_response_display(response_status)}</td>
                 <td>{safe_text(member['tentative_response_at'])}</td>
@@ -19142,6 +19192,7 @@ def coordination_group_detail(group_id):
                ">
             <tr style="background-color: #f5f5f5;">
                 <th align="left">Guest</th>
+                <th align="left">Role</th>
                 <th align="left">Email</th>
                 <th align="left">Response</th>
                 <th align="left">Responded At</th>
@@ -19355,6 +19406,7 @@ def coordination_group_detail(group_id):
                ">
             <tr style="background-color: #f5f5f5;">
                 <th align="left">Guest</th>
+                <th align="left">Role</th>
                 <th align="left">Priority</th>
                 <th align="left">Arrival</th>
                 <th align="left">Departure</th>
@@ -19388,6 +19440,7 @@ def coordination_group_detail(group_id):
             date_options_summary_html += f"""
             <tr>
                 <td>{safe_text(option['primary_name'])}</td>
+                <td>{coordination_role_badge(option['role'])}</td>
                 <td>{safe_text(option['priority']).title()}</td>
                 <td>{format_date(option['arrival_date'])}</td>
                 <td>{format_date(option['departure_date'])}</td>
@@ -20330,6 +20383,12 @@ def coordination_group_detail(group_id):
 
     <h2>Group Members</h2>
 
+    <div style="background:#eef5ff; border:1px solid #b6d4fe; border-radius:8px; padding:10px; max-width:760px; margin-bottom:10px; font-size:13px;">
+        <strong>Coordination Roles:</strong><br>
+        <strong>Organizer</strong> = main planning contact / helps suggest group dates.<br>
+        <strong>Participant</strong> = guest submitting availability for the group.
+    </div>
+
     <div style="
         border: 1px solid #dee2e6;
         background-color: #f8f9fa;
@@ -20386,7 +20445,7 @@ def coordination_group_detail(group_id):
             </label><br>
 
             <select name="role">
-                <option value="guest">Guest</option>
+                <option value="participant">Participant</option>
                 <option value="organizer">Organizer</option>
             </select>
 
@@ -20446,7 +20505,7 @@ def coordination_group_detail(group_id):
             <tr>
                 <td>{safe_text(member['primary_name'])}</td>
                 <td>{safe_text(member['primary_email'])}</td>
-                <td>{safe_text(member['role'])}</td>
+                <td>{coordination_role_badge(member['role'])}</td>
                 <td>{safe_text(member['invitation_status'])}</td>
                 <td>{safe_text(member['last_response_at'])}</td>
                 <td align="center">{member['date_option_count']}</td>
@@ -21538,7 +21597,7 @@ def coordination_group_email_preview(group_id):
             safe_text(member["primary_name"])
         )
 
-    group_member_text = "\n".join([f"- {safe_text(member['primary_name'])} ({safe_text(row_value(member, 'role') or 'guest')})" for member in members])
+    group_member_text = "\n".join([f"- {safe_text(member['primary_name'])} ({coordination_role_display(row_value(member, 'role') or 'participant')})" for member in members])
 
     if not members:
 
@@ -21558,7 +21617,7 @@ def coordination_group_email_preview(group_id):
         </p>
         """
 
-    group_member_text = "\n".join([f"- {safe_text(member['primary_name'])} ({safe_text(row_value(member, 'role') or 'guest')})" for member in members])
+    group_member_text = "\n".join([f"- {safe_text(member['primary_name'])} ({coordination_role_display(row_value(member, 'role') or 'participant')})" for member in members])
 
     suggestion_lines = []
 
@@ -21624,7 +21683,7 @@ def coordination_group_email_preview(group_id):
             "coordination_invitation.txt",
             guest_name=safe_text(member["primary_name"]),
             group_title=safe_text(group["title"]),
-            guest_role=safe_text(row_value(member, "role") or "guest"),
+            guest_role=coordination_role_display(row_value(member, "role") or "participant"),
             group_member_text=group_member_text,
             suggestion_text=suggestion_text,
             request_link=update_link
@@ -22229,7 +22288,7 @@ def coordination_group_send_update_email(group_id):
         )
 
     group_member_text = "\n".join(
-        [f"- {safe_text(member['primary_name'])} ({safe_text(row_value(member, 'role') or 'guest')})" for member in members]
+        [f"- {safe_text(member['primary_name'])} ({coordination_role_display(row_value(member, 'role') or 'participant')})" for member in members]
     )
 
     if not group_member_text:
@@ -22311,7 +22370,7 @@ def coordination_group_send_update_email(group_id):
             "coordination_invitation.txt",
             guest_name=safe_text(member["primary_name"]),
             group_title=safe_text(group["title"]),
-            guest_role=safe_text(row_value(member, "role") or "guest"),
+            guest_role=coordination_role_display(row_value(member, "role") or "participant"),
             group_member_text=group_member_text,
             suggestion_text=suggestion_text,
             request_link=update_link
@@ -22551,6 +22610,7 @@ def coordination_group_member_request(member_id):
     group_members_for_overlap = conn.execute("""
         SELECT
             coordination_group_members.id,
+            coordination_group_members.role,
             guest_profiles.primary_name,
             guest_profiles.primary_email
         FROM coordination_group_members
@@ -22569,6 +22629,7 @@ def coordination_group_member_request(member_id):
         group_member_list_html += f"""
         <li>
             {safe_text(group_member['primary_name'])}
+            {coordination_role_badge(group_member['role'])}
             <small style="color: #666;">
                 ({safe_text(group_member['primary_email'])})
             </small>
@@ -23953,6 +24014,7 @@ def coordination_group_member_date_options(member_id):
     other_members = conn.execute("""
         SELECT
             coordination_group_members.id,
+            coordination_group_members.role,
             guest_profiles.primary_name,
             MAX(COALESCE(coordination_date_options.rooms_requested, 1)) AS rooms_requested
         FROM coordination_group_members
@@ -26443,8 +26505,11 @@ def coordination_group_add_member(group_id):
         request.form.get("role")
     )
 
-    if role not in ["guest", "organizer"]:
-        role = "guest"
+    if role not in ["participant", "guest", "organizer"]:
+        role = "participant"
+
+    if role == "guest":
+        role = "participant"
 
     try:
         guest_profile_id = int(guest_profile_id)
