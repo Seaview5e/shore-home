@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_0"
+    "app_V33_2"
 )
 
 BASE_URL = os.environ.get(
@@ -254,6 +254,13 @@ EMAIL_TEMPLATE_METADATA = {
         "updated_by": "John",
         "notes": "Initial guest invitation with request link."
     },
+    "organizer_kickoff": {
+        "name": "Organizer Kickoff Email",
+        "version": "1.0",
+        "last_updated": "2026-06-16",
+        "updated_by": "John",
+        "notes": "Organizer-led group formation email. Stored in templates/emails/organizer_kickoff.txt."
+    },
     "coordination_invitation": {
         "name": "Coordination Invitation / Update Email",
         "version": "1.0",
@@ -378,6 +385,32 @@ Please use the request link below to submit your visit request:
 You can still use regular email or a phone call at any point if that’s easier.
 
 Looking forward to hopefully seeing everyone down at the shore.
+
+John & Mark
+302-521-5401
+""",
+
+    "organizer_kickoff.txt": """Hi {{ guest_name }},
+
+We are starting a group visit planning process for:
+
+{{ group_title }}
+
+Your role: Organizer
+
+As organizer, please help suggest who may be part of the group and the initial dates that could work.
+
+Use this planning link:
+{{ planning_link }}
+
+You can suggest:
+- names and emails of guests to include
+- preferred dates
+- alternate dates
+- room expectations
+- notes that would help planning
+
+Nothing is confirmed or booked yet. John and Mark will review your suggestions before the broader coordination invitations are sent.
 
 John & Mark
 302-521-5401
@@ -2145,6 +2178,205 @@ def display_change_requested_date(timestamp):
     except:
         return timestamp[:10]
 
+
+
+
+def build_coordination_intersection_suggestions(date_options, approved_bookings, blocked_ranges, total_rooms):
+    """Phase 3: find true shared overlap windows across one option per responding member.
+
+    This is intentionally separate from the older ranked match engine. It answers the
+    core question: is there a common window where every responding guest can attend?
+    It uses the intersection rule: latest available arrival to earliest available departure.
+    """
+
+    options_by_member = {}
+    member_names = {}
+
+    for option in date_options:
+
+        member_id = row_value(option, "member_id", "coordination_group_member_id")
+
+        if not member_id:
+            continue
+
+        try:
+            arrival = datetime.strptime(option["arrival_date"], "%Y-%m-%d").date()
+            departure = datetime.strptime(option["departure_date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+
+        if departure <= arrival:
+            continue
+
+        try:
+            flexibility_days = int(option["flexibility_days"] or 0)
+        except Exception:
+            flexibility_days = 0
+
+        if flexibility_days < 0:
+            flexibility_days = 0
+
+        available_start = arrival - timedelta(days=flexibility_days)
+        available_end = departure + timedelta(days=flexibility_days)
+
+        options_by_member.setdefault(member_id, []).append({
+            "member_id": member_id,
+            "primary_name": safe_text(option["primary_name"]),
+            "role": safe_text(row_value(option, "role")),
+            "priority": safe_text(option["priority"]),
+            "arrival": arrival,
+            "departure": departure,
+            "available_start": available_start,
+            "available_end": available_end,
+            "flexibility_days": flexibility_days,
+            "rooms_requested": normalize_rooms_requested(option["rooms_requested"], total_rooms),
+        })
+
+        member_names[member_id] = safe_text(option["primary_name"])
+
+    if not options_by_member:
+        return []
+
+    # Limit combinations defensively so a malformed test group cannot blow up the page.
+    member_ids = list(options_by_member.keys())
+    combinations = [[]]
+
+    for member_id in member_ids:
+        next_combinations = []
+        for existing in combinations:
+            for option in options_by_member[member_id][:6]:
+                next_combinations.append(existing + [option])
+                if len(next_combinations) > 500:
+                    break
+            if len(next_combinations) > 500:
+                break
+        combinations = next_combinations[:500]
+
+    blocked_dates = set()
+
+    for block in blocked_ranges:
+        try:
+            current = datetime.strptime(block["start_date"], "%Y-%m-%d").date()
+            end = datetime.strptime(block["end_date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+
+        # Existing full-house blocks still remove the date entirely. Partial-room
+        # blocks are handled by the capacity layer elsewhere and should not make
+        # the intersection invalid by themselves.
+        block_type = safe_text(row_value(block, "block_type", "type", "is_full_block")).lower()
+        blocked_rooms = safe_text(row_value(block, "blocked_rooms", "rooms_blocked")).strip()
+        is_partial = False
+        try:
+            if blocked_rooms and int(blocked_rooms) > 0 and int(blocked_rooms) < int(total_rooms):
+                is_partial = True
+        except Exception:
+            pass
+        if "partial" in block_type:
+            is_partial = True
+        if block_type in ("0", "false", "partial"):
+            is_partial = True
+
+        if is_partial:
+            continue
+
+        while current <= end:
+            blocked_dates.add(current.strftime("%Y-%m-%d"))
+            current += timedelta(days=1)
+
+    approved_by_date = {}
+
+    for booking in approved_bookings:
+        try:
+            current = datetime.strptime(booking["arrival_date"], "%Y-%m-%d").date()
+            end = datetime.strptime(booking["departure_date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+
+        rooms_to_count = 1
+        try:
+            rooms_to_count = int(row_value(booking, "rooms_held", "rooms_requested") or 1)
+        except Exception:
+            rooms_to_count = 1
+
+        while current < end:
+            date_string = current.strftime("%Y-%m-%d")
+            approved_by_date[date_string] = approved_by_date.get(date_string, 0) + rooms_to_count
+            current += timedelta(days=1)
+
+    suggestions = []
+    seen = set()
+
+    for combination in combinations:
+
+        if len(combination) != len(member_ids):
+            continue
+
+        overlap_start = max(item["available_start"] for item in combination)
+        overlap_end = min(item["available_end"] for item in combination)
+
+        if overlap_end <= overlap_start:
+            continue
+
+        key = (overlap_start.strftime("%Y-%m-%d"), overlap_end.strftime("%Y-%m-%d"))
+        if key in seen:
+            continue
+        seen.add(key)
+
+        rooms_needed = sum(item["rooms_requested"] for item in combination)
+        min_rooms_open = total_rooms
+        capacity_ok = True
+        capacity_notes = []
+        current = overlap_start
+
+        while current < overlap_end:
+            date_string = current.strftime("%Y-%m-%d")
+
+            if date_string in blocked_dates:
+                capacity_ok = False
+                capacity_notes.append(f"{format_date(date_string)} is fully blocked")
+
+            rooms_open = total_rooms - approved_by_date.get(date_string, 0)
+            if rooms_open < min_rooms_open:
+                min_rooms_open = rooms_open
+
+            if rooms_open < rooms_needed:
+                capacity_ok = False
+                capacity_notes.append(f"{format_date(date_string)} has only {rooms_open} room(s) open")
+
+            current += timedelta(days=1)
+
+        preferred_count = sum(1 for item in combination if item["priority"] == "preferred")
+        alternate_count = sum(1 for item in combination if item["priority"] == "alternate")
+        flexibility_used = []
+        changed_range_names = []
+
+        for item in combination:
+            if overlap_start != item["arrival"] or overlap_end != item["departure"]:
+                changed_range_names.append(item["primary_name"])
+            if overlap_start < item["arrival"] or overlap_end > item["departure"]:
+                flexibility_used.append(item["primary_name"])
+
+        suggestions.append({
+            "arrival_date": overlap_start.strftime("%Y-%m-%d"),
+            "departure_date": overlap_end.strftime("%Y-%m-%d"),
+            "nights": (overlap_end - overlap_start).days,
+            "matched_count": len(combination),
+            "total_member_count": len(member_ids),
+            "rooms_needed": rooms_needed,
+            "rooms_available": total_rooms,
+            "min_rooms_open": min_rooms_open,
+            "capacity_ok": capacity_ok,
+            "capacity_notes": capacity_notes,
+            "preferred_count": preferred_count,
+            "alternate_count": alternate_count,
+            "guest_names": sorted(item["primary_name"] for item in combination),
+            "changed_range_names": sorted(set(changed_range_names)),
+            "flexibility_used_names": sorted(set(flexibility_used)),
+            "score": (100000 if capacity_ok else 0) + (overlap_end - overlap_start).days * 100 + preferred_count * 10 - rooms_needed,
+        })
+
+    return sorted(suggestions, key=lambda item: item["score"], reverse=True)[:5]
 
 def build_coordination_match_suggestions(date_options, approved_bookings, blocked_ranges, total_rooms):
 
@@ -19642,6 +19874,13 @@ def coordination_group_detail(group_id):
         total_rooms_for_matching
     )
 
+    intersection_suggestions = build_coordination_intersection_suggestions(
+        group_date_options,
+        list(approved_bookings_for_matching) + tentative_holds_for_matching,
+        blocked_ranges_for_matching,
+        total_rooms_for_matching
+    )
+
     created_booking_request_rows = conn.execute("""
         SELECT
             coordination_group_members.id AS member_id,
@@ -20467,6 +20706,102 @@ def coordination_group_detail(group_id):
 
         created_booking_requests_html += "</table>"
 
+    intersection_suggestions_html = """
+    <p>No shared overlap yet. Once guests submit date options, Phase 3 will look for the common window where everyone can attend.</p>
+    """
+
+    if intersection_suggestions:
+
+        best_intersection = intersection_suggestions[0]
+
+        intersection_capacity_display = "<strong style='color: green;'>Capacity OK</strong>"
+
+        if not best_intersection["capacity_ok"]:
+            intersection_capacity_display = "<strong style='color: red;'>Capacity needs review</strong>"
+
+        changed_names_display = "None — all submitted windows match this exact range"
+
+        if best_intersection["changed_range_names"]:
+            changed_names_display = safe_text(", ".join(best_intersection["changed_range_names"]))
+
+        flexibility_names_display = "None"
+
+        if best_intersection["flexibility_used_names"]:
+            flexibility_names_display = safe_text(", ".join(best_intersection["flexibility_used_names"]))
+
+        other_intersections_html = ""
+
+        if len(intersection_suggestions) > 1:
+            other_rows = ""
+            rank = 2
+            for suggestion in intersection_suggestions[1:5]:
+                other_rows += f"""
+                <tr>
+                    <td>{rank}</td>
+                    <td>{format_date(suggestion['arrival_date'])} to {format_date(suggestion['departure_date'])}</td>
+                    <td align="center">{suggestion['nights']}</td>
+                    <td align="center">{suggestion['rooms_needed']} of {suggestion['rooms_available']}</td>
+                    <td>{'OK' if suggestion['capacity_ok'] else 'Needs Review'}</td>
+                    <td>
+                        <form method="POST" action="/coordination-group/{group_id}/set-tentative">
+                            <input type="hidden" name="arrival_date" value="{suggestion['arrival_date']}">
+                            <input type="hidden" name="departure_date" value="{suggestion['departure_date']}">
+                            <button type="submit" style="font-size:12px; padding:4px 8px;">Set Tentative</button>
+                        </form>
+                    </td>
+                </tr>
+                """
+                rank += 1
+
+            other_intersections_html = f"""
+            <h4 style="margin-bottom:6px;">Other Shared Overlap Options</h4>
+            <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:13px;">
+                <tr style="background:#f5f5f5;">
+                    <th>Rank</th><th>Dates</th><th>Nights</th><th>Rooms</th><th>Capacity</th><th>Action</th>
+                </tr>
+                {other_rows}
+            </table>
+            """
+
+        intersection_suggestions_html = f"""
+        <div style="background:#e8f7ea; border:2px solid #198754; border-radius:8px; padding:12px; margin-bottom:14px; max-width:1040px;">
+            <h3 style="margin-top:0;">Phase 3 Shared Overlap Window</h3>
+            <p style="font-size:16px; margin:4px 0;">
+                <strong>{format_date(best_intersection['arrival_date'])}</strong>
+                to
+                <strong>{format_date(best_intersection['departure_date'])}</strong>
+                ({best_intersection['nights']} night(s))
+            </p>
+            <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:13px; margin-top:8px;">
+                <tr style="background:#f5f5f5;">
+                    <th align="left">Guests Included</th>
+                    <th align="left">Rooms Needed</th>
+                    <th align="left">Capacity</th>
+                    <th align="left">Adjusted From Original Dates</th>
+                    <th align="left">Flexibility Used</th>
+                </tr>
+                <tr>
+                    <td>{best_intersection['matched_count']} of {best_intersection['total_member_count']}</td>
+                    <td>{best_intersection['rooms_needed']} of {best_intersection['rooms_available']}</td>
+                    <td>{intersection_capacity_display}</td>
+                    <td>{changed_names_display}</td>
+                    <td>{flexibility_names_display}</td>
+                </tr>
+            </table>
+            <p style="font-size:13px; color:#555;">
+                This uses the intersection rule: latest usable arrival plus earliest usable departure. It reserves only this shared overlap window, not every guest's full requested range.
+            </p>
+            <form method="POST" action="/coordination-group/{group_id}/set-tentative" style="margin-top:10px;">
+                <input type="hidden" name="arrival_date" value="{best_intersection['arrival_date']}">
+                <input type="hidden" name="departure_date" value="{best_intersection['departure_date']}">
+                <button type="submit" style="font-size:14px; padding:7px 12px; font-weight:bold;">
+                    Set Shared Overlap As Tentative
+                </button>
+            </form>
+            {other_intersections_html}
+        </div>
+        """
+
     match_suggestions_html = """
     <p>No match suggestions yet. Add date options for at least one group member.</p>
     """
@@ -21064,6 +21399,8 @@ def coordination_group_detail(group_id):
         <p style="margin-top: 0;">
             These suggestions compare submitted preferred and alternate dates. Use them to pick tentative dates. After tentative dates are picked, this becomes reference information.
         </p>
+
+        {intersection_suggestions_html}
 
         {match_suggestions_html}
     </div>
@@ -23919,8 +24256,8 @@ def coordination_group_member_request(member_id):
     <div style="
         border: 1px solid #dee2e6;
         background-color: #f8f9fa;
-        padding: 5px 8px;
-        margin-bottom: 5px;
+        padding: 4px 7px;
+        margin-bottom: 4px;
         border-radius: 8px;
         max-width: 1100px;
     ">
@@ -23943,12 +24280,12 @@ def coordination_group_member_request(member_id):
     <div style="
         border: 1px solid #dee2e6;
         background-color: #ffffff;
-        padding: 5px 8px;
-        margin-bottom: 5px;
+        padding: 4px 7px;
+        margin-bottom: 4px;
         border-radius: 8px;
         max-width: 1100px;
     ">
-        <h2 style="margin: 0 0 3px 0; font-size: 17px;">Group Members</h2>
+        <h2 style="margin: 0 0 3px 0; font-size: 15px;">Group Members</h2>
         <ul style="margin: 0; font-size: 13px; line-height: 1.25;">
             {group_member_list_html}
         </ul>
@@ -23957,8 +24294,8 @@ def coordination_group_member_request(member_id):
     <div style="
         border: 1px solid #198754;
         background-color: #e8f7ea;
-        padding: 5px 8px;
-        margin-bottom: 5px;
+        padding: 4px 7px;
+        margin-bottom: 4px;
         border-radius: 8px;
         max-width: 1100px;
     ">
@@ -23982,7 +24319,7 @@ def coordination_group_member_request(member_id):
         </h2>
 
         <p style="margin: 0 0 5px 0; font-size: 13px; line-height: 1.25;">
-            Current best overlap options based on group date choices. These are not confirmed bookings.
+            Current best overlap options. Not confirmed bookings.
         </p>
 
         {group_overlap_html}
@@ -24056,6 +24393,241 @@ def coordination_group_member_request(member_id):
                 <strong>Food Preferences:</strong><br>
                 {safe_text(member['food_notes'])}
             </p>
+
+                        <div style="
+                            border: 1px solid #dee2e6;
+                            background-color: #f8f9fa;
+                            padding: 7px;
+                            border-radius: 8px;
+                            margin-top: 10px;
+                        ">
+                            <h2 style="margin: 0 0 4px 0; font-size:18px;">
+                                Submit / Update Date Options
+                            </h2>
+            
+                            <p style="margin: 0 0 4px 0; font-size: 13px;">
+                                Add the dates that work best for you. Preferred is your first choice; alternate is your backup plan.
+                            </p>
+            
+                            <p style="color: #856404; font-weight: bold; margin: 0 0 6px 0; font-size: 13px;">
+                                After saving, you’ll see a quick confirmation page. No beach paperwork, promise.
+                            </p>
+            
+                            <form method="POST"
+                                  action="/coordination-group-member/{member_id}/date-options"
+                                  onsubmit="return validateGroupRoomCapacity();">
+            
+                                <div style="
+                                    background-color: #fff3cd;
+                                    border: 1px solid #fd7e14;
+                                    padding: 6px;
+                                    border-radius: 6px;
+                                    margin-bottom: 6px;
+                                    font-size: 13px;
+                                    font-weight: bold;
+                                    white-space: normal;
+                                    overflow-wrap: anywhere;
+                                ">
+                                    Choose what the calendar click should fill: preferred arrival, preferred departure, alternate arrival, or alternate departure.
+                                </div>
+            
+                                <div style="
+                                    border: 1px solid #dee2e6;
+                                    background-color: #ffffff;
+                                    padding: 6px;
+                                    margin-bottom: 8px;
+                                    border-radius: 6px;
+                                    font-size: 13px;
+                                ">
+                                    <strong>Calendar click fills:</strong>
+                                    <label>
+                                        <input type="radio"
+                                               name="calendar_target"
+                                               value="preferred_arrival"
+                                               checked>
+                                        Preferred Arrival
+                                    </label>
+                                    <label>
+                                        <input type="radio"
+                                               name="calendar_target"
+                                               value="preferred_departure">
+                                        Preferred Departure
+                                    </label>
+                                    <label>
+                                        <input type="radio"
+                                               name="calendar_target"
+                                               value="alternate_arrival">
+                                        Alternate Arrival
+                                    </label>
+                                    <label>
+                                        <input type="radio"
+                                               name="calendar_target"
+                                               value="alternate_departure">
+                                        Alternate Departure
+                                    </label>
+            
+                                    <span id="calendar_target_message"
+                                          style="
+                                              color: #0d6efd;
+                                              font-weight: bold;
+                                              margin-left: 6px;
+                                          ">
+                                        Next click will set Preferred Arrival.
+                                    </span>
+                                </div>
+            
+                                <div style="
+                                    border: 2px solid #0d6efd;
+                                    background-color: #f8fbff;
+                                    padding: 10px;
+                                    border-radius: 8px;
+                                    margin-bottom: 10px;
+                                    max-width: 520px;
+                                ">
+                                    <label for="default_rooms" style="font-size: 18px; font-weight: bold;">
+                                        How many guest bedrooms do you need?
+                                    </label><br>
+                                    <span style="font-size: 15px; font-weight: bold;">
+                                        Each bedroom sleeps up to 2 guests.
+                                    </span><br>
+                                    <select id="default_rooms"
+                                            onchange="syncDefaultRooms(); validateGroupRoomCapacity(false);">
+                                        <option value="1">1 Bedroom</option>
+                                        <option value="2">2 Bedrooms</option>
+                                        <option value="3">3 Bedrooms</option>
+                                        <option value="4">4 Bedrooms</option>
+                                    </select>
+                                    <p style="font-size: 12px; color: #555; margin: 6px 0 0 0;">
+                                        This fills the bedroom count for both preferred and alternate dates. You can still adjust each date option below if needed.
+                                    </p>
+                                </div>
+            
+                                <div style="
+                                    display: grid;
+                                    grid-template-columns: 1fr;
+                                    gap: 8px;
+                                ">
+                                    <div style="
+                                        border: 1px solid #dee2e6;
+                                        background-color: #ffffff;
+                                        padding: 8px;
+                                        border-radius: 8px;
+                                    ">
+                                        <h3 style="margin: 0 0 4px 0;">
+                                            Preferred Dates
+                                        </h3>
+            
+                                        <label><strong>Preferred Arrival</strong></label><br>
+                                        <input type="date"
+                                               id="preferred_arrival"
+                                               name="preferred_arrival"
+                                               onchange="setNextDayDeparture('preferred');"
+                                               required>
+                                        <br>
+            
+                                        <label><strong>Preferred Departure</strong></label><br>
+                                        <input type="date"
+                                               id="preferred_departure"
+                                               name="preferred_departure"
+                                               required>
+                                        <br>
+            
+                                        <label><strong>Number of Guest Bedrooms Needed</strong></label><br>
+                                        <select name="preferred_rooms"
+                                                id="preferred_rooms"
+                                                onchange="validateGroupRoomCapacity(false);">
+                                            <option value="1">1 Bedroom</option>
+                                            <option value="2">2 Bedrooms</option>
+                                            <option value="3">3 Bedrooms</option>
+                                            <option value="4">4 Bedrooms</option>
+                                        </select>
+                                        <br>
+            
+                                        <label><strong>Flexibility</strong></label><br>
+                                        <select name="preferred_flexibility">
+                                            <option value="0">Fixed dates</option>
+                                            <option value="1">Can shift by 1 day</option>
+                                            <option value="2">Can shift by 2 days</option>
+                                            <option value="3">Can shift by 3 days</option>
+                                        </select>
+                                    </div>
+            
+                                    <div style="
+                                        border: 1px solid #dee2e6;
+                                        background-color: #ffffff;
+                                        padding: 8px;
+                                        border-radius: 8px;
+                                    ">
+                                        <h3 style="margin: 0 0 4px 0;">
+                                            Alternate Dates
+                                        </h3>
+            
+                                        <p style="font-size: 12px; margin: 0 0 4px 0;">
+                                            Optional, but helpful for finding the best group match.
+                                        </p>
+            
+                                        <label><strong>Alternate Arrival</strong></label><br>
+                                        <input type="date"
+                                               id="alternate_arrival"
+                                               name="alternate_arrival"
+                                               onchange="setNextDayDeparture('alternate');">
+                                        <br>
+            
+                                        <label><strong>Alternate Departure</strong></label><br>
+                                        <input type="date"
+                                               id="alternate_departure"
+                                               name="alternate_departure">
+                                        <br>
+            
+                                        <label><strong>Number of Guest Bedrooms Needed</strong></label><br>
+                                        <select name="alternate_rooms"
+                                                id="alternate_rooms"
+                                                onchange="validateGroupRoomCapacity(false);">
+                                            <option value="1">1 Bedroom</option>
+                                            <option value="2">2 Bedrooms</option>
+                                            <option value="3">3 Bedrooms</option>
+                                            <option value="4">4 Bedrooms</option>
+                                        </select>
+                                        <br>
+            
+                                        <label><strong>Alternate Flexibility</strong></label><br>
+                                        <select name="alternate_flexibility">
+                                            <option value="0">Fixed dates</option>
+                                            <option value="1">Can shift by 1 day</option>
+                                            <option value="2">Can shift by 2 days</option>
+                                            <option value="3">Can shift by 3 days</option>
+                                        </select>
+                                    </div>
+                                </div>
+            
+                                <div id="room_capacity_warning"
+                                     style="
+                                         display: none;
+                                         background-color: #f8d7da;
+                                         border: 1px solid #dc3545;
+                                         padding: 6px;
+                                         border-radius: 6px;
+                                         margin-top: 8px;
+                                         font-weight: bold;
+                                         color: #842029;
+                                     ">
+                                </div>
+            
+                                <div style="margin-top: 8px;">
+                                    <label><strong>Notes</strong></label><br>
+                                    <textarea name="notes"
+                                              rows="2"
+                                              style="width: 100%; max-width: 520px;"></textarea>
+                                </div>
+            
+                                <div style="margin-top: 8px;">
+                                    <button type="submit">
+            Save My Dates
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+            
         </div>
 
         <div style="
@@ -24066,239 +24638,6 @@ def coordination_group_member_request(member_id):
         ">
             {calendar_html}
 
-            <div style="
-                border: 1px solid #dee2e6;
-                background-color: #f8f9fa;
-                padding: 8px;
-                border-radius: 8px;
-                margin-top: 8px;
-            ">
-                <h2 style="margin: 0 0 4px 0;">
-                    Submit / Update Date Options
-                </h2>
-
-                <p style="margin: 0 0 4px 0; font-size: 13px;">
-                    Add the dates that work best for you. Preferred is your first choice; alternate is your backup plan.
-                </p>
-
-                <p style="color: #856404; font-weight: bold; margin: 0 0 6px 0; font-size: 13px;">
-                    After saving, you’ll see a quick confirmation page. No beach paperwork, promise.
-                </p>
-
-                <form method="POST"
-                      action="/coordination-group-member/{member_id}/date-options"
-                      onsubmit="return validateGroupRoomCapacity();">
-
-                    <div style="
-                        background-color: #fff3cd;
-                        border: 1px solid #fd7e14;
-                        padding: 6px;
-                        border-radius: 6px;
-                        margin-bottom: 6px;
-                        font-size: 13px;
-                        font-weight: bold;
-                        white-space: normal;
-                        overflow-wrap: anywhere;
-                    ">
-                        Choose what the calendar click should fill: preferred arrival, preferred departure, alternate arrival, or alternate departure.
-                    </div>
-
-                    <div style="
-                        border: 1px solid #dee2e6;
-                        background-color: #ffffff;
-                        padding: 6px;
-                        margin-bottom: 8px;
-                        border-radius: 6px;
-                        font-size: 13px;
-                    ">
-                        <strong>Calendar click fills:</strong>
-                        <label>
-                            <input type="radio"
-                                   name="calendar_target"
-                                   value="preferred_arrival"
-                                   checked>
-                            Preferred Arrival
-                        </label>
-                        <label>
-                            <input type="radio"
-                                   name="calendar_target"
-                                   value="preferred_departure">
-                            Preferred Departure
-                        </label>
-                        <label>
-                            <input type="radio"
-                                   name="calendar_target"
-                                   value="alternate_arrival">
-                            Alternate Arrival
-                        </label>
-                        <label>
-                            <input type="radio"
-                                   name="calendar_target"
-                                   value="alternate_departure">
-                            Alternate Departure
-                        </label>
-
-                        <span id="calendar_target_message"
-                              style="
-                                  color: #0d6efd;
-                                  font-weight: bold;
-                                  margin-left: 6px;
-                              ">
-                            Next click will set Preferred Arrival.
-                        </span>
-                    </div>
-
-                    <div style="
-                        border: 2px solid #0d6efd;
-                        background-color: #f8fbff;
-                        padding: 10px;
-                        border-radius: 8px;
-                        margin-bottom: 10px;
-                        max-width: 520px;
-                    ">
-                        <label for="default_rooms" style="font-size: 18px; font-weight: bold;">
-                            How many guest bedrooms do you need?
-                        </label><br>
-                        <span style="font-size: 15px; font-weight: bold;">
-                            Each bedroom sleeps up to 2 guests.
-                        </span><br>
-                        <select id="default_rooms"
-                                onchange="syncDefaultRooms(); validateGroupRoomCapacity(false);">
-                            <option value="1">1 Bedroom</option>
-                            <option value="2">2 Bedrooms</option>
-                            <option value="3">3 Bedrooms</option>
-                            <option value="4">4 Bedrooms</option>
-                        </select>
-                        <p style="font-size: 12px; color: #555; margin: 6px 0 0 0;">
-                            This fills the bedroom count for both preferred and alternate dates. You can still adjust each date option below if needed.
-                        </p>
-                    </div>
-
-                    <div style="
-                        display: grid;
-                        grid-template-columns: repeat(2, minmax(240px, 1fr));
-                        gap: 8px;
-                    ">
-                        <div style="
-                            border: 1px solid #dee2e6;
-                            background-color: #ffffff;
-                            padding: 8px;
-                            border-radius: 8px;
-                        ">
-                            <h3 style="margin: 0 0 4px 0;">
-                                Preferred Dates
-                            </h3>
-
-                            <label><strong>Preferred Arrival</strong></label><br>
-                            <input type="date"
-                                   id="preferred_arrival"
-                                   name="preferred_arrival"
-                                   onchange="setNextDayDeparture('preferred');"
-                                   required>
-                            <br>
-
-                            <label><strong>Preferred Departure</strong></label><br>
-                            <input type="date"
-                                   id="preferred_departure"
-                                   name="preferred_departure"
-                                   required>
-                            <br>
-
-                            <label><strong>Number of Guest Bedrooms Needed</strong></label><br>
-                            <select name="preferred_rooms"
-                                    id="preferred_rooms"
-                                    onchange="validateGroupRoomCapacity(false);">
-                                <option value="1">1 Bedroom</option>
-                                <option value="2">2 Bedrooms</option>
-                                <option value="3">3 Bedrooms</option>
-                                <option value="4">4 Bedrooms</option>
-                            </select>
-                            <br>
-
-                            <label><strong>Flexibility</strong></label><br>
-                            <select name="preferred_flexibility">
-                                <option value="0">Fixed dates</option>
-                                <option value="1">Can shift by 1 day</option>
-                                <option value="2">Can shift by 2 days</option>
-                                <option value="3">Can shift by 3 days</option>
-                            </select>
-                        </div>
-
-                        <div style="
-                            border: 1px solid #dee2e6;
-                            background-color: #ffffff;
-                            padding: 8px;
-                            border-radius: 8px;
-                        ">
-                            <h3 style="margin: 0 0 4px 0;">
-                                Alternate Dates
-                            </h3>
-
-                            <p style="font-size: 12px; margin: 0 0 4px 0;">
-                                Optional, but helpful for finding the best group match.
-                            </p>
-
-                            <label><strong>Alternate Arrival</strong></label><br>
-                            <input type="date"
-                                   id="alternate_arrival"
-                                   name="alternate_arrival"
-                                   onchange="setNextDayDeparture('alternate');">
-                            <br>
-
-                            <label><strong>Alternate Departure</strong></label><br>
-                            <input type="date"
-                                   id="alternate_departure"
-                                   name="alternate_departure">
-                            <br>
-
-                            <label><strong>Number of Guest Bedrooms Needed</strong></label><br>
-                            <select name="alternate_rooms"
-                                    id="alternate_rooms"
-                                    onchange="validateGroupRoomCapacity(false);">
-                                <option value="1">1 Bedroom</option>
-                                <option value="2">2 Bedrooms</option>
-                                <option value="3">3 Bedrooms</option>
-                                <option value="4">4 Bedrooms</option>
-                            </select>
-                            <br>
-
-                            <label><strong>Alternate Flexibility</strong></label><br>
-                            <select name="alternate_flexibility">
-                                <option value="0">Fixed dates</option>
-                                <option value="1">Can shift by 1 day</option>
-                                <option value="2">Can shift by 2 days</option>
-                                <option value="3">Can shift by 3 days</option>
-                            </select>
-                        </div>
-                    </div>
-
-                    <div id="room_capacity_warning"
-                         style="
-                             display: none;
-                             background-color: #f8d7da;
-                             border: 1px solid #dc3545;
-                             padding: 6px;
-                             border-radius: 6px;
-                             margin-top: 8px;
-                             font-weight: bold;
-                             color: #842029;
-                         ">
-                    </div>
-
-                    <div style="margin-top: 8px;">
-                        <label><strong>Notes</strong></label><br>
-                        <textarea name="notes"
-                                  rows="2"
-                                  style="width: 100%; max-width: 520px;"></textarea>
-                    </div>
-
-                    <div style="margin-top: 8px;">
-                        <button type="submit">
-Save My Dates
-                        </button>
-                    </div>
-                </form>
-            </div>
         </div>
     </div>
 
@@ -24475,12 +24814,6 @@ Save My Dates
             updateCalendarTargetMessage();
         }}
     </script>
-
-    <p>
-        <a href="/coordination-group/{member['coordination_group_id']}">
-            Back to Coordination Group
-        </a>
-    </p>
     """
 
     return html
@@ -27412,31 +27745,12 @@ def coordination_group_organizer_kickoff_preview(group_id):
 
     planning_link = organizer_planning_url(coordination_member_row_id(organizer))
 
-    body = f"""Hi {safe_text(organizer['primary_name'])},
-
-We are starting a group visit planning process for:
-
-{safe_text(group['title'])}
-
-Your role: Organizer
-
-As organizer, please help suggest who may be part of the group and the initial dates that could work.
-
-Use this planning link:
-{planning_link}
-
-You can suggest:
-- names and emails of guests to include
-- preferred dates
-- alternate dates
-- room expectations
-- notes that would help planning
-
-Nothing is confirmed or booked yet. John and Mark will review the organizer suggestions before the broader coordination invitations are sent.
-
-John & Mark
-302-521-5401
-"""
+    body = render_email_template(
+        "organizer_kickoff.txt",
+        guest_name=safe_text(organizer["primary_name"]),
+        group_title=safe_text(group["title"]),
+        planning_link=planning_link
+    )
 
     subject = f"Strathmere group visit planning - {safe_text(group['title'])}"
 
@@ -27473,9 +27787,12 @@ John & Mark
 
     conn.close()
 
+    template_metadata = email_template_metadata_html("organizer_kickoff")
+
     return f"""
     {nav_links()}
     <h1>Preview Organizer Kickoff Email</h1>
+    {template_metadata}
     <p><strong>To:</strong> {safe_text(organizer['primary_name'])} &lt;{safe_text(organizer['primary_email'])}&gt;</p>
     <p><strong>Subject:</strong> {safe_text(subject)}</p>
     <pre style="white-space:pre-wrap; background:#f8f9fa; border:1px solid #dee2e6; padding:12px; max-width:900px;">{safe_text(body)}</pre>
