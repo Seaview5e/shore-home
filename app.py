@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_3"
+    "app_V33_4"
 )
 
 BASE_URL = os.environ.get(
@@ -891,6 +891,12 @@ def plain_text_to_html_email(subject, body):
 
         if "cancel" in nearby_lower or "/cancel" in url:
             return "Cancel Visit"
+
+        if "guest profile" in nearby_lower or "/profiles" in url:
+            return "Open Guest Profiles"
+
+        if "group planning" in nearby_lower or "open group" in nearby_lower or "/coordination-group/" in url:
+            return "Open Group Planning Page"
 
         if "coordination" in nearby_lower:
             return "Open Coordination Link"
