@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V32_9"
+    "app_V32_10"
 )
 
 BASE_URL = os.environ.get(
@@ -1648,6 +1648,7 @@ def nav_links():
         "/submitted" in guest_path
         or "/change" in guest_path
         or "/cancel" in guest_path
+        or "/all-reservations" in guest_path
     ):
         return ""
 
@@ -3347,7 +3348,15 @@ def all_reservations(request_id):
     {reservations_html}
 
     <p style="margin-top:16px;">
-        <a href="{request_visit_link}" style="font-weight:bold;">
+        <a href="{request_visit_link}" style="
+            display:inline-block;
+            background:#0f4c81;
+            color:white;
+            padding:10px 14px;
+            border-radius:8px;
+            text-decoration:none;
+            font-weight:bold;
+        ">
             Request a Visit
         </a>
     </p>
