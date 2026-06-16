@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V32_7"
+    "app_V32_8"
 )
 
 BASE_URL = os.environ.get(
@@ -3119,7 +3119,7 @@ def guest_visit_history_summary(conn, request_row, current_request_id=None):
                 booking_requests.status
             FROM booking_requests
             WHERE guest_profile_id = ?
-              AND status IN ('approved', 'change_requested', 'cancel_requested')
+              AND status IN ('pending', 'approved', 'change_requested', 'cancel_requested')
             ORDER BY arrival_date DESC, id DESC
             LIMIT 6
         """, (
@@ -3136,7 +3136,7 @@ def guest_visit_history_summary(conn, request_row, current_request_id=None):
                 status
             FROM booking_requests
             WHERE LOWER(email) = ?
-              AND status IN ('approved', 'change_requested', 'cancel_requested')
+              AND status IN ('pending', 'approved', 'change_requested', 'cancel_requested')
             ORDER BY arrival_date DESC, id DESC
             LIMIT 6
         """, (
@@ -8234,12 +8234,11 @@ def render_request_submitted_page(request_id):
         line-height: 1.4;
     ">
         <p style="font-weight: bold; margin-top: 0;">
-            Your request is in. The beach planning machine is officially warming up.
+            Your request has been submitted.
         </p>
         <p style="margin-bottom: 0;">
             <strong>What happens next?</strong><br>
-            I’ll review the dates and room space. If everything works, you’ll get a confirmation.
-            If not, I’ll follow up and we’ll figure it out.
+            Please wait for confirmation. I’ll review the dates and room space and follow up if anything needs to change.
         </p>
     </div>
 
@@ -8262,11 +8261,17 @@ def render_request_submitted_page(request_id):
         </a>
     </p>
 
-    <p>
-        <a href="/request/{request_id}/edit?return_to=submitted">
-            Review or Edit This Request
-        </a>
-    </p>
+    <div style="
+        background-color: #f8f9fa;
+        border: 1px solid #ddd;
+        padding: 10px 12px;
+        border-radius: 8px;
+        max-width: 780px;
+        margin: 10px 0;
+    ">
+        <strong>Your request is now pending review.</strong><br>
+        Please wait for confirmation before making changes. If something urgent changes, just reply to the email or contact John & Mark directly.
+    </div>
 
     <p>
         <a href="/request-submitted/complete">
@@ -8320,7 +8325,6 @@ def render_request_submitted_page(request_id):
                 {format_date(pending_request['departure_date'])}
                 ({pending_nights} night{"s" if pending_nights != 1 else ""})
                 — {request_status_display(pending_request['status'])}
-                — <a href="/request/{pending_request['id']}/edit?return_to=submitted">Edit</a>
             </li>
             """
 
@@ -14633,6 +14637,12 @@ def edit_request(request_id):
         or request.form.get("return_to")
         or ""
     )
+
+    # V32.8: guest-submitted pending requests are read-only.
+    # Admin edit pages do not use return_to=submitted, so this blocks only the guest-facing edit path.
+    if return_to == "submitted" and safe_text(req["status"]) == "pending":
+        conn.close()
+        return redirect(f"/request/{request_id}/submitted")
 
     if request.method == "POST":
 
