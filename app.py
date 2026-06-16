@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V32_5"
+    "app_V32_6"
 )
 
 BASE_URL = os.environ.get(
@@ -6431,13 +6431,13 @@ def home():
     <h2>Capacity Calendar - {month_title}</h2>
 
     <p>
-        <a href="{calendar_base_path}?year={previous_year}&month={previous_month}">
+        <a data-calendar-nav="1" href="{calendar_base_path}?year={previous_year}&month={previous_month}">
             Previous Month
         </a>
         |
         <strong>{month_title}</strong>
         |
-        <a href="{calendar_base_path}?year={next_year}&month={next_month}">
+        <a data-calendar-nav="1" href="{calendar_base_path}?year={next_year}&month={next_month}">
             Next Month
         </a>
     </p>
@@ -6875,6 +6875,26 @@ def home():
 
         function restoreDateSelectionState() {{
             try {{
+                const queryState = new URLSearchParams(window.location.search);
+                const queryArrival = queryState.get("arrival_date") || "";
+                const queryDeparture = queryState.get("departure_date") || "";
+                const queryNext = queryState.get("next_date_field") || "";
+
+                if (queryArrival) {{
+                    document.getElementById("arrival_date").value = queryArrival;
+                    nextDateField = queryNext || "departure";
+                }}
+
+                if (queryDeparture) {{
+                    document.getElementById("departure_date").value = queryDeparture;
+                    nextDateField = queryNext || "arrival";
+                }}
+
+                if (queryArrival || queryDeparture) {{
+                    saveDateSelectionState();
+                    return;
+                }}
+
                 const savedState = JSON.parse(localStorage.getItem(dateSelectionStorageKey) || "{{}}");
 
                 if (savedState.arrival) {{
@@ -7058,12 +7078,34 @@ def home():
 
         restoreDateSelectionState();
         updateNightsMessage();
+        preserveCalendarNavigationSelection();
 
         document.getElementById("rooms_requested")
             .addEventListener("change", function () {{
                 resetDateSelection();
                 updateNightsMessage();
             }});
+
+        function preserveCalendarNavigationSelection() {{
+            document.querySelectorAll('[data-calendar-nav="1"]').forEach(function (link) {{
+                link.addEventListener("click", function () {{
+                    const arrival = document.getElementById("arrival_date").value;
+                    const departure = document.getElementById("departure_date").value;
+                    const url = new URL(link.href, window.location.origin);
+
+                    if (arrival) {{
+                        url.searchParams.set("arrival_date", arrival);
+                    }}
+
+                    if (departure) {{
+                        url.searchParams.set("departure_date", departure);
+                    }}
+
+                    url.searchParams.set("next_date_field", nextDateField || "arrival");
+                    link.href = url.toString();
+                }});
+            }});
+        }}
 
         function checkUnavailableDates() {{
             const arrival = document.getElementById("arrival_date").value;
@@ -7333,13 +7375,13 @@ def invite_request(invitation_id):
     <h2 id="calendar-section">Capacity Calendar - {month_title}</h2>
 
     <p>
-        <a href="/invite/{invitation_id}?year={previous_year}&month={previous_month}#calendar-section">
+        <a data-calendar-nav="1" href="/invite/{invitation_id}?year={previous_year}&month={previous_month}#calendar-section">
             Previous Month
         </a>
         |
         <strong>{month_title}</strong>
         |
-        <a href="/invite/{invitation_id}?year={next_year}&month={next_month}#calendar-section">
+        <a data-calendar-nav="1" href="/invite/{invitation_id}?year={next_year}&month={next_month}#calendar-section">
             Next Month
         </a>
     </p>
@@ -7794,6 +7836,26 @@ def invite_request(invitation_id):
 
         function restoreDateSelectionState() {{
             try {{
+                const queryState = new URLSearchParams(window.location.search);
+                const queryArrival = queryState.get("arrival_date") || "";
+                const queryDeparture = queryState.get("departure_date") || "";
+                const queryNext = queryState.get("next_date_field") || "";
+
+                if (queryArrival) {{
+                    document.getElementById("arrival_date").value = queryArrival;
+                    nextDateField = queryNext || "departure";
+                }}
+
+                if (queryDeparture) {{
+                    document.getElementById("departure_date").value = queryDeparture;
+                    nextDateField = queryNext || "arrival";
+                }}
+
+                if (queryArrival || queryDeparture) {{
+                    saveDateSelectionState();
+                    return;
+                }}
+
                 const savedState = JSON.parse(localStorage.getItem(dateSelectionStorageKey) || "{{}}");
 
                 if (savedState.arrival) {{
@@ -7977,12 +8039,34 @@ def invite_request(invitation_id):
 
         restoreDateSelectionState();
         updateNightsMessage();
+        preserveCalendarNavigationSelection();
 
         document.getElementById("rooms_requested")
             .addEventListener("change", function () {{
                 resetDateSelection();
                 updateNightsMessage();
             }});
+
+        function preserveCalendarNavigationSelection() {{
+            document.querySelectorAll('[data-calendar-nav="1"]').forEach(function (link) {{
+                link.addEventListener("click", function () {{
+                    const arrival = document.getElementById("arrival_date").value;
+                    const departure = document.getElementById("departure_date").value;
+                    const url = new URL(link.href, window.location.origin);
+
+                    if (arrival) {{
+                        url.searchParams.set("arrival_date", arrival);
+                    }}
+
+                    if (departure) {{
+                        url.searchParams.set("departure_date", departure);
+                    }}
+
+                    url.searchParams.set("next_date_field", nextDateField || "arrival");
+                    link.href = url.toString();
+                }});
+            }});
+        }}
 
         function checkUnavailableDates() {{
             const arrival = document.getElementById("arrival_date").value;
@@ -15019,9 +15103,16 @@ def edit_request(request_id):
         </button>
 
     </form>
+    """
 
+    cancel_target = f"/request/{request_id}"
+
+    if return_to == "submitted":
+        cancel_target = f"/request/{request_id}/submitted"
+
+    html += f"""
     <p>
-        <a href="/request/{request_id}">
+        <a href="{cancel_target}">
             Cancel
         </a>
     </p>
@@ -15387,10 +15478,10 @@ def blocked_page():
 
     <form method="POST" action="/blocked">
         <label>Start Date:</label><br>
-        <input type="date" name="start_date" value="{today_value}" required><br>
+        <input type="date" name="start_date" value="{today_value}" min="{today_value}" autocomplete="off" required><br>
 
         <label>End Date:</label><br>
-        <input type="date" name="end_date" value="{today_value}" required><br>
+        <input type="date" name="end_date" value="{today_value}" min="{today_value}" autocomplete="off" required><br>
 
         <label>Block Type:</label><br>
         <select name="block_type">
@@ -15408,6 +15499,18 @@ def blocked_page():
     </form>
 
     <h2>Current House Blocks</h2>
+    
+    <script>
+        // V32.6: force add-block date pickers to open on the current date/month.
+        document.addEventListener("DOMContentLoaded", function () {{
+            const today = "{today_value}";
+            document.querySelectorAll('form[action="/blocked"] input[type="date"]').forEach(function (input) {{
+                input.value = today;
+                input.min = today;
+            }});
+        }});
+    </script>
+
     """
 
     if not blocked:
@@ -18340,6 +18443,27 @@ Change Notes:
             clearSelectedCellColors();
             nextDateField = "arrival";
         }});
+
+        function preserveCalendarNavigationSelection() {{
+            document.querySelectorAll('[data-calendar-nav="1"]').forEach(function (link) {{
+                link.addEventListener("click", function () {{
+                    const arrival = document.getElementById("arrival_date").value;
+                    const departure = document.getElementById("departure_date").value;
+                    const url = new URL(link.href, window.location.origin);
+
+                    if (arrival) {{
+                        url.searchParams.set("arrival_date", arrival);
+                    }}
+
+                    if (departure) {{
+                        url.searchParams.set("departure_date", departure);
+                    }}
+
+                    url.searchParams.set("next_date_field", nextDateField || "arrival");
+                    link.href = url.toString();
+                }});
+            }});
+        }}
 
         function checkUnavailableDates() {{
             const arrival = document.getElementById("arrival_date").value;
