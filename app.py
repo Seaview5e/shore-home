@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V32_6"
+    "app_V32_7"
 )
 
 BASE_URL = os.environ.get(
@@ -1207,18 +1207,24 @@ def send_email(to_email, subject, body, html_body=None):
 
     if HTML_EMAILS_ENABLED:
 
-        if html_body is None:
-            html_body = plain_text_to_html_email(
-                subject,
-                body
+        try:
+            if html_body is None:
+                html_body = plain_text_to_html_email(
+                    subject,
+                    body
+                )
+
+            msg.add_alternative(
+                html_body,
+                subtype="html"
             )
 
-        msg.add_alternative(
-            html_body,
-            subtype="html"
-        )
+            add_email_header_image_if_available(msg)
 
-        add_email_header_image_if_available(msg)
+        except Exception as error:
+            # V32.7: HTML decoration, header image, or visit-summary formatting
+            # must not prevent the plain-text confirmation email from sending.
+            write_email_audit(to_email, subject, "HTML_SKIPPED", error)
 
     try:
         with smtplib.SMTP("smtp.gmail.com", 587) as smtp:
@@ -3163,19 +3169,35 @@ def guest_visit_history_summary(conn, request_row, current_request_id=None):
 
 def append_guest_visit_history_summary(body, conn, request_row, current_request_id=None):
 
-    summary = guest_visit_history_summary(
-        conn,
-        request_row,
-        current_request_id
-    )
+    # V32.7: visit history is helpful, but it must never block confirmation emails.
+    # If the DB row shape or history query is not available, return the original body.
+    try:
+        summary = guest_visit_history_summary(
+            conn,
+            request_row,
+            current_request_id
+        )
 
-    if not summary:
+        if not summary:
+            return body
+
+        if "Visit Summary" in safe_text(body):
+            return body
+
+        return safe_text(body).rstrip() + "\n" + summary
+
+    except Exception as error:
+        try:
+            write_email_audit(
+                row_value(request_row, "email", "primary_email"),
+                "Visit Summary",
+                "SUMMARY_SKIPPED",
+                error
+            )
+        except Exception:
+            pass
+
         return body
-
-    if "Visit Summary" in safe_text(body):
-        return body
-
-    return safe_text(body).rstrip() + "\n" + summary
 
 def short_date(date_string):
 
@@ -7157,7 +7179,7 @@ def home():
             return true;
         }}
 
-        resetDateSelection();
+        // Do not reset here: preserve arrival/departure when navigating calendar months.
     </script>
     """
 
@@ -8118,7 +8140,7 @@ def invite_request(invitation_id):
             return true;
         }}
 
-        resetDateSelection();
+        // Do not reset here: preserve arrival/departure when navigating calendar months.
     </script>
     """
 
@@ -15501,14 +15523,21 @@ def blocked_page():
     <h2>Current House Blocks</h2>
     
     <script>
-        // V32.6: force add-block date pickers to open on the current date/month.
-        document.addEventListener("DOMContentLoaded", function () {{
+        // V32.7: force add-block date pickers to start on the current date/month,
+        // including browser back/forward cache and autofill restoration.
+        function forceHouseBlockDatesToToday() {{
             const today = "{today_value}";
             document.querySelectorAll('form[action="/blocked"] input[type="date"]').forEach(function (input) {{
-                input.value = today;
                 input.min = today;
+                input.defaultValue = today;
+                input.setAttribute("value", today);
+                input.value = today;
             }});
-        }});
+        }}
+
+        document.addEventListener("DOMContentLoaded", forceHouseBlockDatesToToday);
+        window.addEventListener("pageshow", forceHouseBlockDatesToToday);
+        setTimeout(forceHouseBlockDatesToToday, 50);
     </script>
 
     """
