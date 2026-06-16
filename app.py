@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V32_4"
+    "app_V32_5"
 )
 
 BASE_URL = os.environ.get(
@@ -3091,6 +3091,91 @@ def ensure_guest_change_links(body, request_id, repeat_visit_url=None):
         return body
 
     return body + request_change_links(request_id, repeat_visit_url)
+
+
+def guest_visit_history_summary(conn, request_row, current_request_id=None):
+
+    if not request_row:
+        return ""
+
+    guest_profile_id = row_value(request_row, "guest_profile_id")
+    guest_email = clean_text(row_value(request_row, "email")).lower()
+
+    rows = []
+
+    if guest_profile_id:
+        rows = conn.execute("""
+            SELECT
+                booking_requests.id,
+                booking_requests.arrival_date,
+                booking_requests.departure_date,
+                booking_requests.rooms_requested,
+                booking_requests.status
+            FROM booking_requests
+            WHERE guest_profile_id = ?
+              AND status IN ('approved', 'change_requested', 'cancel_requested')
+            ORDER BY arrival_date DESC, id DESC
+            LIMIT 6
+        """, (
+            guest_profile_id,
+        )).fetchall()
+
+    elif guest_email:
+        rows = conn.execute("""
+            SELECT
+                id,
+                arrival_date,
+                departure_date,
+                rooms_requested,
+                status
+            FROM booking_requests
+            WHERE LOWER(email) = ?
+              AND status IN ('approved', 'change_requested', 'cancel_requested')
+            ORDER BY arrival_date DESC, id DESC
+            LIMIT 6
+        """, (
+            guest_email,
+        )).fetchall()
+
+    if not rows:
+        return ""
+
+    lines = [
+        "",
+        "━━━━━━━━━━━━━━━━━━",
+        "Visit Summary",
+        ""
+    ]
+
+    for row in rows:
+        marker = "Current" if safe_text(row["id"]) == safe_text(current_request_id) else "Previous/Other"
+        lines.append(
+            f"- {marker}: {format_date(row['arrival_date'])} to {format_date(row['departure_date'])} | Rooms: {row['rooms_requested'] or 1} | Status: {safe_text(row['status']).replace('_', ' ').title()}"
+        )
+
+    lines.extend([
+        "━━━━━━━━━━━━━━━━━━",
+        ""
+    ])
+
+    return "\n".join(lines)
+
+
+def append_guest_visit_history_summary(body, conn, request_row, current_request_id=None):
+
+    summary = guest_visit_history_summary(
+        conn,
+        request_row,
+        current_request_id
+    )
+
+    if not summary:
+        return body
+
+    if "Visit Summary" in safe_text(body):
+        return body
+
+    return safe_text(body).rstrip() + "\n" + summary
 
 def short_date(date_string):
 
@@ -6772,6 +6857,42 @@ def home():
         let selectedArrivalCell = null;
         let selectedDepartureCell = null;
 
+
+        const dateSelectionStorageKey = "shore_home_date_selection_" + window.location.pathname;
+
+        function saveDateSelectionState() {{
+            try {{
+                localStorage.setItem(
+                    dateSelectionStorageKey,
+                    JSON.stringify({{
+                        arrival: document.getElementById("arrival_date").value,
+                        departure: document.getElementById("departure_date").value,
+                        next: nextDateField
+                    }})
+                );
+            }} catch (error) {{}}
+        }}
+
+        function restoreDateSelectionState() {{
+            try {{
+                const savedState = JSON.parse(localStorage.getItem(dateSelectionStorageKey) || "{{}}");
+
+                if (savedState.arrival) {{
+                    document.getElementById("arrival_date").value = savedState.arrival;
+                    nextDateField = savedState.next || "departure";
+
+                    if (!savedState.departure) {{
+                        nextDateField = "departure";
+                    }}
+                }}
+
+                if (savedState.departure) {{
+                    document.getElementById("departure_date").value = savedState.departure;
+                    nextDateField = "arrival";
+                }}
+            }} catch (error) {{}}
+        }}
+
         function getRequestedRooms() {{
             return parseInt(document.getElementById("rooms_requested").value);
         }}
@@ -6816,6 +6937,10 @@ def home():
             clearSelectedCellColors();
 
             nextDateField = "arrival";
+
+            try {{
+                localStorage.removeItem(dateSelectionStorageKey);
+            }} catch (error) {{}}
         }}
 
         function updateNightsMessage() {{
@@ -6878,6 +7003,10 @@ def home():
             const departureField = document.getElementById("departure_date");
             const message = document.getElementById("date_selection_message");
 
+            if (nextDateField === "arrival" && arrivalField.value && !departureField.value && dateString > arrivalField.value) {{
+                nextDateField = "departure";
+            }}
+
             if (nextDateField === "arrival") {{
                 clearSelectedCellColors();
 
@@ -6897,6 +7026,7 @@ def home():
                     + ". Now click a departure date.";
 
                 updateNightsMessage();
+                saveDateSelectionState();
 
             }} else {{
 
@@ -6922,8 +7052,12 @@ def home():
                     + ".";
 
                 updateNightsMessage();
+                saveDateSelectionState();
             }}
         }}
+
+        restoreDateSelectionState();
+        updateNightsMessage();
 
         document.getElementById("rooms_requested")
             .addEventListener("change", function () {{
@@ -7642,6 +7776,42 @@ def invite_request(invitation_id):
         let selectedArrivalCell = null;
         let selectedDepartureCell = null;
 
+
+        const dateSelectionStorageKey = "shore_home_date_selection_" + window.location.pathname;
+
+        function saveDateSelectionState() {{
+            try {{
+                localStorage.setItem(
+                    dateSelectionStorageKey,
+                    JSON.stringify({{
+                        arrival: document.getElementById("arrival_date").value,
+                        departure: document.getElementById("departure_date").value,
+                        next: nextDateField
+                    }})
+                );
+            }} catch (error) {{}}
+        }}
+
+        function restoreDateSelectionState() {{
+            try {{
+                const savedState = JSON.parse(localStorage.getItem(dateSelectionStorageKey) || "{{}}");
+
+                if (savedState.arrival) {{
+                    document.getElementById("arrival_date").value = savedState.arrival;
+                    nextDateField = savedState.next || "departure";
+
+                    if (!savedState.departure) {{
+                        nextDateField = "departure";
+                    }}
+                }}
+
+                if (savedState.departure) {{
+                    document.getElementById("departure_date").value = savedState.departure;
+                    nextDateField = "arrival";
+                }}
+            }} catch (error) {{}}
+        }}
+
         function getRequestedRooms() {{
             return parseInt(document.getElementById("rooms_requested").value);
         }}
@@ -7686,6 +7856,10 @@ def invite_request(invitation_id):
             clearSelectedCellColors();
 
             nextDateField = "arrival";
+
+            try {{
+                localStorage.removeItem(dateSelectionStorageKey);
+            }} catch (error) {{}}
         }}
 
         function updateNightsMessage() {{
@@ -7748,6 +7922,10 @@ def invite_request(invitation_id):
             const departureField = document.getElementById("departure_date");
             const message = document.getElementById("date_selection_message");
 
+            if (nextDateField === "arrival" && arrivalField.value && !departureField.value && dateString > arrivalField.value) {{
+                nextDateField = "departure";
+            }}
+
             if (nextDateField === "arrival") {{
                 clearSelectedCellColors();
 
@@ -7767,6 +7945,7 @@ def invite_request(invitation_id):
                     + ". Now click a departure date.";
 
                 updateNightsMessage();
+                saveDateSelectionState();
 
             }} else {{
 
@@ -7792,8 +7971,12 @@ def invite_request(invitation_id):
                     + ".";
 
                 updateNightsMessage();
+                saveDateSelectionState();
             }}
         }}
+
+        restoreDateSelectionState();
+        updateNightsMessage();
 
         document.getElementById("rooms_requested")
             .addEventListener("change", function () {{
@@ -9034,6 +9217,13 @@ def approve_request(request_id):
         room_list=room_list,
         coordinating_with_section=coordinating_with_section,
         optional_admin_message=optional_admin_message
+    )
+
+    approval_email_body = append_guest_visit_history_summary(
+        approval_email_body,
+        conn,
+        request_row,
+        request_id
     )
 
     approval_email_body = ensure_guest_change_links(
@@ -14033,6 +14223,13 @@ John & Mark
 302-521-5401
 """
 
+        body = append_guest_visit_history_summary(
+            body,
+            conn,
+            req,
+            request_id
+        )
+
         email_type_label = "Cancellation Email"
 
     elif email_type == "date_change":
@@ -14050,6 +14247,13 @@ John & Mark
             optional_admin_message=optional_admin_message,
             coordinating_with_section=coordinating_with_section,
             change_links_section=request_change_links(request_id, repeat_visit_url)
+        )
+
+        body = append_guest_visit_history_summary(
+            body,
+            conn,
+            req,
+            request_id
         )
 
         body = ensure_guest_change_links(
@@ -14108,6 +14312,13 @@ John & Mark
             coordinating_with_section=coordinating_with_section,
             optional_admin_message=optional_admin_message,
             change_links_section=request_change_links(request_id, repeat_visit_url)
+        )
+
+        body = append_guest_visit_history_summary(
+            body,
+            conn,
+            req,
+            request_id
         )
 
         body = ensure_guest_change_links(
@@ -14748,11 +14959,7 @@ def edit_request(request_id):
 {req['additional_names']}
 </textarea><br>
 
-        <label>Children:</label><br>
-
-        <input type="number"
-               name="children"
-               value="{req['children']}"><br>
+        <input type="hidden" name="children" value="{req['children'] or 0}">
 
         <label>Pets:</label><br>
 
@@ -15169,6 +15376,8 @@ def blocked_page():
         </div>
         """
 
+    today_value = date.today().strftime("%Y-%m-%d")
+
     html = nav_links() + f"""
     <h1>House Blocks</h1>
 
@@ -15178,10 +15387,10 @@ def blocked_page():
 
     <form method="POST" action="/blocked">
         <label>Start Date:</label><br>
-        <input type="date" name="start_date" required><br>
+        <input type="date" name="start_date" value="{today_value}" required><br>
 
         <label>End Date:</label><br>
-        <input type="date" name="end_date" required><br>
+        <input type="date" name="end_date" value="{today_value}" required><br>
 
         <label>Block Type:</label><br>
         <select name="block_type">
