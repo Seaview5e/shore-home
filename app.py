@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V32_3"
+    "app_V32_4"
 )
 
 BASE_URL = os.environ.get(
@@ -71,6 +71,16 @@ def repeat_visit_request_url_for_row(request_row):
     )
 
     return invitation_request_url(invitation_id)
+
+
+def organizer_planning_url(member_id):
+
+    member_id_text = safe_text(member_id).strip()
+
+    if member_id_text.isdigit():
+        return BASE_URL.rstrip("/") + "/coordination-group-member/" + member_id_text + "/organizer-planning"
+
+    return BASE_URL.rstrip("/") + "/coordination-groups"
 
 EMAIL_ADDRESS = os.environ.get(
     "EMAIL_ADDRESS",
@@ -3200,7 +3210,11 @@ def ensure_coordination_tables(conn):
         "follow_up_sent_at TIMESTAMP",
         "follow_up_response_at TIMESTAMP",
         "follow_up_suggested_arrival TEXT",
-        "follow_up_suggested_departure TEXT"
+        "follow_up_suggested_departure TEXT",
+        "organizer_suggested_guests TEXT",
+        "organizer_suggested_dates_notes TEXT",
+        "organizer_suggestions_at TIMESTAMP",
+        "organizer_kickoff_sent_at TIMESTAMP"
     ]
 
     for column_definition in coordination_member_columns:
@@ -18729,6 +18743,18 @@ def coordination_group_new():
             request.form.get("status")
         )
 
+        organizer_guest_profile_id = clean_text(
+            request.form.get("organizer_guest_profile_id")
+        )
+
+        organizer_admin_message = clean_text(
+            request.form.get("organizer_admin_message")
+        )
+
+        organizer_suggested_guests = clean_text(
+            request.form.get("organizer_suggested_guests")
+        )
+
         if not title:
 
             return f"""
@@ -18756,7 +18782,7 @@ def coordination_group_new():
             target_year_value = date.today().year
 
         if not status:
-            status = "planning"
+            status = "forming"
 
         conn = get_db_connection()
 
@@ -18777,6 +18803,34 @@ def coordination_group_new():
 
         group_id = cursor.lastrowid
 
+        try:
+            organizer_profile_id_value = int(organizer_guest_profile_id)
+        except Exception:
+            organizer_profile_id_value = None
+
+        if organizer_profile_id_value:
+
+            organizer_profile = conn.execute("""
+                SELECT *
+                FROM guest_profiles
+                WHERE id = ?
+            """, (
+                organizer_profile_id_value,
+            )).fetchone()
+
+            if organizer_profile:
+
+                cursor.execute("""
+                    INSERT INTO coordination_group_members
+                    (coordination_group_id, guest_profile_id, role, invitation_status, organizer_suggested_guests, organizer_suggested_dates_notes)
+                    VALUES (?, ?, 'organizer', 'draft', ?, ?)
+                """, (
+                    group_id,
+                    organizer_profile_id_value,
+                    organizer_suggested_guests,
+                    organizer_admin_message
+                ))
+
         conn.commit()
         conn.close()
 
@@ -18785,6 +18839,26 @@ def coordination_group_new():
         )
 
     current_year = date.today().year
+
+    conn = get_db_connection()
+
+    available_profiles = conn.execute("""
+        SELECT id, primary_name, primary_email, status
+        FROM guest_profiles
+        ORDER BY primary_name, primary_email
+    """).fetchall()
+
+    conn.close()
+
+    organizer_options_html = ""
+
+    for profile in available_profiles:
+
+        organizer_options_html += f"""
+            <option value="{profile['id']}">
+                {safe_text(profile['primary_name'])} — {safe_text(profile['primary_email'])} ({safe_text(profile['status'])})
+            </option>
+        """
 
     html = nav_links() + f"""
     <h1>Create Coordination Group</h1>
@@ -18818,6 +18892,35 @@ def coordination_group_new():
 
         <br>
 
+        <div style="border:1px solid #b6d4fe; background:#eef5ff; padding:12px; border-radius:8px; max-width:760px; margin:10px 0;">
+            <h3 style="margin-top:0;">Organizer Formation</h3>
+            <p style="font-size:13px; margin-top:0;">
+                Phase 2: choose the organizer first. The organizer can suggest group members and initial dates before the rest of the group is invited.
+            </p>
+
+            <label>
+                <strong>Organizer</strong>
+            </label><br>
+            <select name="organizer_guest_profile_id" style="width: 420px;">
+                <option value="">No organizer yet</option>
+                {organizer_options_html}
+            </select>
+
+            <br><br>
+
+            <label>
+                <strong>Admin Message to Organizer</strong>
+            </label><br>
+            <textarea name="organizer_admin_message" rows="3" style="width:520px;" placeholder="Example: We are starting a family visit group. Please suggest who should be included and your preferred dates."></textarea>
+
+            <br><br>
+
+            <label>
+                <strong>Possible Guests / Notes</strong>
+            </label><br>
+            <textarea name="organizer_suggested_guests" rows="3" style="width:520px;" placeholder="Example: Kevin, Eric, Judy"></textarea>
+        </div>
+
         <label>
             <strong>Target Year</strong>
         </label><br>
@@ -18834,6 +18937,7 @@ def coordination_group_new():
         </label><br>
 
         <select name="status">
+            <option value="forming" selected>Forming / Organizer Setup</option>
             <option value="planning">Planning</option>
             <option value="collecting_dates">Collecting Dates</option>
             <option value="tentative">Tentative</option>
@@ -19588,6 +19692,64 @@ def coordination_group_detail(group_id):
            style="display: inline-block; background-color: #198754; color: white; padding: 8px 12px; border-radius: 5px; text-decoration: none; font-weight: bold;">
             Go to Booking Handoff Page
         </a>
+        """
+
+    organizer_member = None
+
+    for member in members:
+
+        if safe_text(row_value(member, "role")).strip() == "organizer":
+            organizer_member = member
+            break
+
+    organizer_formation_html = """
+    <p>No organizer has been assigned yet.</p>
+    """
+
+    if organizer_member:
+
+        organizer_link = organizer_planning_url(coordination_member_row_id(organizer_member))
+        organizer_suggested_guests = safe_text(row_value(organizer_member, "organizer_suggested_guests")).strip()
+        organizer_suggested_dates_notes = safe_text(row_value(organizer_member, "organizer_suggested_dates_notes")).strip()
+        organizer_suggestions_at = safe_text(row_value(organizer_member, "organizer_suggestions_at")).strip()
+        organizer_kickoff_sent_at = safe_text(row_value(organizer_member, "organizer_kickoff_sent_at")).strip()
+
+        if not organizer_suggested_guests:
+            organizer_suggested_guests = "No suggested guests submitted yet."
+
+        if not organizer_suggested_dates_notes:
+            organizer_suggested_dates_notes = "No organizer date notes submitted yet."
+
+        if not organizer_suggestions_at:
+            organizer_suggestions_at = "Not submitted yet"
+
+        if not organizer_kickoff_sent_at:
+            organizer_kickoff_sent_at = "Not sent yet"
+
+        organizer_formation_html = f"""
+        <div style="border:2px solid #0d6efd; background:#eef5ff; border-radius:8px; padding:12px; max-width:980px; margin-bottom:14px; font-size:13px;">
+            <h3 style="margin-top:0;">Organizer-Led Formation</h3>
+            <p style="margin-bottom:6px;">
+                <strong>Organizer:</strong> {safe_text(organizer_member['primary_name'])} &lt;{safe_text(organizer_member['primary_email'])}&gt;<br>
+                <strong>Kickoff Email:</strong> {safe_text(organizer_kickoff_sent_at)}<br>
+                <strong>Organizer Suggestions:</strong> {safe_text(organizer_suggestions_at)}
+            </p>
+            <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:13px; background:white;">
+                <tr style="background:#f5f5f5;">
+                    <th align="left">Organizer Link</th>
+                    <th align="left">Suggested Guests</th>
+                    <th align="left">Initial Date Notes</th>
+                </tr>
+                <tr>
+                    <td><a href="{organizer_link}">Open Organizer Planning Page</a></td>
+                    <td style="white-space:pre-wrap;">{safe_text(organizer_suggested_guests)}</td>
+                    <td style="white-space:pre-wrap;">{safe_text(organizer_suggested_dates_notes)}</td>
+                </tr>
+            </table>
+            <p style="margin-bottom:0;">
+                <a href="/coordination-group/{group_id}/organizer-kickoff-preview" style="font-weight:bold;">Preview / Send Organizer Kickoff Email</a>
+            </p>
+        </div>
         """
 
     planning_workflow_html = f"""
@@ -20380,6 +20542,10 @@ def coordination_group_detail(group_id):
 
         {date_options_summary_html}
     </div>
+
+    <h2>Group Formation</h2>
+
+    {organizer_formation_html}
 
     <h2>Group Members</h2>
 
@@ -26656,6 +26822,261 @@ def coordination_group_add_member(group_id):
     return redirect(
         f"/coordination-group/{group_id}"
     )
+
+
+
+
+@app.route("/coordination-group/<int:group_id>/organizer-kickoff-preview", methods=["GET", "POST"])
+def coordination_group_organizer_kickoff_preview(group_id):
+
+    conn = get_db_connection()
+    ensure_coordination_tables(conn)
+
+    group = conn.execute("""
+        SELECT *
+        FROM coordination_groups
+        WHERE id = ?
+    """, (group_id,)).fetchone()
+
+    organizer = conn.execute("""
+        SELECT
+            coordination_group_members.*,
+            guest_profiles.primary_name,
+            guest_profiles.primary_email
+        FROM coordination_group_members
+        JOIN guest_profiles
+            ON coordination_group_members.guest_profile_id = guest_profiles.id
+        WHERE coordination_group_members.coordination_group_id = ?
+          AND coordination_group_members.role = 'organizer'
+        ORDER BY coordination_group_members.id
+        LIMIT 1
+    """, (group_id,)).fetchone()
+
+    if not group or not organizer:
+        conn.close()
+        return f"""
+        {nav_links()}
+        <h1>Organizer Kickoff Not Available</h1>
+        <p>This group needs an Organizer before the kickoff email can be sent.</p>
+        <p><a href="/coordination-group/{group_id}">Back to Coordination Group</a></p>
+        """
+
+    planning_link = organizer_planning_url(coordination_member_row_id(organizer))
+
+    body = f"""Hi {safe_text(organizer['primary_name'])},
+
+We are starting a group visit planning process for:
+
+{safe_text(group['title'])}
+
+Your role: Organizer
+
+As organizer, please help suggest who may be part of the group and the initial dates that could work.
+
+Use this planning link:
+{planning_link}
+
+You can suggest:
+- names and emails of guests to include
+- preferred dates
+- alternate dates
+- room expectations
+- notes that would help planning
+
+Nothing is confirmed or booked yet. John and Mark will review the organizer suggestions before the broader coordination invitations are sent.
+
+John & Mark
+302-521-5401
+"""
+
+    subject = f"Strathmere group visit planning - {safe_text(group['title'])}"
+
+    if request.method == "POST":
+
+        try:
+            send_email(
+                safe_text(organizer["primary_email"]),
+                subject,
+                body
+            )
+
+            conn.execute("""
+                UPDATE coordination_group_members
+                SET organizer_kickoff_sent_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (
+                coordination_member_row_id(organizer),
+            ))
+
+            conn.commit()
+            conn.close()
+
+            return redirect(f"/coordination-group/{group_id}")
+
+        except Exception as error:
+            conn.close()
+            return f"""
+            {nav_links()}
+            <h1>Organizer Kickoff Email Failed</h1>
+            <p style="color:red; font-weight:bold;">{safe_text(error)}</p>
+            <p><a href="/coordination-group/{group_id}">Back to Coordination Group</a></p>
+            """
+
+    conn.close()
+
+    return f"""
+    {nav_links()}
+    <h1>Preview Organizer Kickoff Email</h1>
+    <p><strong>To:</strong> {safe_text(organizer['primary_name'])} &lt;{safe_text(organizer['primary_email'])}&gt;</p>
+    <p><strong>Subject:</strong> {safe_text(subject)}</p>
+    <pre style="white-space:pre-wrap; background:#f8f9fa; border:1px solid #dee2e6; padding:12px; max-width:900px;">{safe_text(body)}</pre>
+    <form method="POST" onsubmit="return confirm('Send organizer kickoff email?');">
+        <button type="submit" style="font-weight:bold; padding:8px 12px;">Send Organizer Kickoff Email</button>
+        &nbsp;
+        <a href="/coordination-group/{group_id}">Cancel / Back</a>
+    </form>
+    """
+
+
+@app.route("/coordination-group-member/<int:member_id>/organizer-planning", methods=["GET", "POST"])
+def coordination_group_member_organizer_planning(member_id):
+
+    conn = get_db_connection()
+    ensure_coordination_tables(conn)
+
+    member = conn.execute("""
+        SELECT
+            coordination_group_members.*,
+            coordination_groups.title,
+            guest_profiles.primary_name,
+            guest_profiles.primary_email
+        FROM coordination_group_members
+        JOIN coordination_groups
+            ON coordination_group_members.coordination_group_id = coordination_groups.id
+        JOIN guest_profiles
+            ON coordination_group_members.guest_profile_id = guest_profiles.id
+        WHERE coordination_group_members.id = ?
+    """, (
+        member_id,
+    )).fetchone()
+
+    if not member or safe_text(row_value(member, "role")).strip() != "organizer":
+        conn.close()
+        return f"""
+        <h1>Organizer Planning Link Not Available</h1>
+        <p>This link is only available for the Organizer assigned to this coordination group.</p>
+        """
+
+    if request.method == "POST":
+
+        suggested_guests = clean_text(request.form.get("suggested_guests"))
+        date_notes = clean_text(request.form.get("date_notes"))
+        preferred_arrival = clean_text(request.form.get("preferred_arrival"))
+        preferred_departure = clean_text(request.form.get("preferred_departure"))
+        alternate_arrival = clean_text(request.form.get("alternate_arrival"))
+        alternate_departure = clean_text(request.form.get("alternate_departure"))
+        rooms_requested = normalize_rooms_requested(request.form.get("rooms_requested"))
+
+        if preferred_arrival and preferred_departure and not valid_date_range(preferred_arrival, preferred_departure):
+            conn.close()
+            return "<h1>Date Error</h1><p>Preferred departure date must be after or equal to preferred arrival date.</p>"
+
+        if alternate_arrival and alternate_departure and not valid_date_range(alternate_arrival, alternate_departure):
+            conn.close()
+            return "<h1>Date Error</h1><p>Alternate departure date must be after or equal to alternate arrival date.</p>"
+
+        conn.execute("""
+            UPDATE coordination_group_members
+            SET organizer_suggested_guests = ?,
+                organizer_suggested_dates_notes = ?,
+                organizer_suggestions_at = CURRENT_TIMESTAMP,
+                invitation_status = CASE
+                    WHEN invitation_status = 'draft' THEN 'viewed'
+                    ELSE invitation_status
+                END
+            WHERE id = ?
+        """, (
+            suggested_guests,
+            date_notes,
+            member_id
+        ))
+
+        if preferred_arrival and preferred_departure:
+            conn.execute("""
+                INSERT INTO coordination_date_options
+                (coordination_group_member_id, priority, arrival_date, departure_date, flexibility_days, rooms_requested, notes)
+                VALUES (?, 'preferred', ?, ?, 0, ?, ?)
+            """, (
+                member_id,
+                preferred_arrival,
+                preferred_departure,
+                rooms_requested,
+                "Organizer initial preferred dates. " + date_notes
+            ))
+
+        if alternate_arrival and alternate_departure:
+            conn.execute("""
+                INSERT INTO coordination_date_options
+                (coordination_group_member_id, priority, arrival_date, departure_date, flexibility_days, rooms_requested, notes)
+                VALUES (?, 'alternate', ?, ?, 0, ?, ?)
+            """, (
+                member_id,
+                alternate_arrival,
+                alternate_departure,
+                rooms_requested,
+                "Organizer initial alternate dates. " + date_notes
+            ))
+
+        conn.commit()
+        conn.close()
+
+        return f"""
+        <h1>Organizer Suggestions Saved</h1>
+        <p>Thanks. Your group member suggestions and initial dates have been saved for admin review.</p>
+        <p>You can reply to the email if anything else changes.</p>
+        """
+
+    current_suggested_guests = safe_text(row_value(member, "organizer_suggested_guests"))
+    current_date_notes = safe_text(row_value(member, "organizer_suggested_dates_notes"))
+
+    conn.close()
+
+    return f"""
+    <h1>Group Visit Planning</h1>
+    <p><strong>Group:</strong> {safe_text(member['title'])}</p>
+    <p><strong>Your role:</strong> Organizer</p>
+    <p>Please suggest who should be included and the initial dates that may work. Nothing is confirmed or booked yet.</p>
+
+    <form method="POST">
+        <label><strong>Suggested Guests</strong></label><br>
+        <textarea name="suggested_guests" rows="5" style="width:100%; max-width:760px;">{safe_text(current_suggested_guests)}</textarea>
+        <br><br>
+
+        <label><strong>Rooms Requested / Expected</strong></label><br>
+        <input type="number" name="rooms_requested" min="1" max="4" value="1" style="width:80px;">
+        <br><br>
+
+        <label><strong>Preferred Arrival</strong></label><br>
+        <input type="date" name="preferred_arrival">
+        <br>
+        <label><strong>Preferred Departure</strong></label><br>
+        <input type="date" name="preferred_departure">
+        <br><br>
+
+        <label><strong>Alternate Arrival</strong></label><br>
+        <input type="date" name="alternate_arrival">
+        <br>
+        <label><strong>Alternate Departure</strong></label><br>
+        <input type="date" name="alternate_departure">
+        <br><br>
+
+        <label><strong>Date / Planning Notes</strong></label><br>
+        <textarea name="date_notes" rows="4" style="width:100%; max-width:760px;">{safe_text(current_date_notes)}</textarea>
+        <br><br>
+
+        <button type="submit" style="font-weight:bold; padding:8px 12px;">Save Organizer Suggestions</button>
+    </form>
+    """
 
 
 @app.errorhandler(Exception)
