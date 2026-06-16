@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V32_10"
+    "app_V32_11"
 )
 
 BASE_URL = os.environ.get(
@@ -3284,6 +3284,18 @@ def guest_reservations_html(conn, request_row):
                     {safe_text(status_text)}
                 </span>
             </td>
+            <td style="padding:6px 8px; border-bottom:1px solid #eee; white-space:nowrap;">
+                <a href="/request/{visit['id']}/change" style="
+                    display:inline-block;
+                    background:#0f4c81;
+                    color:#ffffff;
+                    padding:6px 9px;
+                    border-radius:7px;
+                    text-decoration:none;
+                    font-size:12px;
+                    font-weight:bold;
+                ">Change Request</a>
+            </td>
         </tr>
         """
 
@@ -3294,6 +3306,7 @@ def guest_reservations_html(conn, request_row):
             <th align="left" style="padding:7px 8px; border-bottom:1px solid #ddd;">Departure</th>
             <th align="center" style="padding:7px 8px; border-bottom:1px solid #ddd;">Rooms</th>
             <th align="left" style="padding:7px 8px; border-bottom:1px solid #ddd;">Status</th>
+            <th align="left" style="padding:7px 8px; border-bottom:1px solid #ddd;">Action</th>
         </tr>
         {row_html}
     </table>
@@ -3342,7 +3355,7 @@ def all_reservations(request_id):
     <h1>All Reservations</h1>
 
     <p style="max-width:850px; line-height:1.4;">
-        This is a read-only summary of confirmed and pending Shore Home visits for {safe_text(guest_name)}.
+        This is a guest summary of confirmed and pending Shore Home visits for {safe_text(guest_name)}. Use Change Request next to a visit if you need to update it.
     </p>
 
     {reservations_html}
