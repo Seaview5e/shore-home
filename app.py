@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V32_8"
+    "app_V32_9"
 )
 
 BASE_URL = os.environ.get(
@@ -822,6 +822,9 @@ def plain_text_to_html_email(subject, body):
 
         nearby_lower = safe_text(nearby_text).lower()
 
+        if "all reservations" in nearby_lower or "/all-reservations" in url:
+            return "All Reservations"
+
         if "change" in nearby_lower or "/change" in url:
             return "Change Request"
 
@@ -879,6 +882,7 @@ def plain_text_to_html_email(subject, body):
         "Change Request:",
         "Cancel Visit:",
         "Cancel Request:",
+        "All Reservations:",
         "Request a Visit:",
         "Request a Visit:",
         "Request a Visit:",
@@ -899,6 +903,7 @@ def plain_text_to_html_email(subject, body):
         "━━━━━━━━━━━━━━━━━━",
         "Change Request",
         "Cancel Visit",
+        "All Reservations",
         "Request a Visit",
         "Request a Visit",
         "Request a Visit"
@@ -1448,6 +1453,7 @@ PUBLIC_ENDPOINTS = {
     "submit",
     "request_submitted_review",
     "request_submitted_complete",
+    "all_reservations",
     "change_request",
     "change_request_bad_link",
     "cancel_request",
@@ -3058,9 +3064,11 @@ def request_change_links(request_id, repeat_visit_url=None):
     if request_id_text.isdigit():
         change_url = f"{BASE_URL}/request/{request_id_text}/change"
         cancel_url = f"{BASE_URL}/request/{request_id_text}/cancel"
+        all_reservations_url = f"{BASE_URL}/request/{request_id_text}/all-reservations"
     else:
         change_url = BASE_URL
         cancel_url = ""
+        all_reservations_url = standard_new_request_url()
 
     if not repeat_visit_url:
         repeat_visit_url = standard_new_request_url()
@@ -3084,6 +3092,9 @@ Change Request:
 {cancel_block}
 Request a Visit:
 {repeat_visit_url}
+
+All Reservations:
+{all_reservations_url}
 
 ━━━━━━━━━━━━━━━━━━
 """
@@ -3198,6 +3209,150 @@ def append_guest_visit_history_summary(body, conn, request_row, current_request_
             pass
 
         return body
+
+
+def guest_reservations_html(conn, request_row):
+
+    if not request_row:
+        return ""
+
+    guest_profile_id = row_value(request_row, "guest_profile_id")
+    guest_email = clean_text(row_value(request_row, "email", "primary_email")).lower()
+
+    params = []
+    where_clause = ""
+
+    if guest_profile_id:
+        where_clause = "guest_profile_id = ?"
+        params.append(guest_profile_id)
+    elif guest_email:
+        where_clause = "LOWER(email) = ?"
+        params.append(guest_email)
+    else:
+        return "<p>No reservation history is available for this request.</p>"
+
+    rows = conn.execute(f"""
+        SELECT
+            id,
+            arrival_date,
+            departure_date,
+            rooms_requested,
+            status,
+            created_at
+        FROM booking_requests
+        WHERE {where_clause}
+          AND status IN ('pending', 'approved', 'change_requested', 'cancel_requested', 'declined')
+        ORDER BY arrival_date DESC, id DESC
+    """, params).fetchall()
+
+    if not rows:
+        return "<p>No confirmed or pending visits found.</p>"
+
+    row_html = ""
+
+    for visit in rows:
+
+        status_text = safe_text(visit["status"]).replace("_", " ").title()
+
+        if safe_text(visit["status"]) == "approved":
+            badge_bg = "#e8f7ea"
+            badge_color = "#198754"
+        elif safe_text(visit["status"]) == "pending":
+            badge_bg = "#fff3cd"
+            badge_color = "#856404"
+        elif safe_text(visit["status"]) in ("change_requested", "cancel_requested"):
+            badge_bg = "#e7f1ff"
+            badge_color = "#0d6efd"
+        else:
+            badge_bg = "#f8d7da"
+            badge_color = "#842029"
+
+        row_html += f"""
+        <tr>
+            <td style="padding:6px 8px; border-bottom:1px solid #eee; white-space:nowrap;">
+                {format_date(visit['arrival_date'])}
+            </td>
+            <td style="padding:6px 8px; border-bottom:1px solid #eee; white-space:nowrap;">
+                {format_date(visit['departure_date'])}
+            </td>
+            <td style="padding:6px 8px; border-bottom:1px solid #eee; text-align:center;">
+                {safe_text(visit['rooms_requested'] or 1)}
+            </td>
+            <td style="padding:6px 8px; border-bottom:1px solid #eee;">
+                <span style="background:{badge_bg}; color:{badge_color}; padding:3px 7px; border-radius:999px; font-size:12px; font-weight:bold;">
+                    {safe_text(status_text)}
+                </span>
+            </td>
+        </tr>
+        """
+
+    return f"""
+    <table border="0" cellpadding="0" cellspacing="0" style="border-collapse:collapse; width:100%; max-width:850px; font-size:14px;">
+        <tr style="background:#f5f7fa;">
+            <th align="left" style="padding:7px 8px; border-bottom:1px solid #ddd;">Arrival</th>
+            <th align="left" style="padding:7px 8px; border-bottom:1px solid #ddd;">Departure</th>
+            <th align="center" style="padding:7px 8px; border-bottom:1px solid #ddd;">Rooms</th>
+            <th align="left" style="padding:7px 8px; border-bottom:1px solid #ddd;">Status</th>
+        </tr>
+        {row_html}
+    </table>
+    """
+
+
+@app.route("/request/<int:request_id>/all-reservations")
+def all_reservations(request_id):
+
+    conn = get_db_connection()
+
+    request_row = conn.execute("""
+        SELECT *
+        FROM booking_requests
+        WHERE id = ?
+    """, (
+        request_id,
+    )).fetchone()
+
+    if not request_row:
+        conn.close()
+        return f"""
+        {nav_links()}
+        <h1>Reservations Not Found</h1>
+        <p>We could not find the visit request for this link.</p>
+        """
+
+    guest_name = safe_text(row_value(request_row, "name", "primary_name"))
+    invitation_id = row_value(request_row, "invitation_id")
+
+    if invitation_id:
+        request_visit_link = f"/invite/{safe_text(invitation_id)}"
+    else:
+        request_visit_link = "/new-request"
+
+    reservations_html = guest_reservations_html(
+        conn,
+        request_row
+    )
+
+    conn.close()
+
+    return f"""
+    {nav_links()}
+
+    <h1>All Reservations</h1>
+
+    <p style="max-width:850px; line-height:1.4;">
+        This is a read-only summary of confirmed and pending Shore Home visits for {safe_text(guest_name)}.
+    </p>
+
+    {reservations_html}
+
+    <p style="margin-top:16px;">
+        <a href="{request_visit_link}" style="font-weight:bold;">
+            Request a Visit
+        </a>
+    </p>
+    """
+
 
 def short_date(date_string):
 
