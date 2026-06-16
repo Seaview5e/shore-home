@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_2"
+    "app_V33_3"
 )
 
 BASE_URL = os.environ.get(
@@ -261,6 +261,13 @@ EMAIL_TEMPLATE_METADATA = {
         "updated_by": "John",
         "notes": "Organizer-led group formation email. Stored in templates/emails/organizer_kickoff.txt."
     },
+    "organizer_suggestions_admin": {
+        "name": "Organizer Suggestions Admin Alert",
+        "version": "1.0",
+        "last_updated": "2026-06-16",
+        "updated_by": "John",
+        "notes": "Admin alert sent after organizer submits group setup suggestions. Stored in templates/emails/organizer_suggestions_admin.txt."
+    },
     "coordination_invitation": {
         "name": "Coordination Invitation / Update Email",
         "version": "1.0",
@@ -392,28 +399,49 @@ John & Mark
 
     "organizer_kickoff.txt": """Hi {{ guest_name }},
 
-We are starting a group visit planning process for:
+A group visit planning process has started for:
 
 {{ group_title }}
 
 Your role: Organizer
 
-As organizer, please help suggest who may be part of the group and the initial dates that could work.
+Please use the link below to help set up the group. You can suggest who should be included and one preferred date range to start the planning process.
 
-Use this planning link:
+Organizer Planning Link:
 {{ planning_link }}
 
-You can suggest:
-- names and emails of guests to include
-- preferred dates
-- alternate dates
-- room expectations
-- notes that would help planning
+After you submit this first setup information, John and Mark will review it. Then everyone in the group, including you, will receive individual requests to submit or confirm dates.
 
-Nothing is confirmed or booked yet. John and Mark will review your suggestions before the broader coordination invitations are sent.
+Nothing is confirmed or booked yet.
 
 John & Mark
 302-521-5401
+""",
+    "organizer_suggestions_admin.txt": """Organizer setup submitted for {{ group_title }}
+
+Organizer:
+{{ organizer_name }} <{{ organizer_email }}>
+
+Suggested group members:
+{{ suggested_guests }}
+
+Preferred dates to start planning:
+{{ preferred_dates }}
+
+Expected rooms:
+{{ rooms_requested }}
+
+Organizer notes:
+{{ date_notes }}
+
+Admin actions:
+Open Group Planning Page:
+{{ group_link }}
+
+Open Guest Profiles:
+{{ guest_profiles_link }}
+
+Next step: review the suggested people and dates, then add/confirm guest profiles before sending broader coordination invitations.
 """,
     "coordination_invitation.txt": """Hi {{ guest_name }},
 
@@ -27804,6 +27832,42 @@ def coordination_group_organizer_kickoff_preview(group_id):
     """
 
 
+def send_admin_organizer_suggestions_email(group_id, member, suggested_guests, preferred_arrival, preferred_departure, rooms_requested, date_notes):
+
+    if not ADMIN_NOTIFICATIONS_ENABLED:
+        return
+
+    admin_email = safe_text(ADMIN_NOTIFICATION_EMAIL).strip()
+
+    if not is_valid_email_address(admin_email):
+        return
+
+    group_title = safe_text(row_value(member, "title"))
+    preferred_dates = "Not provided"
+
+    if preferred_arrival and preferred_departure:
+        preferred_dates = f"{format_date(preferred_arrival)} to {format_date(preferred_departure)}"
+
+    body = render_email_template(
+        "organizer_suggestions_admin.txt",
+        group_title=group_title,
+        organizer_name=safe_text(row_value(member, "primary_name")),
+        organizer_email=safe_text(row_value(member, "primary_email")),
+        suggested_guests=safe_text(suggested_guests) or "No suggested guests provided.",
+        preferred_dates=preferred_dates,
+        rooms_requested=safe_text(rooms_requested),
+        date_notes=safe_text(date_notes) or "No notes provided.",
+        group_link=BASE_URL.rstrip("/") + f"/coordination-group/{group_id}",
+        guest_profiles_link=BASE_URL.rstrip("/") + "/profiles"
+    )
+
+    send_email(
+        admin_email,
+        f"Organizer setup submitted - {group_title}",
+        body
+    )
+
+
 @app.route("/coordination-group-member/<int:member_id>/organizer-planning", methods=["GET", "POST"])
 def coordination_group_member_organizer_planning(member_id):
 
@@ -27894,12 +27958,34 @@ def coordination_group_member_organizer_planning(member_id):
             ))
 
         conn.commit()
+
+        admin_email_error = ""
+
+        try:
+            send_admin_organizer_suggestions_email(
+                row_value(member, "coordination_group_id"),
+                member,
+                suggested_guests,
+                preferred_arrival,
+                preferred_departure,
+                rooms_requested,
+                date_notes
+            )
+        except Exception as error:
+            admin_email_error = safe_text(error)
+
         conn.close()
 
+        admin_note = ""
+
+        if admin_email_error:
+            admin_note = f"<p style='color:#856404;'>Your setup was saved, but the admin alert email could not be sent automatically. John and Mark can still see it in the app.</p>"
+
         return f"""
-        <h1>Organizer Suggestions Saved</h1>
-        <p>Thanks. Your group member suggestions and initial dates have been saved for admin review.</p>
-        <p>You can reply to the email if anything else changes.</p>
+        <h1>Organizer Setup Saved</h1>
+        <p>Thanks. Your suggested group members and preferred starting dates have been saved for John and Mark to review.</p>
+        <p>Nothing is confirmed yet. After review, everyone in the group, including you, will receive individual requests to submit or confirm date options.</p>
+        {admin_note}
         """
 
     current_suggested_guests = safe_text(row_value(member, "organizer_suggested_guests"))
@@ -27908,40 +27994,56 @@ def coordination_group_member_organizer_planning(member_id):
     conn.close()
 
     return f"""
-    <h1>Group Visit Planning</h1>
-    <p><strong>Group:</strong> {safe_text(member['title'])}</p>
-    <p><strong>Your role:</strong> Organizer</p>
-    <p>Please suggest who should be included and the initial dates that may work. Nothing is confirmed or booked yet.</p>
+    <div style="max-width: 860px; margin: 0 auto; font-family: Arial, sans-serif; line-height: 1.4;">
+        <h1 style="margin-bottom:6px;">Set Up Your Group Visit</h1>
 
-    <form method="POST">
-        <label><strong>Suggested Guests</strong></label><br>
-        <textarea name="suggested_guests" rows="5" style="width:100%; max-width:760px;">{safe_text(current_suggested_guests)}</textarea>
-        <br><br>
+        <div style="background:#eef5ff; border:1px solid #bfd7f1; border-radius:10px; padding:12px 14px; margin-bottom:14px;">
+            <p style="margin:0 0 6px 0;"><strong>Group:</strong> {safe_text(member['title'])}</p>
+            <p style="margin:0;"><strong>Your role:</strong> Organizer</p>
+        </div>
 
-        <label><strong>Rooms Requested / Expected</strong></label><br>
-        <input type="number" name="rooms_requested" min="1" max="4" value="1" style="width:80px;">
-        <br><br>
+        <p style="margin-top:0;">
+            This page is just to help set up the group. Please suggest who should be included and one preferred date range to start planning.
+            After John and Mark review this information, everyone in the group, including you, will receive individual requests to submit or confirm date options.
+        </p>
 
-        <label><strong>Preferred Arrival</strong></label><br>
-        <input type="date" name="preferred_arrival">
-        <br>
-        <label><strong>Preferred Departure</strong></label><br>
-        <input type="date" name="preferred_departure">
-        <br><br>
+        <form method="POST">
+            <div style="border:1px solid #ddd; border-radius:10px; padding:12px; margin-bottom:12px; background:#fff;">
+                <label><strong>Who should be included?</strong></label>
+                <p style="font-size:13px; color:#555; margin:4px 0 8px 0;">
+                    Add names and emails if you have them. One person per line works best.
+                </p>
+                <textarea name="suggested_guests" rows="6" style="width:100%; box-sizing:border-box; font-size:14px;" placeholder="Example:
+Kevin Smith - kevin@example.com
+Eric Jones - eric@example.com
+Judy - email unknown">{safe_text(current_suggested_guests)}</textarea>
+            </div>
 
-        <label><strong>Alternate Arrival</strong></label><br>
-        <input type="date" name="alternate_arrival">
-        <br>
-        <label><strong>Alternate Departure</strong></label><br>
-        <input type="date" name="alternate_departure">
-        <br><br>
+            <div style="border:1px solid #ddd; border-radius:10px; padding:12px; margin-bottom:12px; background:#fff;">
+                <label><strong>Preferred dates to start planning</strong></label>
+                <p style="font-size:13px; color:#555; margin:4px 0 8px 0;">
+                    This is only a starting point. Everyone will still get a request to submit their own date options.
+                </p>
+                <div style="display:flex; gap:12px; flex-wrap:wrap;">
+                    <label>Arrival<br><input type="date" name="preferred_arrival" style="font-size:14px; padding:5px;"></label>
+                    <label>Departure<br><input type="date" name="preferred_departure" style="font-size:14px; padding:5px;"></label>
+                    <label>Expected rooms<br><input type="number" name="rooms_requested" min="1" max="4" value="1" style="width:80px; font-size:14px; padding:5px;"></label>
+                </div>
+            </div>
 
-        <label><strong>Date / Planning Notes</strong></label><br>
-        <textarea name="date_notes" rows="4" style="width:100%; max-width:760px;">{safe_text(current_date_notes)}</textarea>
-        <br><br>
+            <div style="border:1px solid #ddd; border-radius:10px; padding:12px; margin-bottom:12px; background:#fff;">
+                <label><strong>Notes for John and Mark</strong></label>
+                <p style="font-size:13px; color:#555; margin:4px 0 8px 0;">
+                    Include anything helpful, like who may need rooms together, flexible dates, children, or travel constraints.
+                </p>
+                <textarea name="date_notes" rows="4" style="width:100%; box-sizing:border-box; font-size:14px;">{safe_text(current_date_notes)}</textarea>
+            </div>
 
-        <button type="submit" style="font-weight:bold; padding:8px 12px;">Save Organizer Suggestions</button>
-    </form>
+            <button type="submit" style="font-weight:bold; padding:9px 14px; background:#0f4c81; color:white; border:0; border-radius:7px;">
+                Send Group Setup to John and Mark
+            </button>
+        </form>
+    </div>
     """
 
 
