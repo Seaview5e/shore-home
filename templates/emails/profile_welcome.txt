@@ -1,0 +1,32 @@
+Hi {{ guest_name }},
+
+Welcome to the Strathmere Visit Request System.
+
+You’ve officially been added to this season’s highly sophisticated, mildly experimental, AI-assisted visit planning system.
+
+Translation: I’ve been having way too much fun building something to make planning visits easier… and hopefully slightly more entertaining.
+
+Like any beta, there may still be a few rough edges. If something feels confusing, awkward, or unexpectedly robotic, please let me know so I can keep improving it. Any mistakes are probably AI-generated, but customer support is still delightfully human. Email and phone calls still work too — we haven’t handed full control over to the robots… yet.
+
+You don’t need to do anything today.
+
+Soon you may receive an invitation to request a visit or to coordinate dates with others.
+
+A Request a Visit invitation is for planning a stay for yourself or for people traveling with you. That could mean your family, children, relatives, friends, or anyone you are helping organize for the same dates.
+
+A Coordination invitation is for a group trying to line up dates before anything is finalized. Everyone shares dates that work best, and we try to find overlap without creating seventeen separate text chains.
+
+A few helpful notes:
+
+• Each visit date range needs its own request.
+• You can request multiple rooms when everyone is staying the same dates.
+• Please include everyone’s names so we can plan accommodations accurately.
+• Nothing is confirmed until you receive approval.
+
+Once invitations begin, the system will walk you through the rest and send follow-up emails with confirmations and next steps.
+
+Looking forward to seeing everyone this season.
+
+John & Mark
+Strathmere Visit Request System
+302-521-5401
