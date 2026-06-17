@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_6"
+    "app_V33_7"
 )
 
 BASE_URL = os.environ.get(
@@ -20684,53 +20684,101 @@ def coordination_group_detail(group_id):
             if not final_email_sent_display:
                 final_email_sent_display = "Not sent yet"
 
-            all_confirmed_banner = f"""
-            <div style="
-                background-color: #d4edda;
-                border: 2px solid #198754;
-                padding: 14px;
-                border-radius: 8px;
-                margin-bottom: 18px;
-                max-width: 900px;
-            ">
+            final_capacity_check = coordination_capacity_check_for_window(
+                conn,
+                group_id,
+                group["tentative_arrival_date"],
+                group["tentative_departure_date"]
+            )
 
-                <h2 style="
-                    color: #198754;
-                    margin-top: 0;
+            if final_capacity_check["capacity_ok"]:
+
+                all_confirmed_banner = f"""
+                <div style="
+                    background-color: #d4edda;
+                    border: 2px solid #198754;
+                    padding: 14px;
+                    border-radius: 8px;
+                    margin-bottom: 18px;
+                    max-width: 900px;
                 ">
-                    All Guests Confirmed Tentative Dates
-                </h2>
 
-                <p>
-                    This coordination group is ready for final communication
-                    and booking request creation.
-                </p>
+                    <h2 style="
+                        color: #198754;
+                        margin-top: 0;
+                    ">
+                        Phase 5: Ready for Final Confirmation
+                    </h2>
 
-                <p>
-                    <strong>Final Coordination Email:</strong> {final_email_sent_display}
-                </p>
+                    <p>
+                        All coordination members have confirmed the tentative dates and capacity still checks out.
+                    </p>
 
-                <p>
-                    <a href="/coordination-group/{group_id}/handoff"
-                       style="
-                           display: inline-block;
-                           background-color: #198754;
-                           color: white;
-                           padding: 8px 12px;
-                           border-radius: 5px;
-                           text-decoration: none;
-                           font-weight: bold;
-                       ">
-                        Go to Booking Handoff
-                    </a>
-                </p>
+                    <p>
+                        <strong>Tentative Dates:</strong>
+                        {format_date(group['tentative_arrival_date'])}
+                        to
+                        {format_date(group['tentative_departure_date'])}<br>
+                        <strong>Rooms Needed:</strong> {safe_text(final_capacity_check['rooms_needed'])}<br>
+                        <strong>Final Coordination Email:</strong> {final_email_sent_display}
+                    </p>
 
-                <p style="font-size: 13px; color: #555; margin-bottom: 0;">
-                    Planning is complete. Use Booking Handoff for guest confirmations, booking requests, room assignments, final confirmation, and closing.
-                </p>
+                    <p>
+                        <a href="/coordination-group/{group_id}/handoff"
+                           style="
+                               display: inline-block;
+                               background-color: #198754;
+                               color: white;
+                               padding: 8px 12px;
+                               border-radius: 5px;
+                               text-decoration: none;
+                               font-weight: bold;
+                           ">
+                            Continue to Booking Handoff / Finalize Group Visit
+                        </a>
+                    </p>
 
-            </div>
-            """
+                    <p style="font-size: 13px; color: #555; margin-bottom: 0;">
+                        Use Booking Handoff for guest confirmations, booking requests, room assignments, final confirmation, and closing.
+                    </p>
+
+                </div>
+                """
+
+            else:
+
+                all_confirmed_banner = f"""
+                <div style="
+                    background-color: #fff3cd;
+                    border: 2px solid #fd7e14;
+                    padding: 14px;
+                    border-radius: 8px;
+                    margin-bottom: 18px;
+                    max-width: 900px;
+                ">
+
+                    <h2 style="
+                        color: #856404;
+                        margin-top: 0;
+                    ">
+                        Phase 5: Needs Another Round
+                    </h2>
+
+                    <p>
+                        Guests confirmed the tentative dates, but capacity or availability changed before finalization.
+                    </p>
+
+                    <p>
+                        <strong>Issue:</strong><br>
+                        {safe_text('; '.join(final_capacity_check['notes']))}
+                    </p>
+
+                    <p style="font-size: 13px; color: #555; margin-bottom: 0;">
+                        Adjust tentative dates or room counts before finalizing the group visit.
+                    </p>
+
+                </div>
+                """
 
     tentative_management_html = """
     <p>
@@ -22719,7 +22767,7 @@ def coordination_group_handoff(group_id):
                             border-radius: 5px;
                             font-weight: bold;
                         ">
-                    Send Tentative Date Confirmation Emails
+                    Send Tentative Group Dates Emails
                 </button>
             </form>
             <small style="color: #666;">
@@ -27485,7 +27533,7 @@ def coordination_group_send_reminders(group_id):
         if not to_email:
             continue
 
-        subject = f"Strathmere tentative dates reminder - {safe_text(group['title'])}"
+        subject = f"Strathmere tentative group dates - {safe_text(group['title'])}"
 
         update_link = f"{BASE_URL}/coordination-group-member/{coordination_member_row_id(member)}/request"
 
@@ -27560,7 +27608,7 @@ John & Mark
     return f"""
     {nav_links()}
 
-    <h1>Tentative Date Confirmation Emails Sent</h1>
+    <h1>Tentative Group Dates Emails Sent</h1>
 
     {email_template_metadata_html("tentative_confirmation")}
 
