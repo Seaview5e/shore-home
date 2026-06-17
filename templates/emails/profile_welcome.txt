@@ -1,7 +1,5 @@
 Hi {{ guest_name }},
 
-Welcome to the Strathmere Visit Request System.
-
 You’ve officially been added to this season’s highly sophisticated, mildly experimental, AI-assisted visit planning system.
 
 Translation: I’ve been having way too much fun building something to make planning visits easier… and hopefully slightly more entertaining.
@@ -26,6 +24,8 @@ A few helpful notes:
 Once invitations begin, the system will walk you through the rest and send follow-up emails with confirmations and next steps.
 
 Looking forward to seeing everyone this season.
+
+P.S. EMail me if you rather I use a diffferent email and I will make the change.
 
 John & Mark
 Strathmere Visit Request System
