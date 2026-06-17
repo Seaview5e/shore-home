@@ -2,20 +2,29 @@ Hi {{ guest_name }},
 
 {{ message }}
 
-Welcome to the “beta” version of requesting a visit to the shore this season! 
+Good news — planning season has begun.
 
-I’ve been having way too much fun experimenting with AI and built this little system to (hopefully) make planning visits easier — and maybe at least slightly more entertaining. Like any beta, I’m sure there are a few rough edges, so if anything feels confusing, awkward, or unexpectedly robotic, please let me know so I can keep improving it. Any mistakes are probably AI-generated, but customer support is still delightfully human. Send me a note and I’ll get things sorted. Of course, good old-fashioned email or a phone call still works too — we haven’t handed full control over to the robots… yet. 
+This invitation is for requesting a visit.
 
-A separate request is required for each visit date range. You may request multiple rooms within a single request when the dates are the same.You are welcome to request rooms for others traveling with you (for example, children, family members, or other guests you are helping organize). Please include the names of everyone expected to stay so we can plan accommodations accurately. After submitting your request, you will receive a confirmation email with options to view your reservations, request changes, cancel an approved visit (when applicable), or request another visit.
+That may mean planning a stay for yourself, or it may mean organizing rooms for people traveling with you — family, children, relatives, friends, or anyone else staying the same dates.
 
-Once requests are reviewed, we’ll follow up with availability, room details, and next steps.  
-Please use the request link below to submit your visit request:
+You’ll be able to tell us when you’d like to visit, how many rooms you may need, and who is expected to stay.
+
+A few helpful notes:
+
+• One request is needed for each visit date range.
+• Multiple rooms are fine when everyone is staying the same dates.
+• Please include everyone’s names so accommodations can be planned accurately.
+• Nothing is confirmed yet — this simply starts the planning process.
+
+After submitting, you’ll receive a confirmation email with options to view reservations, request changes, cancel an approved visit when applicable, or request another visit.
+
+Use the link below whenever you’re ready.
 
 {{ request_link }}
 
-You can still use regular email or a phone call at any point if that’s easier.
-Looking forward to hopefully seeing everyone down at the shore.
+Thanks — and may your preferred dates survive the planning process.
 
 John & Mark
+Strathmere Visit Request System
 302-521-5401
-This message was sent by the Shore Home Request System! 
