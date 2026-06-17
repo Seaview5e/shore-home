@@ -1,26 +1,34 @@
 Hi {{ guest_name }},
 
+Looks like we’re kicking off the process of coordinating dates for the group visit:
 
-Hi — we’re kicking off the process of coordinating dates for the group visit: {{ group_title }} and wanted to give you a quick heads-up.
+{{ group_title }}
 
-The plan is simple (in theory): collect everyone’s preferred and alternate dates, compare availability, and then come back with one or more tentative options for the group to confirm.
+We wanted to give you a quick heads-up before the scheduling puzzle begins.
 
-At this stage, nothing is booked or confirmed yet — we’re just tackling the classic challenge of getting multiple calendars to agree with each other. Once we hear back from everyone and compare notes, we’ll send around dates that look like the best fit for the group.
+The plan is simple, in theory: everyone shares preferred dates and alternate dates if helpful, we compare availability across the group, and then come back with one or more tentative options for everyone to review.
 
-Thanks in advance for your flexibility and patience while we put the calendar puzzle together.
+At this stage, nothing is booked or confirmed yet. We’re simply trying to solve the classic challenge of getting multiple calendars to cooperate.
 
+Unlike a normal visit request, this process is designed for groups.
+That means:
+• dates do not need to match exactly
+• everyone can suggest what works best
+• overlap is more important than perfection
+• tentative options may change as responses come in
+
+Once we hear back and compare notes, we’ll share dates that look like the best fit for the group.
 Group members:
 {{ group_member_text }}
 
-Current dates and analysis so far.
-
+Current dates and planning so far:
 {{ suggestion_text }}
 
 Please use your personal link below to submit or update your date options:
-
 {{ request_link }}
 
-Thanks!
+Thanks in advance for your flexibility and patience while we put the calendar puzzle together.
 
 John & Mark
+Strathmere Visit Request System
 302-521-5401
