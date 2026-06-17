@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_4"
+    "app_V33_5"
 )
 
 BASE_URL = os.environ.get(
@@ -295,6 +295,13 @@ EMAIL_TEMPLATE_METADATA = {
         "last_updated": "2026-05-31",
         "updated_by": "John",
         "notes": "Final coordination confirmation after group dates are accepted."
+    },
+    "profile_welcome": {
+        "name": "Profile Welcome Email",
+        "version": "1.0",
+        "last_updated": "2026-06-17",
+        "updated_by": "John",
+        "notes": "Sent when a new guest profile is created before invitations are sent."
     }
 }
 
@@ -570,6 +577,39 @@ John & Mark
 Your response has been saved.
 
 You’re all set for now.
+""",
+    "profile_welcome.txt": """Hi {{ guest_name }},
+
+Welcome to the Strathmere Visit Request System.
+
+You’ve officially been added to this season’s highly sophisticated, mildly experimental, AI-assisted visit planning system.
+
+Translation: I’ve been having way too much fun building something to make planning visits easier… and hopefully slightly more entertaining.
+
+Like any beta, there may still be a few rough edges. If something feels confusing, awkward, or unexpectedly robotic, please let me know so I can keep improving it. Any mistakes are probably AI-generated, but customer support is still delightfully human. Email and phone calls still work too — we haven’t handed full control over to the robots… yet.
+
+You don’t need to do anything today.
+
+Soon you may receive an invitation to request a visit or to coordinate dates with others.
+
+A Request a Visit invitation is for planning a stay for yourself or for people traveling with you. That could mean your family, children, relatives, friends, or anyone you are helping organize for the same dates.
+
+A Coordination invitation is for a group trying to line up dates before anything is finalized. Everyone shares dates that work best, and we try to find overlap without creating seventeen separate text chains.
+
+A few helpful notes:
+
+• Each visit date range needs its own request.
+• You can request multiple rooms when everyone is staying the same dates.
+• Please include everyone’s names so we can plan accommodations accurately.
+• Nothing is confirmed until you receive approval.
+
+Once invitations begin, the system will walk you through the rest and send follow-up emails with confirmations and next steps.
+
+Looking forward to seeing everyone this season.
+
+John & Mark
+Strathmere Visit Request System
+302-521-5401
 """,
 }
 
@@ -1967,6 +2007,96 @@ def row_value(row, *keys):
             return value
 
     return ""
+
+
+def ensure_guest_profile_welcome_column(conn):
+
+    try:
+        columns = set(
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(guest_profiles)").fetchall()
+        )
+
+        if "welcome_email_sent_at" not in columns:
+            conn.execute("""
+                ALTER TABLE guest_profiles
+                ADD COLUMN welcome_email_sent_at TEXT
+            """)
+
+    except Exception:
+        # Existing profile behavior should not fail because this optional
+        # tracking column could not be added.
+        pass
+
+
+def profile_welcome_status_text(profile):
+
+    sent_at = safe_text(row_value(profile, "welcome_email_sent_at")).strip()
+
+    if sent_at:
+        return "Sent " + sent_at[:16]
+
+    return "Not sent"
+
+
+def send_profile_welcome_email(conn, profile_id, force=False):
+
+    ensure_guest_profile_welcome_column(conn)
+
+    profile = conn.execute("""
+        SELECT *
+        FROM guest_profiles
+        WHERE id = ?
+    """, (
+        profile_id,
+    )).fetchone()
+
+    if not profile:
+        raise RuntimeError("Guest profile not found.")
+
+    if not force and safe_text(row_value(profile, "welcome_email_sent_at")).strip():
+        return "already_sent"
+
+    recipient = safe_text(profile["primary_email"]).strip()
+    guest_name = safe_text(profile["primary_name"]).strip()
+
+    body = render_email_template(
+        "profile_welcome.txt",
+        guest_name=guest_name
+    )
+
+    subject = "Welcome to the Strathmere Visit Request System"
+
+    send_email(
+        recipient,
+        subject,
+        body
+    )
+
+    conn.execute("""
+        UPDATE guest_profiles
+        SET welcome_email_sent_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+    """, (
+        profile_id,
+    ))
+
+    try:
+        conn.execute("""
+            INSERT INTO email_log
+            (request_id, email_type, recipient, subject, body)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            None,
+            "profile_welcome",
+            recipient,
+            subject,
+            body
+        ))
+    except Exception:
+        pass
+
+    return "sent"
 
 
 def coordination_member_row_id(row):
@@ -5971,7 +6101,7 @@ def route_safety_diagnostics_summary():
 def database_schema_diagnostics_summary():
 
     required_columns = {
-        "guest_profiles": ["id", "primary_name", "primary_email", "status"],
+        "guest_profiles": ["id", "primary_name", "primary_email", "status", "welcome_email_sent_at"],
         "rooms": ["id", "name"],
         "blocked_dates": ["id", "start_date", "end_date", "is_full_block", "rooms_available"],
         "invitations": ["id", "guest_profile_id"],
@@ -6499,6 +6629,61 @@ def admin_reset_test_data_snapshot(counts):
     return snapshot
 
 
+def admin_reset_preserved_rows_snapshot(conn):
+
+    preserved_tables = [
+        "guest_profiles",
+        "rooms",
+        "blocked_dates"
+    ]
+
+    snapshot = {}
+
+    for table_name in preserved_tables:
+
+        columns = [
+            row["name"]
+            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        ]
+
+        rows = [
+            dict(row)
+            for row in conn.execute(f"SELECT * FROM {table_name} ORDER BY id").fetchall()
+        ]
+
+        snapshot[table_name] = {
+            "columns": columns,
+            "rows": rows
+        }
+
+    return snapshot
+
+
+def admin_reset_restore_preserved_rows(conn, snapshot):
+
+    # Preserve current master data even if reset logic or future seed/init logic
+    # accidentally changes one of these tables. This intentionally restores the
+    # rows that existed immediately before the reset began.
+    for table_name, table_snapshot in snapshot.items():
+
+        columns = table_snapshot["columns"]
+        rows = table_snapshot["rows"]
+
+        conn.execute(f"DELETE FROM {table_name}")
+
+        if not rows:
+            continue
+
+        column_sql = ", ".join(columns)
+        placeholder_sql = ", ".join(["?"] * len(columns))
+
+        for row in rows:
+            conn.execute(
+                f"INSERT INTO {table_name} ({column_sql}) VALUES ({placeholder_sql})",
+                [row.get(column) for column in columns]
+            )
+
+
 def admin_reset_test_data_preserved_ok(before_counts, after_counts):
 
     preserved_tables = [
@@ -6645,6 +6830,8 @@ def admin_reset_test_data():
             backup_path
         )
 
+        preserved_rows_snapshot = admin_reset_preserved_rows_snapshot(conn)
+
         conn.execute("BEGIN")
 
         # Clear child/detail tables before parent tables.
@@ -6656,6 +6843,14 @@ def admin_reset_test_data():
         conn.execute("DELETE FROM coordination_groups")
         conn.execute("DELETE FROM booking_requests")
         conn.execute("DELETE FROM invitations")
+
+        # Guardrail: actively restore preserved master tables from the snapshot
+        # taken immediately before reset. This prevents any reset/seed behavior
+        # from rolling guest profiles, rooms, or blocked dates back to older data.
+        admin_reset_restore_preserved_rows(
+            conn,
+            preserved_rows_snapshot
+        )
 
         conn.commit()
 
@@ -11412,6 +11607,7 @@ def requests_page():
 @app.route("/profiles", methods=["GET", "POST"])
 def profiles_page():
     conn = get_db_connection()
+    ensure_guest_profile_welcome_column(conn)
     filter_status = request.args.get("filter")
 
     if request.method == "POST":
@@ -11439,8 +11635,10 @@ def profiles_page():
                 "/profiles"
             )
 
+        welcome_message = ""
+
         try:
-            conn.execute("""
+            cursor = conn.execute("""
                 INSERT INTO guest_profiles
                 (
                     primary_name,
@@ -11466,7 +11664,25 @@ def profiles_page():
                 status
             ))
 
+            new_profile_id = cursor.lastrowid
+
             conn.commit()
+
+            if request.form.get("send_welcome_email", "yes") == "yes":
+
+                try:
+                    send_profile_welcome_email(
+                        conn,
+                        new_profile_id,
+                        force=False
+                    )
+                    conn.commit()
+                    welcome_message = "Guest profile saved and welcome email sent."
+                except Exception as email_error:
+                    welcome_message = "Guest profile saved, but welcome email failed: " + safe_text(email_error)
+
+            else:
+                welcome_message = "Guest profile saved. Welcome email was not sent."
 
         except Exception as e:
 
@@ -11521,8 +11737,24 @@ def profiles_page():
 
     conn.close()
 
+    try:
+        welcome_message
+    except NameError:
+        welcome_message = ""
+
+    welcome_message_html = ""
+
+    if welcome_message:
+        welcome_message_html = f"""
+        <p style="color: green; font-weight: bold;">
+            {safe_text(welcome_message)}
+        </p>
+        """
+
     html = nav_links() + f"""
     <h1>Guest Profiles</h1>
+
+    {welcome_message_html}
 
     <p>
         <a href="/profiles">All</a> |
@@ -11567,7 +11799,15 @@ def profiles_page():
             <option value="active">Active</option>
             <option value="needs_review">Needs Review</option>
             <option value="archived">Archived</option>
-        </select><br>
+        </select><br><br>
+
+        <label>
+            <input type="checkbox" name="send_welcome_email" value="yes" checked>
+            Send Welcome Email
+        </label><br>
+        <small style="color: #555;">
+            Uses templates/emails/profile_welcome.txt. No invitation is sent yet.
+        </small><br><br>
 
         <button type="submit">Add Profile</button>
     </form>
@@ -11590,6 +11830,7 @@ def profiles_page():
                 <th>Email</th>
                 <th>Additional Names</th>
                 <th>Status</th>
+                <th>Welcome Email</th>
                 <th>Profile</th>
                 <th>Actions</th>
             </tr>
@@ -11646,19 +11887,119 @@ def profiles_page():
                 <td>{profile['primary_email']}</td>
                 <td>{safe_text(profile['additional_names'])}</td>
                 <td>{status_display}</td>
+                <td>{safe_text(profile_welcome_status_text(profile))}</td>
 
                 <td>
                     <a href="/profile/{profile['id']}">View</a> |
                     <a href="/profile/{profile['id']}/edit">Edit</a>
                 </td>
 
-                <td>{action_links}</td>
+                <td>
+                    {action_links}
+                    <br>
+                    <a href="/profile/{profile['id']}/send-welcome">Send Welcome Email</a>
+                </td>
             </tr>
             """
 
         html += "</table>"
 
     return html
+
+@app.route("/profile/<int:profile_id>/send-welcome", methods=["GET", "POST"])
+def send_profile_welcome_again(profile_id):
+
+    conn = get_db_connection()
+    ensure_guest_profile_welcome_column(conn)
+
+    profile = conn.execute("""
+        SELECT *
+        FROM guest_profiles
+        WHERE id = ?
+    """, (
+        profile_id,
+    )).fetchone()
+
+    if not profile:
+        conn.close()
+        return profile_error_page(
+            "Guest profile not found.",
+            "/profiles"
+        )
+
+    if request.method != "POST":
+
+        sent_at = safe_text(row_value(profile, "welcome_email_sent_at")).strip()
+        already_sent_note = ""
+
+        if sent_at:
+            already_sent_note = f"""
+            <p style="color: #856404; font-weight: bold;">
+                A welcome email was already sent on {safe_text(sent_at)}.
+                Continue only if you want to send it again.
+            </p>
+            """
+
+        conn.close()
+
+        return f"""
+        {nav_links()}
+
+        <h1>Send Welcome Email</h1>
+
+        <p>
+            Send the profile welcome email to:
+            <strong>{safe_text(profile['primary_name'])}</strong>
+            &lt;{safe_text(profile['primary_email'])}&gt;
+        </p>
+
+        {already_sent_note}
+
+        <form method="POST" action="/profile/{profile_id}/send-welcome">
+            <input type="hidden" name="confirm_action" value="yes">
+            <button type="submit">
+                Send Welcome Email
+            </button>
+            &nbsp;
+            <a href="/profiles">Cancel</a>
+        </form>
+        """
+
+    try:
+        if request.form.get("confirm_action") != "yes":
+            conn.close()
+            return redirect("/profiles")
+
+        send_profile_welcome_email(
+            conn,
+            profile_id,
+            force=True
+        )
+
+        conn.commit()
+        conn.close()
+
+        return f"""
+        {nav_links()}
+
+        <h1>Welcome Email Sent</h1>
+
+        <p>
+            Welcome email sent to {safe_text(profile['primary_email'])}.
+        </p>
+
+        <p>
+            <a href="/profiles">Back to Guest Profiles</a>
+        </p>
+        """
+
+    except Exception as error:
+        rollback_and_close(conn)
+        return transaction_error_page(
+            error,
+            "/profiles"
+        )
+
 
 @app.route("/profile/<int:profile_id>/archive", methods=["GET", "POST"])
 def archive_profile(profile_id):
@@ -12795,6 +13136,7 @@ value=""><br>
 @app.route("/profile/<int:profile_id>/edit", methods=["GET", "POST"])
 def edit_profile(profile_id):
     conn = get_db_connection()
+    ensure_guest_profile_welcome_column(conn)
 
     profile = conn.execute(
         "SELECT * FROM guest_profiles WHERE id = ?",
@@ -12933,6 +13275,7 @@ def edit_profile(profile_id):
 def profile_detail(profile_id):
 
     conn = get_db_connection()
+    ensure_guest_profile_welcome_column(conn)
 
     profile = conn.execute("""
         SELECT *
@@ -13015,6 +13358,11 @@ def profile_detail(profile_id):
             <p>
                 <strong>Status:</strong>
                 {safe_text(profile['status'])}
+            </p>
+
+            <p>
+                <strong>Welcome Email:</strong>
+                {safe_text(profile_welcome_status_text(profile))}
             </p>
 
         </div>
