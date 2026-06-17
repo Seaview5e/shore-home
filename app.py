@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_7"
+    "app_V33_8"
 )
 
 BASE_URL = os.environ.get(
@@ -3864,7 +3864,19 @@ def guest_reservations_html(conn, request_row):
                     text-decoration:none;
                     font-size:12px;
                     font-weight:bold;
+                    margin:2px 4px 2px 0;
                 ">Change Request</a>
+                <a href="/request/{visit['id']}/cancel" style="
+                    display:inline-block;
+                    background:#842029;
+                    color:#ffffff;
+                    padding:6px 9px;
+                    border-radius:7px;
+                    text-decoration:none;
+                    font-size:12px;
+                    font-weight:bold;
+                    margin:2px 0;
+                ">Cancel Request</a>
             </td>
         </tr>
         """
@@ -3876,7 +3888,7 @@ def guest_reservations_html(conn, request_row):
             <th align="left" style="padding:7px 8px; border-bottom:1px solid #ddd;">Departure</th>
             <th align="center" style="padding:7px 8px; border-bottom:1px solid #ddd;">Rooms</th>
             <th align="left" style="padding:7px 8px; border-bottom:1px solid #ddd;">Status</th>
-            <th align="left" style="padding:7px 8px; border-bottom:1px solid #ddd;">Action</th>
+            <th align="left" style="padding:7px 8px; border-bottom:1px solid #ddd;">Actions</th>
         </tr>
         {row_html}
     </table>
@@ -3925,7 +3937,7 @@ def all_reservations(request_id):
     <h1>All Reservations</h1>
 
     <p style="max-width:850px; line-height:1.4;">
-        This is a guest summary of confirmed and pending Shore Home visits for {safe_text(guest_name)}. Use Change Request next to a visit if you need to update it.
+        This is a guest summary of confirmed and pending Shore Home visits for {safe_text(guest_name)}. Use Change Request or Cancel Request next to a visit if you need to update plans.
     </p>
 
     {reservations_html}
