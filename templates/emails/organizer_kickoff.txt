@@ -1,19 +1,33 @@
 Hi {{ guest_name }},
 
-A group visit planning process has started for:
-
+Welcome to the Strathmere Visit Request System.
+You’ve been nominated as the Organizer for the group visit:
 {{ group_title }}
+Congratulations, or condolences. You get first crack at helping turn everyone’s “we should all go sometime” into an actual plan.
 
-Your role: Organizer
+Nothing is booked or confirmed yet. This first step is simply about getting the planning started.
 
-Please use the link below to help set up the group. You can suggest who should be included and one preferred date range to start the planning process.
+Using the link below, please help us:
+• suggest who should be included in the group
+• provide names and emails if you have them
+• suggest one preferred date range to get planning started
+• add any notes that may help us understand the group
+
+You do not need perfect dates. Think of this as creating Version 1 of the plan.
+
+After you submit your setup ideas, John and Mark will review everything. Then invitations will go out to everyone in the group — including you. At that point, each person will be able to suggest preferred dates, provide alternate dates if helpful, and see tentative group timing as planning develops. Dates do not need to match exactly.
+
+The system will compare responses and try to find overlap before anything becomes a final visit request.
 
 Organizer Planning Link:
 {{ planning_link }}
+Current planning group:
+{{ group_member_text }}
+Current ideas and planning notes so far:
+{{ suggestion_text }}
 
-After you submit this first setup information, John and Mark will review it. Then everyone in the group, including you, will receive individual requests to submit or confirm dates.
-
-Nothing is confirmed or booked yet.
+Thanks for helping get things moving — and for accepting the honorary title of Calendar Wrangler.
 
 John & Mark
+Strathmere Visit Request System
 302-521-5401
