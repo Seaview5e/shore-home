@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_5"
+    "app_V33_6"
 )
 
 BASE_URL = os.environ.get(
@@ -3361,6 +3361,180 @@ def room_capacity_limit_for_date(room_limit_by_date, date_key, total_rooms):
     except Exception:
         return total_rooms
 
+
+def coordination_group_rooms_needed_for_window(conn, group_id, arrival_date, departure_date, total_rooms=4):
+
+    members = conn.execute("""
+        SELECT id
+        FROM coordination_group_members
+        WHERE coordination_group_id = ?
+    """, (
+        group_id,
+    )).fetchall()
+
+    rooms_needed = 0
+
+    for member in members:
+        rooms_needed += coordination_member_rooms_for_tentative(
+            conn,
+            member["id"],
+            arrival_date,
+            departure_date,
+            total_rooms
+        )
+
+    if rooms_needed < 1 and members:
+        rooms_needed = len(members)
+
+    if rooms_needed < 1:
+        rooms_needed = 1
+
+    return rooms_needed
+
+
+def coordination_capacity_check_for_window(conn, group_id, arrival_date, departure_date):
+
+    total_rooms_row = conn.execute("""
+        SELECT COUNT(*) AS count
+        FROM rooms
+    """).fetchone()
+
+    total_rooms = 4
+    if total_rooms_row and total_rooms_row["count"]:
+        total_rooms = total_rooms_row["count"]
+
+    rooms_needed = coordination_group_rooms_needed_for_window(
+        conn,
+        group_id,
+        arrival_date,
+        departure_date,
+        total_rooms
+    )
+
+    blocked_ranges = conn.execute("""
+        SELECT *
+        FROM blocked_dates
+        ORDER BY start_date
+    """).fetchall()
+
+    blocked_dates, room_limit_by_date = build_blocked_date_capacity(
+        blocked_ranges,
+        total_rooms
+    )
+
+    approved_by_date = {}
+
+    approved_bookings = conn.execute("""
+        SELECT arrival_date, departure_date, 1 AS rooms_held
+        FROM bookings
+        WHERE status = 'approved'
+    """).fetchall()
+
+    tentative_holds = get_coordination_tentative_holds(
+        conn,
+        exclude_group_id=group_id,
+        expand_rooms=True
+    )
+
+    for booking in list(approved_bookings) + list(tentative_holds):
+        try:
+            current = datetime.strptime(booking["arrival_date"], "%Y-%m-%d").date()
+            end = datetime.strptime(booking["departure_date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+
+        rooms_to_count = 1
+        try:
+            rooms_to_count = int(row_value(booking, "rooms_held", "rooms_requested") or 1)
+        except Exception:
+            rooms_to_count = 1
+
+        while current < end:
+            date_key = current.strftime("%Y-%m-%d")
+            approved_by_date[date_key] = approved_by_date.get(date_key, 0) + rooms_to_count
+            current += timedelta(days=1)
+
+    notes = []
+    capacity_ok = True
+    min_rooms_open = total_rooms
+
+    try:
+        current = datetime.strptime(arrival_date, "%Y-%m-%d").date()
+        end = datetime.strptime(departure_date, "%Y-%m-%d").date()
+    except Exception:
+        return {"capacity_ok": False, "rooms_needed": rooms_needed, "rooms_available": total_rooms, "min_rooms_open": 0, "notes": ["Invalid date range."]}
+
+    while current < end:
+        date_key = current.strftime("%Y-%m-%d")
+        if date_key in blocked_dates:
+            capacity_ok = False
+            notes.append(f"{format_date(date_key)} is fully blocked")
+
+        daily_capacity = room_capacity_limit_for_date(room_limit_by_date, date_key, total_rooms)
+        rooms_open = daily_capacity - approved_by_date.get(date_key, 0)
+
+        if rooms_open < min_rooms_open:
+            min_rooms_open = rooms_open
+
+        if rooms_open < rooms_needed:
+            capacity_ok = False
+            notes.append(f"{format_date(date_key)} has only {rooms_open} room(s) open for {rooms_needed} room(s) needed")
+
+        current += timedelta(days=1)
+
+    return {"capacity_ok": capacity_ok, "rooms_needed": rooms_needed, "rooms_available": total_rooms, "min_rooms_open": min_rooms_open, "notes": notes}
+
+
+def latest_coordination_system_overlap(conn, group_id):
+
+    group_date_options = conn.execute("""
+        SELECT
+            coordination_date_options.*,
+            coordination_group_members.id AS member_id,
+            coordination_group_members.role,
+            guest_profiles.primary_name,
+            guest_profiles.primary_email
+        FROM coordination_date_options
+        JOIN coordination_group_members
+            ON coordination_date_options.coordination_group_member_id = coordination_group_members.id
+        JOIN guest_profiles
+            ON coordination_group_members.guest_profile_id = guest_profiles.id
+        WHERE coordination_group_members.coordination_group_id = ?
+        ORDER BY coordination_date_options.arrival_date
+    """, (group_id,)).fetchall()
+
+    approved_bookings_for_matching = conn.execute("""
+        SELECT arrival_date, departure_date
+        FROM bookings
+        WHERE status = 'approved'
+    """).fetchall()
+
+    blocked_ranges_for_matching = conn.execute("""
+        SELECT *
+        FROM blocked_dates
+        ORDER BY start_date
+    """).fetchall()
+
+    total_rooms_for_matching = conn.execute("""
+        SELECT COUNT(*) AS count
+        FROM rooms
+    """).fetchone()["count"]
+
+    tentative_holds_for_matching = get_coordination_tentative_holds(conn, exclude_group_id=group_id, expand_rooms=True)
+
+    suggestions = build_coordination_intersection_suggestions(
+        group_date_options,
+        list(approved_bookings_for_matching) + tentative_holds_for_matching,
+        blocked_ranges_for_matching,
+        total_rooms_for_matching
+    )
+
+    if suggestions:
+        return suggestions[0]
+
+    return None
+
+
 def get_coordination_tentative_holds(conn, exclude_group_id=None, expand_rooms=False):
 
     ensure_coordination_tables(conn)
@@ -3851,6 +4025,21 @@ def ensure_coordination_tables(conn):
             flexibility_days INTEGER DEFAULT 0,
             rooms_requested INTEGER DEFAULT 1,
             notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS coordination_tentative_adjustments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            coordination_group_id INTEGER NOT NULL,
+            system_arrival_date TEXT,
+            system_departure_date TEXT,
+            admin_arrival_date TEXT NOT NULL,
+            admin_departure_date TEXT NOT NULL,
+            adjustment_reason TEXT,
+            rooms_needed INTEGER DEFAULT 0,
+            capacity_status TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -20263,6 +20452,16 @@ def coordination_group_detail(group_id):
         total_rooms_for_matching
     )
 
+    tentative_adjustments = conn.execute("""
+        SELECT *
+        FROM coordination_tentative_adjustments
+        WHERE coordination_group_id = ?
+        ORDER BY created_at DESC
+        LIMIT 5
+    """, (
+        group_id,
+    )).fetchall()
+
     created_booking_request_rows = conn.execute("""
         SELECT
             coordination_group_members.id AS member_id,
@@ -21184,6 +21383,101 @@ def coordination_group_detail(group_id):
         </div>
         """
 
+
+    tentative_adjustments_html = ""
+
+    if tentative_adjustments:
+        adjustment_rows = ""
+        for adjustment in tentative_adjustments:
+            adjustment_rows += f"""
+            <tr>
+                <td>{format_datetime_display(adjustment['created_at'])}</td>
+                <td>{format_date(adjustment['system_arrival_date'])} to {format_date(adjustment['system_departure_date'])}</td>
+                <td>{format_date(adjustment['admin_arrival_date'])} to {format_date(adjustment['admin_departure_date'])}</td>
+                <td>{safe_text(adjustment['rooms_needed'])}</td>
+                <td>{safe_text(adjustment['capacity_status'])}</td>
+                <td>{safe_text(adjustment['adjustment_reason'])}</td>
+            </tr>
+            """
+
+        tentative_adjustments_html = f"""
+        <div style="background:#f8fbff; border:1px solid #d8e6f3; border-radius:8px; padding:10px; margin:10px 0; max-width:1040px;">
+            <h3 style="margin:0 0 6px 0;">Admin Tentative Date Adjustment History</h3>
+            <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:12px;">
+                <tr style="background:#f5f5f5;">
+                    <th>When</th>
+                    <th>System Suggested</th>
+                    <th>Admin Selected</th>
+                    <th>Rooms</th>
+                    <th>Capacity</th>
+                    <th>Reason</th>
+                </tr>
+                {adjustment_rows}
+            </table>
+        </div>
+        """
+
+    phase4_default_arrival = safe_text(row_value(group, "tentative_arrival_date")).strip()
+    phase4_default_departure = safe_text(row_value(group, "tentative_departure_date")).strip()
+    phase4_system_arrival = ""
+    phase4_system_departure = ""
+
+    if intersection_suggestions:
+        phase4_system_arrival = intersection_suggestions[0]["arrival_date"]
+        phase4_system_departure = intersection_suggestions[0]["departure_date"]
+        if not phase4_default_arrival:
+            phase4_default_arrival = phase4_system_arrival
+        if not phase4_default_departure:
+            phase4_default_departure = phase4_system_departure
+
+    phase4_system_text = "No system shared-overlap suggestion is available yet."
+    if phase4_system_arrival and phase4_system_departure:
+        phase4_system_text = f"{format_date(phase4_system_arrival)} to {format_date(phase4_system_departure)}"
+
+    phase4_current_text = "No tentative dates currently selected."
+    if phase4_default_arrival and phase4_default_departure:
+        phase4_current_text = f"{format_date(phase4_default_arrival)} to {format_date(phase4_default_departure)}"
+
+    phase4_admin_override_html = f"""
+    <div style="background:#fff8e6; border:2px solid #fd7e14; border-radius:8px; padding:12px; margin:12px 0; max-width:1040px;">
+        <h3 style="margin-top:0;">Phase 4 Admin Adjust Tentative Dates</h3>
+        <p style="margin:4px 0; font-size:13px;">
+            <strong>System suggested overlap:</strong> {phase4_system_text}<br>
+            <strong>Current tentative dates:</strong> {phase4_current_text}
+        </p>
+
+        <form method="POST" action="/coordination-group/{group_id}/set-tentative" style="display:grid; grid-template-columns: repeat(2, minmax(180px, 1fr)); gap:8px; max-width:720px;">
+            <input type="hidden" name="system_arrival_date" value="{safe_text(phase4_system_arrival)}">
+            <input type="hidden" name="system_departure_date" value="{safe_text(phase4_system_departure)}">
+            <input type="hidden" name="admin_adjustment" value="yes">
+
+            <label>
+                Tentative Arrival<br>
+                <input type="date" name="arrival_date" value="{safe_text(phase4_default_arrival)}" required style="width:100%; padding:6px;">
+            </label>
+
+            <label>
+                Tentative Departure<br>
+                <input type="date" name="departure_date" value="{safe_text(phase4_default_departure)}" required style="width:100%; padding:6px;">
+            </label>
+
+            <label style="grid-column:1 / -1;">
+                Adjustment reason / planning note<br>
+                <textarea name="adjustment_reason" rows="3" style="width:100%; padding:6px;" placeholder="Example: Better fit for family travel, room pressure, or guest flexibility."></textarea>
+            </label>
+
+            <div style="grid-column:1 / -1;">
+                <button type="submit" style="font-weight:bold; padding:7px 12px;">
+                    Save Admin Tentative Dates
+                </button>
+                <small style="color:#555; margin-left:8px;">
+                    Validates against blocked dates, bookings, partial blocks, and other tentative holds.
+                </small>
+            </div>
+        </form>
+    </div>
+    """ + tentative_adjustments_html
+
     match_suggestions_html = """
     <p>No match suggestions yet. Add date options for at least one group member.</p>
     """
@@ -21783,6 +22077,8 @@ def coordination_group_detail(group_id):
         </p>
 
         {intersection_suggestions_html}
+
+        {phase4_admin_override_html}
 
         {match_suggestions_html}
     </div>
@@ -25876,40 +26172,41 @@ def coordination_group_member_clear_date_options(member_id):
 @app.route("/coordination-group/<int:group_id>/set-tentative", methods=["POST"])
 def coordination_group_set_tentative(group_id):
 
-    arrival_date = clean_text(
-        request.form.get("arrival_date")
-    )
-
-    departure_date = clean_text(
-        request.form.get("departure_date")
-    )
+    arrival_date = clean_text(request.form.get("arrival_date"))
+    departure_date = clean_text(request.form.get("departure_date"))
+    system_arrival_date = clean_text(request.form.get("system_arrival_date"))
+    system_departure_date = clean_text(request.form.get("system_departure_date"))
+    adjustment_reason = clean_text(request.form.get("adjustment_reason"))
+    admin_adjustment = clean_text(request.form.get("admin_adjustment")) == "yes"
 
     try:
-        arrival = datetime.strptime(
-            arrival_date,
-            "%Y-%m-%d"
-        )
-
-        departure = datetime.strptime(
-            departure_date,
-            "%Y-%m-%d"
-        )
-
+        arrival = datetime.strptime(arrival_date, "%Y-%m-%d")
+        departure = datetime.strptime(departure_date, "%Y-%m-%d")
         if departure <= arrival:
             raise ValueError("Departure must be after arrival.")
-
     except Exception as error:
-
-        return transaction_error_page(
-            error,
-            f"/coordination-group/{group_id}"
-        )
+        return transaction_error_page(error, f"/coordination-group/{group_id}")
 
     conn = get_db_connection()
-
     ensure_coordination_tables(conn)
 
     try:
+        capacity_check = coordination_capacity_check_for_window(conn, group_id, arrival_date, departure_date)
+
+        if not capacity_check["capacity_ok"]:
+            raise ValueError(
+                "Tentative dates are blocked by capacity or unavailable dates: "
+                + "; ".join(capacity_check["notes"])
+            )
+
+        if admin_adjustment and not adjustment_reason:
+            adjustment_reason = "Admin selected/confirmed tentative dates."
+
+        if admin_adjustment and (not system_arrival_date or not system_departure_date):
+            system_overlap = latest_coordination_system_overlap(conn, group_id)
+            if system_overlap:
+                system_arrival_date = system_overlap["arrival_date"]
+                system_departure_date = system_overlap["departure_date"]
 
         conn.execute("""
             UPDATE coordination_groups
@@ -25919,12 +26216,7 @@ def coordination_group_set_tentative(group_id):
                 status = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
-        """, (
-            arrival_date,
-            departure_date,
-            "tentative",
-            group_id
-        ))
+        """, (arrival_date, departure_date, "tentative", group_id))
 
         conn.execute("""
             UPDATE coordination_group_members
@@ -25932,26 +26224,41 @@ def coordination_group_set_tentative(group_id):
                 tentative_response_at = NULL,
                 tentative_response_notes = NULL
             WHERE coordination_group_id = ?
-        """, (
-            group_id,
-        ))
+        """, (group_id,))
+
+        if admin_adjustment:
+            conn.execute("""
+                INSERT INTO coordination_tentative_adjustments
+                (
+                    coordination_group_id,
+                    system_arrival_date,
+                    system_departure_date,
+                    admin_arrival_date,
+                    admin_departure_date,
+                    adjustment_reason,
+                    rooms_needed,
+                    capacity_status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                group_id,
+                system_arrival_date,
+                system_departure_date,
+                arrival_date,
+                departure_date,
+                adjustment_reason,
+                capacity_check["rooms_needed"],
+                "OK" if capacity_check["capacity_ok"] else "Needs Review"
+            ))
 
         conn.commit()
 
     except Exception as error:
-
         rollback_and_close(conn)
-
-        return transaction_error_page(
-            error,
-            f"/coordination-group/{group_id}"
-        )
+        return transaction_error_page(error, f"/coordination-group/{group_id}")
 
     conn.close()
-
-    return redirect(
-        f"/coordination-group/{group_id}"
-    )
+    return redirect(f"/coordination-group/{group_id}")
 
 
 @app.route("/coordination-group-member/<int:member_id>/follow-up-dates-work", methods=["POST"])
