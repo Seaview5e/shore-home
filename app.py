@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_12"
+    "app_V33_13"
 )
 
 BASE_URL = os.environ.get(
@@ -302,6 +302,41 @@ EMAIL_TEMPLATE_METADATA = {
         "last_updated": "2026-06-17",
         "updated_by": "John",
         "notes": "Sent when a new guest profile is created before invitations are sent."
+    },
+    "coordination_unmatched_follow_up": {
+        "name": "Coordination Unmatched Follow-Up Email",
+        "version": "1.0",
+        "last_updated": "2026-06-18",
+        "updated_by": "John",
+        "notes": "Sent to guests whose dates do not overlap with a possible group option."
+    },
+    "tentative_group_dates": {
+        "name": "Tentative Group Dates Email",
+        "version": "1.0",
+        "last_updated": "2026-06-18",
+        "updated_by": "John",
+        "notes": "Sent when tentative coordination dates need guest confirmation."
+    },
+    "final_group_ready": {
+        "name": "Final Group Ready Email",
+        "version": "1.0",
+        "last_updated": "2026-06-18",
+        "updated_by": "John",
+        "notes": "Sent when all group members confirm tentative dates."
+    },
+    "final_visit_confirmation": {
+        "name": "Final Visit Confirmation Email",
+        "version": "1.0",
+        "last_updated": "2026-06-18",
+        "updated_by": "John",
+        "notes": "Final guest confirmation sent from coordination close/finalize."
+    },
+    "admin_notification": {
+        "name": "Admin Notification Email",
+        "version": "1.0",
+        "last_updated": "2026-06-18",
+        "updated_by": "John",
+        "notes": "Generic admin action notification."
     }
 }
 
@@ -577,6 +612,112 @@ John & Mark
 Your response has been saved.
 
 You’re all set for now.
+""",
+    "coordination_unmatched_follow_up.txt": """Hi {{ guest_name }},
+
+We found a possible group date for {{ group_title }}:
+
+{{ suggested_dates }}
+
+Right now, your submitted dates do not overlap with this option.
+
+Please use the link below to review your dates. You can add another date option, increase your flexibility, or let us know if these dates will not work.
+
+{{ request_link }}
+
+Thanks!
+
+John & Mark
+Strathmere Visit Request System
+302-521-5401
+""",
+
+    "tentative_group_dates.txt": """Hi {{ guest_name }},
+
+We are trying to confirm tentative dates for {{ group_title }}.
+
+Tentative dates:
+{{ tentative_dates }}
+
+Response due date:
+{{ due_date }}
+
+Please use your link below to let us know whether these dates work, do not work, or need discussion.
+
+{{ request_link }}
+
+Nothing is fully booked yet. This helps us coordinate the group before final approvals.
+
+John & Mark
+Strathmere Visit Request System
+302-521-5401
+""",
+
+    "final_group_ready.txt": """Hi {{ guest_name }},
+
+Good news — everyone has confirmed the tentative dates for {{ group_title }}.
+
+Confirmed group dates:
+{{ tentative_dates }}
+
+The next step is final booking review and room planning. Nothing is fully booked until the normal booking requests are reviewed and approved.
+
+If anything changes before final approvals are completed, please reply as soon as possible.
+
+Thanks everyone for coordinating together.
+
+John & Mark
+Strathmere Visit Request System
+302-521-5401
+""",
+
+    "final_visit_confirmation.txt": """Hi {{ guest_name }},
+
+Your Strathmere visit is confirmed.
+
+Visit Details:
+- Arrival: {{ arrival_date }}
+- Departure: {{ departure_date }}
+- Nights: {{ nights }}
+- Room(s): {{ room_list }}
+- Rooms Requested: {{ rooms_requested }}
+
+Confirmed Group Members:
+{{ confirmed_group_members }}
+
+Food Preferences / Restrictions:
+{{ food_restrictions }}
+
+Pets:
+{{ pets }}
+
+Need to change or cancel this visit?
+Change request: {{ change_link }}
+Cancel request: {{ cancel_link }}
+New request: {{ new_request_link }}
+
+If anything does not look right, just reply to this email.
+
+Looking forward to seeing everyone at the shore!
+
+John & Mark
+Strathmere Visit Request System
+302-521-5401
+""",
+
+    "admin_notification.txt": """Action needed in the Strathmere Visit Request System
+
+Action:
+{{ action_title }}
+
+Details:
+{{ details }}
+
+Review:
+{{ review_url }}
+
+John & Mark
+Strathmere Visit Request System
 """,
     "profile_welcome.txt": """Hi {{ guest_name }},
 
@@ -1388,20 +1529,17 @@ def notify_admin(action_title, details, review_path="/dashboard"):
     if review_path.startswith("/"):
         review_url = BASE_URL + review_path
 
-    body = f"""Action needed in Shore Home App
-
-Action: {safe_text(action_title)}
-
-{safe_text(details)}
-
-Review:
-{review_url}
-"""
+    body = render_email_template(
+        "admin_notification.txt",
+        action_title=safe_text(action_title),
+        details=safe_text(details),
+        review_url=review_url
+    )
 
     try:
         send_email(
             admin_email,
-            f"Shore Home App: {safe_text(action_title)}",
+            f"Strathmere Visit Request System: {safe_text(action_title)}",
             body
         )
     except Exception as error:
@@ -14994,21 +15132,17 @@ def admin_cancel_confirmed_visit(request_id):
 
     subject = "Your Strathmere Visit Cancellation"
 
-    body = f"""Hi {guest_name},
-
-Your Strathmere visit has been cancelled.
-
-Cancelled Visit Details:
-- Arrival: {format_date(req['arrival_date'])}
-- Departure: {format_date(req['departure_date'])}
-- Nights: {nights}
-- Rooms: {rooms_requested}
-
-Thanks for letting us know.
-
-John & Mark
-302-521-5401
-"""
+    body = render_email_template(
+        "cancellation.txt",
+        guest_name=guest_name,
+        arrival_date=format_date(req["arrival_date"]),
+        departure_date=format_date(req["departure_date"]),
+        nights=safe_text(nights),
+        rooms_requested=safe_text(rooms_requested),
+        additional_names=safe_text(row_value(req, "additional_names")) or "None listed",
+        request_link=standard_new_request_url(),
+        new_request_link=standard_new_request_url()
+    )
 
     backup_path = create_database_backup(
         "before_admin_cancel_confirmed"
@@ -19863,24 +19997,17 @@ Cancellation Reason:
                     request_row["departure_date"]
                 )
 
-                cancellation_body = f"""Hi {request_row['name']},
-
-Your Strathmere visit has been cancelled.
-
-Cancelled Visit Details:
-- Arrival: {format_date(request_row['arrival_date'])}
-- Departure: {format_date(request_row['departure_date'])}
-- Nights: {nights}
-- Rooms: {rooms_requested}
-
-If you would like to request different dates, please use this link:
-{standard_new_request_url()}
-
-Thanks for letting us know.
-
-John & Mark
-302-521-5401
-"""
+                cancellation_body = render_email_template(
+                    "cancellation.txt",
+                    guest_name=safe_text(request_row["name"]),
+                    arrival_date=format_date(request_row["arrival_date"]),
+                    departure_date=format_date(request_row["departure_date"]),
+                    nights=safe_text(nights),
+                    rooms_requested=safe_text(rooms_requested),
+                    additional_names=safe_text(row_value(request_row, "additional_names")) or "None listed",
+                    request_link=standard_new_request_url(),
+                    new_request_link=standard_new_request_url()
+                )
 
                 send_email(
                     recipient_email,
@@ -23942,27 +24069,13 @@ def coordination_group_send_follow_up_unmatched(group_id):
 
         update_link = f"{BASE_URL}/coordination-group-member/{coordination_member_row_id(member)}/request?follow_up=1&suggested_arrival={arrival_date}&suggested_departure={departure_date}"
         subject = "Strathmere group dates - can you update your availability?"
-        body = f"""Hi {safe_text(member['primary_name'])},
-
-We found a possible group date for {safe_text(group['title'])}:
-
-{format_date(arrival_date)} to {format_date(departure_date)}
-
-Right now, your submitted dates do not overlap with this option.
-
-Could you please use the link below to review your dates and either:
-- add a new date option,
-- increase your flexibility, or
-- let us know if these dates will not work for you.
-
-Your update link:
-{update_link}
-
-Thanks!
-
-John & Mark
-302-521-5401
-"""
+        body = render_email_template(
+            "coordination_unmatched_follow_up.txt",
+            guest_name=safe_text(member["primary_name"]),
+            group_title=safe_text(group["title"]),
+            suggested_dates=f"{format_date(arrival_date)} to {format_date(departure_date)}",
+            request_link=update_link
+        )
 
         try:
             send_email(recipient_email, subject, body)
@@ -27508,24 +27621,12 @@ def coordination_group_send_final_email(group_id):
 
         subject = f"Strathmere group dates confirmed - {safe_text(group['title'])}"
 
-        body = f"""Hi {safe_text(member['primary_name'])},
-
-Great news — the group has successfully coordinated dates for {safe_text(group['title'])}.
-
-Tentative group dates:
-{format_date(group['tentative_arrival_date'])} to {format_date(group['tentative_departure_date'])}
-
-Everyone has now confirmed these tentative dates.
-
-The next step is final booking review and room planning. Nothing is fully booked until the normal booking requests are reviewed and approved.
-
-If anything changes before final approvals are completed, please reply as soon as possible.
-
-Thanks everyone for coordinating together.
-
-John & Mark
-302-521-5401
-"""
+        body = render_email_template(
+            "final_group_ready.txt",
+            guest_name=safe_text(member["primary_name"]),
+            group_title=safe_text(group["title"]),
+            tentative_dates=f"{format_date(group['tentative_arrival_date'])} to {format_date(group['tentative_departure_date'])}"
+        )
 
         try:
             send_email(
@@ -27705,35 +27806,15 @@ def coordination_group_send_reminders(group_id):
 
         update_link = f"{BASE_URL}/coordination-group-member/{coordination_member_row_id(member)}/request"
 
-        body = f"""Hi {safe_text(member['primary_name'])},
-
-Just a reminder that we are trying to confirm tentative dates for {safe_text(group['title'])}.
-
-Tentative dates:
-{format_date(group['tentative_arrival_date'])} to {format_date(group['tentative_departure_date'])}
-
-Current response due date: {format_date(tentative_response_due_date)}
-
-Please use your link below to confirm whether these dates work, cannot work, or need discussion:
-
-{update_link}
-
-Need to make a change?
-
-Change / Review Dates:
-{update_link}
-
-Cancel / Cannot Make These Dates:
-{update_link}
-
-Request a Visit:
-{standard_new_request_url()}
-
-Nothing is fully booked yet. This just helps us coordinate the group before final approvals.
-
-John & Mark
-302-521-5401
-"""
+        body = render_email_template(
+            "tentative_group_dates.txt",
+            guest_name=safe_text(member["primary_name"]),
+            group_title=safe_text(group["title"]),
+            tentative_dates=f"{format_date(group['tentative_arrival_date'])} to {format_date(group['tentative_departure_date'])}",
+            due_date=format_date(tentative_response_due_date),
+            request_link=update_link,
+            new_request_link=standard_new_request_url()
+        )
 
         try:
             send_email(
@@ -28339,39 +28420,21 @@ def coordination_group_close(group_id):
         if not room_list:
             room_list = "Assigned room details will be confirmed separately."
 
-        email_body = f"""
-Hi {safe_text(final_request['name'])},
-
-Your Strathmere visit is confirmed.
-
-VISIT DETAILS:
-- Arrival: {format_date(final_request['arrival_date'])}
-- Departure: {format_date(final_request['departure_date'])}
-- Nights: {nights}
-- Room(s): {room_list}
-- Rooms Requested: {safe_text(final_request['rooms_requested'])}
-
-Confirmed Group Members:
-{group_member_list_text}
-
-Food Preferences / Restrictions:
-{safe_text(final_request['food_restrictions']) or 'None listed'}
-
-Pets:
-{safe_text(final_request['pets']) or 'None listed'}
-
-Need to change or cancel this visit?
-Change request: {BASE_URL}/request/{final_request['id']}/change
-Cancel request: {BASE_URL}/request/{final_request['id']}/cancel
-New request: {standard_new_request_url()}
-
-If anything does not look right, just reply to this email.
-
-Looking forward to seeing everyone at the shore!
-
-John & Mark
-302-521-5401
-"""
+        email_body = render_email_template(
+            "final_visit_confirmation.txt",
+            guest_name=safe_text(final_request["name"]),
+            arrival_date=format_date(final_request["arrival_date"]),
+            departure_date=format_date(final_request["departure_date"]),
+            nights=safe_text(nights),
+            room_list=room_list,
+            rooms_requested=safe_text(final_request["rooms_requested"]),
+            confirmed_group_members=group_member_list_text,
+            food_restrictions=safe_text(final_request["food_restrictions"]) or "None listed",
+            pets=safe_text(final_request["pets"]) or "None listed",
+            change_link=f"{BASE_URL}/request/{final_request['id']}/change",
+            cancel_link=f"{BASE_URL}/request/{final_request['id']}/cancel",
+            new_request_link=standard_new_request_url()
+        )
 
         try:
             send_email(
