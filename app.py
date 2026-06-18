@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_11"
+    "app_V33_12"
 )
 
 BASE_URL = os.environ.get(
@@ -25540,6 +25540,47 @@ def coordination_group_member_request(member_id):
             message.innerText = "Next click will set " + targetLabel(getCalendarTarget()) + ".";
         }}
 
+        function clearCoordinationCalendarHighlights() {{
+            document.querySelectorAll('[data-date]').forEach(function (cell) {{
+                if (cell.dataset.coordOriginalColor) {{
+                    cell.style.backgroundColor = cell.dataset.coordOriginalColor;
+                }}
+                cell.style.outline = "";
+            }});
+        }}
+
+        function highlightCoordinationSelectedDates() {{
+            clearCoordinationCalendarHighlights();
+
+            const selectedFields = [
+                ["preferred_arrival", "#9ec5fe", "#0d6efd"],
+                ["preferred_departure", "#b6d7a8", "#198754"],
+                ["alternate_arrival", "#d7b9ff", "#6f42c1"],
+                ["alternate_departure", "#ffe0a3", "#fd7e14"]
+            ];
+
+            selectedFields.forEach(function (item) {{
+                const field = document.getElementById(item[0]);
+
+                if (!field || !field.value) {{
+                    return;
+                }}
+
+                const cell = document.querySelector('[data-date="' + field.value + '"]');
+
+                if (!cell) {{
+                    return;
+                }}
+
+                if (!cell.dataset.coordOriginalColor) {{
+                    cell.dataset.coordOriginalColor = cell.style.backgroundColor;
+                }}
+
+                cell.style.backgroundColor = item[1];
+                cell.style.outline = "3px solid " + item[2];
+            }});
+        }}
+
         function formatDateForMessage(dateString) {{
             const parts = dateString.split("-");
             return parts[1] + "/" + parts[2] + "/" + parts[0];
@@ -25636,6 +25677,8 @@ def coordination_group_member_request(member_id):
                 arrivalField.value = dateString;
                 departureField.value = addOneDay(dateString);
 
+                highlightCoordinationSelectedDates();
+
                 setCalendarTarget(targetGroup + "_departure");
 
                 return;
@@ -25653,8 +25696,17 @@ def coordination_group_member_request(member_id):
             }}
 
             departureField.value = dateString;
+            highlightCoordinationSelectedDates();
             updateCalendarTargetMessage();
         }}
+
+        document.addEventListener("DOMContentLoaded", function () {{
+            document.querySelectorAll("#preferred_arrival, #preferred_departure, #alternate_arrival, #alternate_departure").forEach(function (field) {{
+                field.addEventListener("change", highlightCoordinationSelectedDates);
+            }});
+
+            highlightCoordinationSelectedDates();
+        }});
     </script>
     """
 
@@ -28900,6 +28952,9 @@ def coordination_group_member_organizer_planning(member_id):
     current_suggested_guests = safe_text(row_value(member, "organizer_suggested_guests"))
     current_date_notes = safe_text(row_value(member, "organizer_suggested_dates_notes"))
 
+    organizer_default_arrival = date.today().strftime("%Y-%m-%d")
+    organizer_default_departure = (date.today() + timedelta(days=1)).strftime("%Y-%m-%d")
+
     conn.close()
 
     return f"""
@@ -28934,8 +28989,8 @@ Judy - email unknown">{safe_text(current_suggested_guests)}</textarea>
                     This is only a starting point. Everyone will still get a request to submit their own date options.
                 </p>
                 <div style="display:flex; gap:12px; flex-wrap:wrap;">
-                    <label>Arrival<br><input type="date" name="preferred_arrival" style="font-size:14px; padding:5px;"></label>
-                    <label>Departure<br><input type="date" name="preferred_departure" style="font-size:14px; padding:5px;"></label>
+                    <label>Arrival<br><input type="date" id="organizer_preferred_arrival" name="preferred_arrival" value="{organizer_default_arrival}" onchange="setOrganizerNextDayDeparture();" style="font-size:14px; padding:5px;"></label>
+                    <label>Departure<br><input type="date" id="organizer_preferred_departure" name="preferred_departure" value="{organizer_default_departure}" style="font-size:14px; padding:5px;"></label>
                     <label>Expected rooms<br><input type="number" name="rooms_requested" min="1" max="4" value="1" style="width:80px; font-size:14px; padding:5px;"></label>
                 </div>
             </div>
@@ -28952,6 +29007,27 @@ Judy - email unknown">{safe_text(current_suggested_guests)}</textarea>
                 Send Group Setup to John and Mark
             </button>
         </form>
+
+        <script>
+            function setOrganizerNextDayDeparture() {{
+                const arrival = document.getElementById("organizer_preferred_arrival");
+                const departure = document.getElementById("organizer_preferred_departure");
+
+                if (!arrival || !departure || !arrival.value) {{
+                    return;
+                }}
+
+                const dateValue = new Date(arrival.value + "T00:00:00");
+                dateValue.setDate(dateValue.getDate() + 1);
+                const nextDay = dateValue.toISOString().slice(0, 10);
+
+                if (!departure.value || departure.value <= arrival.value) {{
+                    departure.value = nextDay;
+                }}
+            }}
+
+            document.addEventListener("DOMContentLoaded", setOrganizerNextDayDeparture);
+        </script>
     </div>
     """
 
