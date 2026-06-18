@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_10"
+    "app_V33_11"
 )
 
 BASE_URL = os.environ.get(
@@ -7840,6 +7840,39 @@ def home():
             selectedDepartureCell = null;
         }}
 
+        function highlightSelectedDates() {{
+            const arrivalValue = document.getElementById("arrival_date").value;
+            const departureValue = document.getElementById("departure_date").value;
+
+            if (arrivalValue) {{
+                const arrivalCell = document.querySelector('[data-date="' + arrivalValue + '"]');
+
+                if (arrivalCell) {{
+                    if (!arrivalCell.dataset.originalColor) {{
+                        arrivalCell.dataset.originalColor = arrivalCell.style.backgroundColor;
+                    }}
+
+                    selectedArrivalCell = arrivalCell;
+                    arrivalCell.style.backgroundColor = "#9ec5fe";
+                    arrivalCell.style.outline = "3px solid #0d6efd";
+                }}
+            }}
+
+            if (departureValue) {{
+                const departureCell = document.querySelector('[data-date="' + departureValue + '"]');
+
+                if (departureCell) {{
+                    if (!departureCell.dataset.originalColor) {{
+                        departureCell.dataset.originalColor = departureCell.style.backgroundColor;
+                    }}
+
+                    selectedDepartureCell = departureCell;
+                    departureCell.style.backgroundColor = "#b6d7a8";
+                    departureCell.style.outline = "3px solid #198754";
+                }}
+            }}
+        }}
+
         function resetDateSelection() {{
             document.getElementById("arrival_date").value = "";
             document.getElementById("departure_date").value = "";
@@ -7950,6 +7983,12 @@ def home():
                     return;
                 }}
 
+                if (selectedDepartureCell) {{
+                    selectedDepartureCell.style.outline = "";
+                    selectedDepartureCell.style.backgroundColor = selectedDepartureCell.dataset.originalColor;
+                    selectedDepartureCell = null;
+                }}
+
                 departureField.value = dateString;
                 nextDateField = "arrival";
 
@@ -7972,6 +8011,7 @@ def home():
         }}
 
         restoreDateSelectionState();
+        highlightSelectedDates();
         updateNightsMessage();
         preserveCalendarNavigationSelection();
 
@@ -21215,6 +21255,21 @@ def coordination_group_detail(group_id):
         </div>
         """
 
+    organizer_workflow_state = "Needs Action"
+    organizer_workflow_name = "None assigned"
+    organizer_workflow_kickoff = "Not sent"
+    organizer_workflow_returned = "Not returned"
+    organizer_workflow_action = "Assign an Organizer first"
+
+    if organizer_member:
+        organizer_workflow_name = safe_text(organizer_member["primary_name"])
+        organizer_workflow_kickoff = safe_text(row_value(organizer_member, "organizer_kickoff_sent_at")).strip() or "Not sent"
+        organizer_workflow_returned = safe_text(row_value(organizer_member, "organizer_suggestions_at")).strip() or "Not returned"
+        organizer_workflow_action = f'<a href="/coordination-group/{group_id}/organizer-kickoff-preview">Preview / Send Organizer Email</a>'
+
+        if organizer_workflow_kickoff != "Not sent" and organizer_workflow_returned != "Not returned":
+            organizer_workflow_state = "✅ Complete"
+
     planning_workflow_html = f"""
     <h2>Planning Workflow</h2>
 
@@ -21251,15 +21306,15 @@ def coordination_group_detail(group_id):
             <tr style="background-color:#fff8e6;">
                 <td><strong>1. Organizer Email Sent / Returned</strong></td>
                 <td>
-                    {"✅ Complete" if organizer_member and safe_text(row_value(organizer_member, "organizer_kickoff_sent_at")).strip() and safe_text(row_value(organizer_member, "organizer_suggestions_at")).strip() else "Needs Action"}
+                    {organizer_workflow_state}
                 </td>
                 <td>
-                    Organizer: {safe_text(organizer_member['primary_name']) if organizer_member else 'None assigned'}<br>
-                    Kickoff Email: {safe_text(row_value(organizer_member, "organizer_kickoff_sent_at")) if organizer_member else 'Not sent'}<br>
-                    Organizer Returned: {safe_text(row_value(organizer_member, "organizer_suggestions_at")) if organizer_member else 'Not returned'}
+                    Organizer: {organizer_workflow_name}<br>
+                    Kickoff Email: {organizer_workflow_kickoff}<br>
+                    Organizer Returned: {organizer_workflow_returned}
                 </td>
                 <td>
-                    {f'<a href="/coordination-group/{group_id}/organizer-kickoff-preview">Preview / Send Organizer Email</a>' if organizer_member else 'Assign an Organizer first'}
+                    {organizer_workflow_action}
                 </td>
             </tr>
 
