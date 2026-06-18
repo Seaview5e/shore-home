@@ -1,0 +1,16 @@
+Hi {{ guest_name }},
+
+Good news — everyone has confirmed the tentative dates for {{ group_title }}.
+
+Confirmed group dates:
+{{ tentative_dates }}
+
+The next step is final booking review and room planning. Nothing is fully booked until the normal booking requests are reviewed and approved.
+
+If anything changes before final approvals are completed, please reply as soon as possible.
+
+Thanks everyone for coordinating together.
+
+John & Mark
+Strathmere Visit Request System
+302-521-5401

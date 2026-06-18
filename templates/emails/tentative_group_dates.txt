@@ -1,0 +1,19 @@
+Hi {{ guest_name }},
+
+We are trying to confirm tentative dates for {{ group_title }}.
+
+Tentative dates:
+{{ tentative_dates }}
+
+Response due date:
+{{ due_date }}
+
+Please use your link below to let us know whether these dates work, do not work, or need discussion.
+
+{{ request_link }}
+
+Nothing is fully booked yet. This helps us coordinate the group before final approvals.
+
+John & Mark
+Strathmere Visit Request System
+302-521-5401

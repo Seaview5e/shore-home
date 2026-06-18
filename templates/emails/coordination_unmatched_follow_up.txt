@@ -1,0 +1,17 @@
+Hi {{ guest_name }},
+
+We found a possible group date for {{ group_title }}:
+
+{{ suggested_dates }}
+
+Right now, your submitted dates do not overlap with this option.
+
+Please use the link below to review your dates. You can add another date option, increase your flexibility, or let us know if these dates will not work.
+
+{{ request_link }}
+
+Thanks!
+
+John & Mark
+Strathmere Visit Request System
+302-521-5401

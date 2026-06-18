@@ -1,0 +1,32 @@
+Hi {{ guest_name }},
+
+Your Strathmere visit is confirmed.
+
+Visit Details:
+- Arrival: {{ arrival_date }}
+- Departure: {{ departure_date }}
+- Nights: {{ nights }}
+- Room(s): {{ room_list }}
+- Rooms Requested: {{ rooms_requested }}
+
+Confirmed Group Members:
+{{ confirmed_group_members }}
+
+Food Preferences / Restrictions:
+{{ food_restrictions }}
+
+Pets:
+{{ pets }}
+
+Need to change or cancel this visit?
+Change request: {{ change_link }}
+Cancel request: {{ cancel_link }}
+New request: {{ new_request_link }}
+
+If anything does not look right, just reply to this email.
+
+Looking forward to seeing everyone at the shore!
+
+John & Mark
+Strathmere Visit Request System
+302-521-5401

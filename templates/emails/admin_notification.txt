@@ -1,0 +1,13 @@
+Action needed in the Strathmere Visit Request System
+
+Action:
+{{ action_title }}
+
+Details:
+{{ details }}
+
+Review:
+{{ review_url }}
+
+John & Mark
+Strathmere Visit Request System
