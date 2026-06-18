@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_8"
+    "app_V33_10"
 )
 
 BASE_URL = os.environ.get(
@@ -262,7 +262,7 @@ EMAIL_TEMPLATE_METADATA = {
         "notes": "Organizer-led group formation email. Stored in templates/emails/organizer_kickoff.txt."
     },
     "organizer_suggestions_admin": {
-        "name": "Organizer Suggestions Admin Alert",
+        "name": "Organizer Email Sent / Returned Suggestions Admin Alert",
         "version": "1.0",
         "last_updated": "2026-06-16",
         "updated_by": "John",
@@ -424,7 +424,7 @@ Nothing is confirmed or booked yet.
 John & Mark
 302-521-5401
 """,
-    "organizer_suggestions_admin.txt": """Organizer setup submitted for {{ group_title }}
+    "organizer_suggestions_admin.txt": """Organizer email sent / organizer setup returned submitted for {{ group_title }}
 
 Organizer:
 {{ organizer_name }} <{{ organizer_email }}>
@@ -614,6 +614,19 @@ Strathmere Visit Request System
 }
 
 
+def ensure_room_name_updates(conn):
+
+    try:
+        conn.execute("""
+            UPDATE rooms
+            SET name = 'Twin/King Room'
+            WHERE LOWER(TRIM(name)) IN ('twin room', 'twin')
+        """)
+        conn.commit()
+    except Exception:
+        pass
+
+
 def ensure_email_template_files():
 
     os.makedirs(
@@ -713,6 +726,13 @@ def invitation_template_admin_box():
 
 
 ensure_email_template_files()
+
+try:
+    startup_conn = get_db_connection()
+    ensure_room_name_updates(startup_conn)
+    startup_conn.close()
+except Exception:
+    pass
 
 
 def rebuild_email_template_files():
@@ -981,6 +1001,7 @@ def plain_text_to_html_email(subject, body):
         "Assigned Room(s):",
         "Additional Guests:",
         "Additional Guests for Your Room(s):",
+        "Confirmed Group Members:",
         "Group members:",
         "Current proposed dates:"
     ]
@@ -1992,6 +2013,19 @@ def safe_text(value):
         return ""
 
     return str(value)
+
+
+def display_room_name(value):
+
+    value_text = safe_text(value)
+
+    if value_text.strip().lower() == "twin room":
+        return "Twin/King Room"
+
+    if value_text.strip().lower() == "twin":
+        return "Twin/King"
+
+    return value_text
 
 
 def row_value(row, *keys):
@@ -8418,7 +8452,7 @@ def invite_request(invitation_id):
                     to {format_date(booking['departure_date'])}
                 </td>
                 <td>{booking['rooms_requested'] or 1}</td>
-                <td>{safe_text(booking['room_name'])}</td>
+                <td>{display_room_name(booking['room_name'])}</td>
                 <td>
                     <a href="/request/{booking['request_id']}">
                         View
@@ -10420,7 +10454,7 @@ def booking_audit():
         <tr>
             <td>{booking['id']}</td>
             <td>{safe_text(booking['guest_name'])}</td>
-            <td>{safe_text(booking['room_name'])}</td>
+            <td>{display_room_name(booking['room_name'])}</td>
             <td>{format_date(booking['arrival_date'])}</td>
             <td>{format_date(booking['departure_date'])}</td>
             <td>{safe_text(booking['status'])}</td>
@@ -20301,7 +20335,7 @@ def coordination_group_new():
         </label><br>
 
         <select name="status">
-            <option value="forming" selected>Forming / Organizer Setup</option>
+            <option value="forming" selected>Forming / Organizer Email Sent / Organizer Setup Returned</option>
             <option value="planning">Planning</option>
             <option value="collecting_dates">Collecting Dates</option>
             <option value="tentative">Tentative</option>
@@ -21161,7 +21195,7 @@ def coordination_group_detail(group_id):
             <p style="margin-bottom:6px;">
                 <strong>Organizer:</strong> {safe_text(organizer_member['primary_name'])} &lt;{safe_text(organizer_member['primary_email'])}&gt;<br>
                 <strong>Kickoff Email:</strong> {safe_text(organizer_kickoff_sent_at)}<br>
-                <strong>Organizer Suggestions:</strong> {safe_text(organizer_suggestions_at)}
+                <strong>Organizer Email Sent / Returned Suggestions:</strong> {safe_text(organizer_suggestions_at)}
             </p>
             <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:13px; background:white;">
                 <tr style="background:#f5f5f5;">
@@ -21214,8 +21248,23 @@ def coordination_group_detail(group_id):
                 <th align="left">Action</th>
             </tr>
 
+            <tr style="background-color:#fff8e6;">
+                <td><strong>1. Organizer Email Sent / Returned</strong></td>
+                <td>
+                    {"✅ Complete" if organizer_member and safe_text(row_value(organizer_member, "organizer_kickoff_sent_at")).strip() and safe_text(row_value(organizer_member, "organizer_suggestions_at")).strip() else "Needs Action"}
+                </td>
+                <td>
+                    Organizer: {safe_text(organizer_member['primary_name']) if organizer_member else 'None assigned'}<br>
+                    Kickoff Email: {safe_text(row_value(organizer_member, "organizer_kickoff_sent_at")) if organizer_member else 'Not sent'}<br>
+                    Organizer Returned: {safe_text(row_value(organizer_member, "organizer_suggestions_at")) if organizer_member else 'Not returned'}
+                </td>
+                <td>
+                    {f'<a href="/coordination-group/{group_id}/organizer-kickoff-preview">Preview / Send Organizer Email</a>' if organizer_member else 'Assign an Organizer first'}
+                </td>
+            </tr>
+
             <tr style="background-color: {planning_invitation_background};">
-                <td><strong>1. Send Coordination Invitations</strong></td>
+                <td><strong>2. Send Coordination Invitations</strong></td>
                 <td>{planning_invitation_icon} {planning_invitation_state}</td>
                 <td>
                     Members Added: {len(members)}<br>
@@ -21231,7 +21280,7 @@ def coordination_group_detail(group_id):
             </tr>
 
             <tr style="background-color: {response_background};">
-                <td><strong>2. Collect Responses</strong></td>
+                <td><strong>3. Collect Responses</strong></td>
                 <td>{response_icon} {response_state}</td>
                 <td>
                     Responses Received: {responded_count} of {len(members)}<br>
@@ -21245,7 +21294,7 @@ def coordination_group_detail(group_id):
             </tr>
 
             <tr style="background-color: {overlap_background};">
-                <td><strong>3. Review Date Overlap</strong></td>
+                <td><strong>4. Review Date Overlap</strong></td>
                 <td>{overlap_icon} {overlap_state}</td>
                 <td>Review best match suggestions and unmatched guests below.</td>
                 <td><a href="#best-match-suggestions">View Suggestions</a></td>
@@ -24667,7 +24716,7 @@ def coordination_group_member_request(member_id):
                     to {format_date(booking['departure_date'])}
                 </td>
                 <td>{booking['rooms_requested'] or 1}</td>
-                <td>{safe_text(booking['room_name'])}</td>
+                <td>{display_room_name(booking['room_name'])}</td>
                 <td>
                     <a href="/request/{booking['request_id']}">
                         View
@@ -28198,9 +28247,6 @@ VISIT DETAILS:
 Confirmed Group Members:
 {group_member_list_text}
 
-Additional Guests for Your Room(s):
-{safe_text(final_request['additional_names']) or 'None listed'}
-
 Food Preferences / Restrictions:
 {safe_text(final_request['food_restrictions']) or 'None listed'}
 
@@ -28431,7 +28477,7 @@ def coordination_group_add_member(group_id):
             f"/coordination-group/{group_id}"
         )
 
-    conn.execute("""
+    cursor = conn.execute("""
         INSERT INTO coordination_group_members
         (
             coordination_group_id,
@@ -28447,8 +28493,95 @@ def coordination_group_add_member(group_id):
         "draft"
     ))
 
+    new_member_id = cursor.lastrowid
+
     conn.commit()
+
+    # Send the coordination request email immediately when a new guest is added.
+    # This keeps the planning workflow moving without requiring a separate manual send step.
+    email_send_error = ""
+
+    try:
+
+        members_for_email = conn.execute("""
+            SELECT
+                coordination_group_members.id AS member_id,
+                coordination_group_members.role,
+                guest_profiles.primary_name,
+                guest_profiles.primary_email
+            FROM coordination_group_members
+            JOIN guest_profiles
+                ON coordination_group_members.guest_profile_id = guest_profiles.id
+            WHERE coordination_group_members.coordination_group_id = ?
+            ORDER BY guest_profiles.primary_name
+        """, (
+            group_id,
+        )).fetchall()
+
+        group_member_text = "\n".join(
+            [
+                f"- {safe_text(member['primary_name'])} ({coordination_role_display(row_value(member, 'role') or 'participant')})"
+                for member in members_for_email
+            ]
+        )
+
+        if not group_member_text:
+            group_member_text = "No group members listed."
+
+        new_member = conn.execute("""
+            SELECT
+                coordination_group_members.id AS member_id,
+                coordination_group_members.role,
+                guest_profiles.primary_name,
+                guest_profiles.primary_email
+            FROM coordination_group_members
+            JOIN guest_profiles
+                ON coordination_group_members.guest_profile_id = guest_profiles.id
+            WHERE coordination_group_members.id = ?
+        """, (
+            new_member_id,
+        )).fetchone()
+
+        if new_member and is_valid_email_address(new_member["primary_email"]):
+
+            request_link = f"{BASE_URL}/coordination-group-member/{new_member_id}/request"
+
+            body = render_email_template(
+                "coordination_invitation.txt",
+                guest_name=safe_text(new_member["primary_name"]),
+                group_title=safe_text(group["title"]),
+                guest_role=coordination_role_display(row_value(new_member, "role") or "participant"),
+                group_member_text=group_member_text,
+                suggestion_text="No group overlap suggestion is available yet. Please submit or update your date options.",
+                request_link=request_link
+            )
+
+            send_email(
+                safe_text(new_member["primary_email"]).strip(),
+                f"Strathmere group date coordination - {safe_text(group['title'])}",
+                body
+            )
+
+            conn.execute("""
+                UPDATE coordination_group_members
+                SET invitation_status = 'sent'
+                WHERE id = ?
+            """, (
+                new_member_id,
+            ))
+
+            conn.commit()
+
+    except Exception as error:
+        email_send_error = safe_text(error)
+
     conn.close()
+
+    if email_send_error:
+        return transaction_error_page(
+            "Guest was added, but the coordination request email could not be sent: " + email_send_error,
+            f"/coordination-group/{group_id}"
+        )
 
     return redirect(
         f"/coordination-group/{group_id}"
@@ -28584,7 +28717,7 @@ def send_admin_organizer_suggestions_email(group_id, member, suggested_guests, p
 
     send_email(
         admin_email,
-        f"Organizer setup submitted - {group_title}",
+        f"Organizer email sent / organizer setup returned submitted - {group_title}",
         body
     )
 
@@ -28703,7 +28836,7 @@ def coordination_group_member_organizer_planning(member_id):
             admin_note = f"<p style='color:#856404;'>Your setup was saved, but the admin alert email could not be sent automatically. John and Mark can still see it in the app.</p>"
 
         return f"""
-        <h1>Organizer Setup Saved</h1>
+        <h1>Organizer Email Sent / Organizer Setup Returned Saved</h1>
         <p>Thanks. Your suggested group members and preferred starting dates have been saved for John and Mark to review.</p>
         <p>Nothing is confirmed yet. After review, everyone in the group, including you, will receive individual requests to submit or confirm date options.</p>
         {admin_note}
