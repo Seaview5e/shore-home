@@ -2,7 +2,7 @@ ADMIN ACTION – {{ group_name }}
 
 Review dashboard for Coordination Group Action Needed.
 
-Current Status:
+Current Status: 
 {{ current_status }}
 
 NEXT STEP:
