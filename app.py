@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_14"
+    "app_V33_15"
 )
 
 BASE_URL = os.environ.get(
@@ -21003,10 +21003,33 @@ def coordination_group_detail(group_id):
 
         due_date_display = safe_text(
             group["tentative_response_due_date"]
-        )
+        ).strip()
 
         if not due_date_display:
-            due_date_display = "No due date set"
+            due_date_display = (date.today() + timedelta(days=3)).strftime("%Y-%m-%d")
+
+            try:
+                conn.execute("""
+                    UPDATE coordination_groups
+                    SET tentative_response_due_date = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (
+                    due_date_display,
+                    group_id
+                ))
+                conn.commit()
+
+                group = conn.execute("""
+                    SELECT *
+                    FROM coordination_groups
+                    WHERE id = ?
+                """, (
+                    group_id,
+                )).fetchone()
+
+            except Exception:
+                pass
 
         overdue_label = ""
 
@@ -22980,7 +23003,8 @@ def coordination_group_handoff(group_id):
                 </label><br>
                 <input type="date"
                        name="tentative_response_due_date"
-                       value="{default_tentative_due_date}">
+                       value="{default_tentative_due_date}"
+                       data-default-plus-three="1">
                 <br>
                 <button type="submit">
                     Resend / Remind Guests Still Needing Response
@@ -22999,7 +23023,8 @@ def coordination_group_handoff(group_id):
                 </label><br>
                 <input type="date"
                        name="tentative_response_due_date"
-                       value="{default_tentative_due_date}">
+                       value="{default_tentative_due_date}"
+                       data-default-plus-three="1">
                 <br>
                 <button type="submit"
                         style="
@@ -23367,6 +23392,8 @@ def coordination_group_handoff(group_id):
             </tr>
         </table>
     </div>
+
+    {due_date_fallback_script}
 
     <h2>Current Status</h2>
 
