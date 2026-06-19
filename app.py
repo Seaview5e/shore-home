@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_13"
+    "app_V33_14"
 )
 
 BASE_URL = os.environ.get(
