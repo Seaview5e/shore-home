@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_15"
+    "app_V33_16"
 )
 
 BASE_URL = os.environ.get(
@@ -22734,6 +22734,21 @@ def coordination_group_handoff(group_id):
             </a>
         </p>
         """
+
+    due_date_fallback_script = """
+    <script>
+        document.addEventListener("DOMContentLoaded", function () {
+            document.querySelectorAll('input[name="tentative_response_due_date"][data-default-plus-three="1"]').forEach(function (field) {
+                if (field.value) {
+                    return;
+                }
+                const dateValue = new Date();
+                dateValue.setDate(dateValue.getDate() + 3);
+                field.value = dateValue.toISOString().slice(0, 10);
+            });
+        });
+    </script>
+    """
 
     members = conn.execute("""
         SELECT
