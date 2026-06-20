@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_20"
+    "app_V33_21"
 )
 
 BASE_URL = os.environ.get(
@@ -24608,6 +24608,7 @@ def coordination_group_member_request(member_id):
             coordination_groups.title AS group_title,
             coordination_groups.description AS group_description,
             coordination_groups.status AS group_status,
+            coordination_groups.current_round AS current_round,
             coordination_groups.tentative_arrival_date AS tentative_arrival_date,
             coordination_groups.tentative_departure_date AS tentative_departure_date,
             coordination_groups.tentative_selected_at AS tentative_selected_at,
@@ -25199,7 +25200,7 @@ def coordination_group_member_request(member_id):
 
         rank = 1
 
-        for suggestion in group_match_suggestions[:5]:
+        for suggestion in group_match_suggestions[:2]:
 
             if not saved_date_options:
 
@@ -25302,6 +25303,19 @@ def coordination_group_member_request(member_id):
 
         group_overlap_html += "</table>"
 
+        if len(group_match_suggestions) > 2:
+            group_overlap_html += f"""
+            <details style="margin-top:6px;">
+                <summary style="cursor:pointer; font-weight:bold; color:#0f4c81;">
+                    Show {len(group_match_suggestions) - 2} more date option(s)
+                </summary>
+                <p style="font-size:13px; margin:5px 0 0 0;">
+                    The top 2 options are shown above to keep this page simple.
+                    John and Mark can still review all options on the admin planning page.
+                </p>
+            </details>
+            """
+
     follow_up_notice_html = ""
     follow_up_dates_work_button = ""
 
@@ -25327,23 +25341,39 @@ def coordination_group_member_request(member_id):
 
         follow_up_notice_html = f"""
         <div style="
-            border: 1px solid #f0ad4e;
+            border: 2px solid #fd7e14;
             background-color: #fff3cd;
-            padding: 8px 10px;
-            margin-bottom: 6px;
-            border-radius: 8px;
+            padding: 12px 14px;
+            margin-bottom: 8px;
+            border-radius: 10px;
             max-width: 1100px;
-            font-size: 13px;
-            line-height: 1.3;
+            font-size: 16px;
+            line-height: 1.35;
         ">
-            <strong>Quick favor — can you take another look?</strong>
-            {suggested_dates_text}
-            <br>If these dates work, click that button. If not, update what you can or use <strong>I cannot change any dates</strong>.
+            <div style="font-size: 22px; font-weight: bold; color: #856404; margin-bottom: 4px;">
+                ⚠ ACTION NEEDED — Round {safe_text(row_value(member, 'current_round')) or '1'}
+            </div>
+            <div style="font-size: 16px; font-weight: bold;">
+                Please review the current group date option.
+            </div>
+            <div style="margin-top: 4px;">
+                {suggested_dates_text}
+            </div>
+            <div style="margin-top: 6px;">
+                If these dates work, click <strong>These Dates Work For Me</strong>.
+                If not, update your dates below or use <strong>I cannot change any dates</strong>.
+            </div>
             {follow_up_dates_work_button}
         </div>
         """
 
     html = nav_links() + f"""
+    <style>
+        .shore-admin-nav { font-size: 13px; }
+        input, select, textarea, button { font-size: 14px; }
+        p { line-height: 1.28; }
+        label { line-height: 1.25; }
+    </style>
     <h1 style="margin: 0 0 4px 0; font-size: 22px;">Pick / Update Your Dates</h1>
 
     {follow_up_notice_html}
@@ -25372,19 +25402,20 @@ def coordination_group_member_request(member_id):
         </p>
     </div>
 
-    <div style="
+    <details style="
         border: 1px solid #dee2e6;
         background-color: #ffffff;
-        padding: 4px 7px;
-        margin-bottom: 4px;
+        padding: 6px 8px;
+        margin-bottom: 5px;
         border-radius: 8px;
         max-width: 1100px;
+        font-size: 13px;
     ">
-        <h2 style="margin: 0 0 3px 0; font-size: 15px;">Group Members</h2>
-        <ul style="margin: 0; font-size: 13px; line-height: 1.25;">
+        <summary style="cursor:pointer; font-weight:bold;">Group Members ({len(group_members_for_overlap)})</summary>
+        <ul style="margin: 5px 0 0 16px; font-size: 13px; line-height: 1.25;">
             {group_member_list_html}
         </ul>
-    </div>
+    </details>
 
     <div style="
         border: 1px solid #198754;
@@ -25422,7 +25453,7 @@ def coordination_group_member_request(member_id):
 
     <div style="
         display: grid;
-        grid-template-columns: minmax(320px, 0.9fr) minmax(420px, 1.1fr);
+        grid-template-columns: minmax(440px, 1.1fr) minmax(340px, 0.9fr);
         gap: 10px;
         align-items: start;
         max-width: 1180px;
@@ -25430,16 +25461,27 @@ def coordination_group_member_request(member_id):
         <div style="
             border: 1px solid #dee2e6;
             background-color: #ffffff;
-            padding: 10px;
+            padding: 8px;
             border-radius: 8px;
-            font-size: 14px;
+        ">
+            {calendar_html}
+
+        </div>
+    </div>
+
+        <div style="
+            border: 1px solid #dee2e6;
+            background-color: #ffffff;
+            padding: 8px;
+            border-radius: 8px;
+            font-size: 13px;
         ">
             <h2 style="
                 margin: 0 0 6px 0;
                 font-size: 22px;
                 font-weight: bold;
             ">
-                Your Submitted Dates
+                Your Selection / Save Dates
             </h2>
 
             <form method="POST"
@@ -25497,15 +25539,15 @@ def coordination_group_member_request(member_id):
                             margin-top: 10px;
                         ">
                             <h2 style="margin: 0 0 4px 0; font-size:18px;">
-                                Submit / Update Date Options
+                                Choose Dates → Save → Done
                             </h2>
             
                             <p style="margin: 0 0 4px 0; font-size: 13px;">
-                                Add the dates that work best for you. Preferred is your first choice; alternate is your backup plan.
+                                Pick your preferred dates. Alternate dates are optional but helpful.
                             </p>
             
                             <p style="color: #856404; font-weight: bold; margin: 0 0 6px 0; font-size: 13px;">
-                                After saving, you’ll see a quick confirmation page. No beach paperwork, promise.
+                                Save once you are done.
                             </p>
             
                             <form method="POST"
@@ -25724,17 +25766,6 @@ def coordination_group_member_request(member_id):
                         </div>
             
         </div>
-
-        <div style="
-            border: 1px solid #dee2e6;
-            background-color: #ffffff;
-            padding: 8px;
-            border-radius: 8px;
-        ">
-            {calendar_html}
-
-        </div>
-    </div>
 
     <script>
         const blockedDates = {blocked_list};
@@ -26254,39 +26285,100 @@ def coordination_group_member_date_options(member_id):
 
     if total_group_rooms > total_rooms:
 
+        group_row = conn.execute("""
+            SELECT title
+            FROM coordination_groups
+            WHERE id = ?
+        """, (
+            member["coordination_group_id"],
+        )).fetchone()
+
+        guest_row = conn.execute("""
+            SELECT primary_name
+            FROM guest_profiles
+            JOIN coordination_group_members
+                ON guest_profiles.id = coordination_group_members.guest_profile_id
+            WHERE coordination_group_members.id = ?
+        """, (
+            member_id,
+        )).fetchone()
+
+        try:
+            conn.execute("""
+                UPDATE coordination_groups
+                SET status = 'capacity_review',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (
+                member["coordination_group_id"],
+            ))
+
+            conn.execute("""
+                UPDATE coordination_group_members
+                SET invitation_status = 'capacity_review',
+                    last_response_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (
+                member_id,
+            ))
+
+            conn.commit()
+
+            notify_admin(
+                "Capacity Review Required",
+                (
+                    "Group: " + safe_text(group_row["title"] if group_row else member["coordination_group_id"]) + "\n"
+                    "Guest: " + safe_text(guest_row["primary_name"] if guest_row else member_id) + "\n"
+                    "Requested Rooms: " + safe_text(total_group_rooms) + "\n"
+                    "Available Rooms: " + safe_text(total_rooms) + "\n"
+                    "The guest was told that John and Mark will review and follow up."
+                ),
+                f"/coordination-group/{member['coordination_group_id']}"
+            )
+
+        except Exception:
+            pass
+
         conn.close()
 
         return f"""
         {nav_links()}
 
-        <h1>Date Options Not Saved</h1>
+        <div style="max-width:760px; border:2px solid #fd7e14; background:#fff3cd; padding:16px; border-radius:10px;">
+            <h1 style="margin-top:0;">Thanks — we received your update.</h1>
 
-        <p style="color: red; font-weight: bold;">
-            The group is requesting {total_group_rooms} room(s), but only {total_rooms} room(s) are available.
-        </p>
+            <p style="font-size:16px; line-height:1.4;">
+                Right now the group may be requesting more rooms than are available for this round.
+            </p>
 
-        <p>
-            No single date range can work for the full group until the room count is reduced,
-            the group is split, or the plan is changed.
-        </p>
+            <p style="font-size:16px; line-height:1.4; font-weight:bold;">
+                Nothing has been declined.
+            </p>
 
-        <table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; max-width: 520px;">
-            <tr style="background-color: #f5f5f5;">
-                <th align="left">Guest</th>
-                <th align="center">Rooms</th>
-            </tr>
-            {room_detail_rows}
-            <tr style="background-color: #fff3cd; font-weight: bold;">
-                <td>Total Requested</td>
-                <td align="center">{total_group_rooms}</td>
-            </tr>
-        </table>
+            <p style="font-size:16px; line-height:1.4;">
+                John and Mark will review the room situation, try to resolve the plan, and follow up with next steps.
+                You do not need to do anything else right now.
+            </p>
 
-        <p>
-            <a href="/coordination-group-member/{member_id}/request">
-                Back to Coordination Request
-            </a>
-        </p>
+            <details style="margin-top:10px;">
+                <summary style="cursor:pointer; font-weight:bold;">Room count detail</summary>
+                <table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; max-width: 520px; margin-top:8px;">
+                    <tr style="background-color: #f5f5f5;">
+                        <th align="left">Guest</th>
+                        <th align="center">Rooms</th>
+                    </tr>
+                    {room_detail_rows}
+                    <tr style="background-color: #fff3cd; font-weight: bold;">
+                        <td>Total Requested</td>
+                        <td align="center">{total_group_rooms}</td>
+                    </tr>
+                    <tr style="background-color:#f8d7da; font-weight:bold;">
+                        <td>Rooms Available</td>
+                        <td align="center">{total_rooms}</td>
+                    </tr>
+                </table>
+            </details>
+        </div>
         """
 
     try:
