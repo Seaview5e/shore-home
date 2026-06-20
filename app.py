@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_16"
+    "app_V33_17"
 )
 
 BASE_URL = os.environ.get(
@@ -1083,15 +1083,31 @@ def plain_text_to_html_email(subject, body):
     def action_label_for_url(url, nearby_text=""):
 
         nearby_lower = safe_text(nearby_text).lower()
+        url_lower = safe_text(url).lower()
+        normalized_url = url_lower.rstrip("/")
+        normalized_base = BASE_URL.rstrip("/").lower()
 
-        if "all reservations" in nearby_lower or "/all-reservations" in url:
+        # URL-specific paths win over nearby text. This prevents a previous
+        # label line from causing the next button to inherit the wrong label.
+        if "/all-reservations" in url_lower:
             return "All Reservations"
 
-        if "change" in nearby_lower or "/change" in url:
+        if "/change" in url_lower:
             return "Change Request"
 
-        if "cancel" in nearby_lower or "/cancel" in url:
-            return "Cancel Visit"
+        if "/cancel" in url_lower:
+            return "Cancel Request"
+
+        if (
+            normalized_url == normalized_base
+            or normalized_url == normalized_base + "/new-request"
+            or "/new-request" in url_lower
+            or "/invite" in url_lower
+        ):
+            return "Request a Visit"
+
+        if "all reservations" in nearby_lower:
+            return "All Reservations"
 
         if "guest profile" in nearby_lower or "/profiles" in url:
             return "Open Guest Profiles"
@@ -1102,16 +1118,13 @@ def plain_text_to_html_email(subject, body):
         if "coordination" in nearby_lower:
             return "Open Coordination Link"
 
-        if "another" in nearby_lower or "new invitation" in nearby_lower:
-            return "Request a Visit"
+        if "change" in nearby_lower:
+            return "Change Request"
 
-        if url.rstrip("/") == BASE_URL.rstrip("/"):
-            return "Request a Visit"
+        if "cancel" in nearby_lower:
+            return "Cancel Request"
 
-        if "/new-request" in url:
-            return "Request a Visit"
-
-        if "/invite" in url:
+        if "another" in nearby_lower or "new invitation" in nearby_lower or "request a visit" in nearby_lower:
             return "Request a Visit"
 
         if "request" in nearby_lower:
@@ -11080,8 +11093,29 @@ def bookings_page():
     else:
 
         html += """
-        <table border="1"
-               cellpadding="4"
+        <style>
+            .confirmed-stays-table {
+                border-collapse: collapse;
+                width: auto;
+                max-width: 100%;
+                table-layout: auto;
+                font-size: 12px;
+            }
+            .confirmed-stays-table th,
+            .confirmed-stays-table td {
+                padding: 3px 5px;
+                white-space: nowrap;
+                vertical-align: top;
+            }
+            .confirmed-stays-table td.notes,
+            .confirmed-stays-table td.guests {
+                white-space: normal;
+                max-width: 220px;
+            }
+        </style>
+        <table class="confirmed-stays-table"
+               border="1"
+               cellpadding="3"
                cellspacing="0"
                style="
                    border-collapse: collapse;
@@ -22735,10 +22769,35 @@ def coordination_group_handoff(group_id):
         </p>
         """
 
+    # V33.17: Handoff response due date defaults to today + 3 days if empty.
+    # Save it once so the page display, input value, and email all agree.
+    try:
+        if not safe_text(row_value(group, "tentative_response_due_date")).strip():
+            default_due_date_value = (date.today() + timedelta(days=3)).strftime("%Y-%m-%d")
+            conn.execute("""
+                UPDATE coordination_groups
+                SET tentative_response_due_date = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (
+                default_due_date_value,
+                group_id
+            ))
+            conn.commit()
+            group = conn.execute("""
+                SELECT *
+                FROM coordination_groups
+                WHERE id = ?
+            """, (
+                group_id,
+            )).fetchone()
+    except Exception:
+        pass
+
     due_date_fallback_script = """
     <script>
         document.addEventListener("DOMContentLoaded", function () {
-            document.querySelectorAll('input[name="tentative_response_due_date"][data-default-plus-three="1"]').forEach(function (field) {
+            document.querySelectorAll('input[name="tentative_response_due_date"]').forEach(function (field) {
                 if (field.value) {
                     return;
                 }
@@ -27687,7 +27746,7 @@ def coordination_group_send_final_email(group_id):
         conn.execute("""
             UPDATE coordination_groups
             SET final_coordination_email_sent_at = CURRENT_TIMESTAMP,
-                status = 'confirmed_coordination',
+                status IN ('confirmed_coordination', 'closed'),
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
         """, (
