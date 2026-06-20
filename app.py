@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_23"
+    "app_V33_24"
 )
 
 BASE_URL = os.environ.get(
@@ -311,7 +311,7 @@ EMAIL_TEMPLATE_METADATA = {
         "notes": "Sent to guests whose dates do not overlap with a possible group option."
     },
     "tentative_group_dates": {
-        "name": "Tentative Round Dates Email",
+        "name": "Current Tentative Round Dates Email",
         "version": "1.0",
         "last_updated": "2026-06-18",
         "updated_by": "John",
@@ -2014,7 +2014,7 @@ def action_confirmation_page(title, message, post_action, back_link):
         padding: 14px;
         border-radius: 8px;
         max-width: 760px;
-        margin-bottom: 10px;
+        margin-bottom: 6px;
     ">
         <p style="font-weight: bold; margin-top: 0;">
             Please confirm this admin action before continuing.
@@ -5372,7 +5372,7 @@ def dashboard():
         Operations Calendar - {month_title}
     </h2>
 
-    <p style="margin-bottom: 10px;">
+    <p style="margin-bottom: 6px;">
 
         <a href="/dashboard?year={previous_year}&month={previous_month}">
             Previous
@@ -5952,7 +5952,7 @@ def dashboard():
                border-collapse: collapse;
                width: 100%;
                font-size: 13px;
-               margin-bottom: 10px;
+               margin-bottom: 6px;
            ">
         <tr style="background-color: #f5f5f5;">
             <th align="left">Action Area</th>
@@ -5987,7 +5987,7 @@ def dashboard():
                    border-collapse: collapse;
                    width: 100%;
                    font-size: 13px;
-                   margin-bottom: 10px;
+                   margin-bottom: 6px;
                ">
 
             <tr style="background-color: #f5f5f5;">
@@ -7816,7 +7816,7 @@ def home():
             <strong class="guest-bedroom-instruction">Choose the number of bedrooms you need first then the dates.</strong>
         </label><br>
 
-        <div style="font-size: 15px; font-weight: bold; margin-bottom: 4px;">
+        <div style="font-size: 14px; font-weight: bold; margin-bottom: 4px;">
             Each bedroom sleeps up to 2 guests.
         </div>
 
@@ -7966,7 +7966,7 @@ def home():
             border-radius: 8px;
             max-width: 620px;
             margin-top: 10px;
-            margin-bottom: 10px;
+            margin-bottom: 6px;
         ">
             <strong>What happens next?</strong><br>
             I’ll review the request and let you know if the dates work.
@@ -8846,7 +8846,7 @@ def invite_request(invitation_id):
                 border: 1px solid #dee2e6;
                 background-color: #f8f9fa;
                 padding: 14px;
-                margin-bottom: 10px;
+                margin-bottom: 6px;
                 border-radius: 8px;
             ">
 
@@ -8935,7 +8935,7 @@ def invite_request(invitation_id):
                        name="departure_date"
                        value="">
 
-                <button type="button" onclick="resetDateSelection();" style="padding: 8px 12px; font-size: 16px; font-weight: bold; background-color: #0d6efd; color: white; border: none; border-radius: 8px;">Clear Selected Dates and Start Over</button>
+                <button type="button" onclick="resetDateSelection();" style="padding: 8px 12px; font-size: 14px; font-weight: bold; background-color: #0d6efd; color: white; border: none; border-radius: 8px;">Clear Selected Dates and Start Over</button>
 
                 <br>
 
@@ -8978,7 +8978,7 @@ def invite_request(invitation_id):
 
                 <br>
 
-                <input type="submit" value="Submit Visit Request" style="padding: 8px 12px; font-size: 16px; font-weight: bold; background-color: #0d6efd; color: white; border: none; border-radius: 8px;">
+                <input type="submit" value="Submit Visit Request" style="padding: 8px 12px; font-size: 14px; font-weight: bold; background-color: #0d6efd; color: white; border: none; border-radius: 8px;">
 
             </form>
 
@@ -9384,7 +9384,7 @@ def render_request_submitted_page(request_id):
         border: 1px solid #198754;
         padding: 12px 14px;
         border-radius: 8px;
-        margin-bottom: 10px;
+        margin-bottom: 6px;
         max-width: 780px;
         line-height: 1.4;
     ">
@@ -10928,7 +10928,7 @@ def status_sanity():
             border-left: 5px solid #fd7e14;
             padding: 14px;
             margin-top: 18px;
-            margin-bottom: 10px;
+            margin-bottom: 6px;
             border-radius: 6px;
             font-weight: bold;
             color: #664d03;
@@ -14516,7 +14516,7 @@ def request_detail(request_id):
             change_summary_html = f"""
             <div style="
                 margin-top: 10px;
-                padding: 10px;
+                padding: 6px;
                 background-color: #ffffff;
                 border-left: 4px solid #fd7e14;
             ">
@@ -15871,7 +15871,7 @@ John & Mark
                   style="
                       width: 100%;
                       max-width: 950px;
-                      padding: 10px;
+                      padding: 6px;
                       font-size: 17px;
                       line-height: 1.65;
                       box-sizing: border-box;
@@ -18243,7 +18243,7 @@ Coordinating With:
 
                 <p style="
                     background-color: #f8f9fa;
-                    padding: 10px;
+                    padding: 6px;
                     border-radius: 6px;
                     line-height: 1.4;
                 ">
@@ -18363,7 +18363,7 @@ Coordinating With:
                 <button type="submit"
                         style="
                             padding: 10px 18px;
-                            font-size: 15px;
+                            font-size: 14px;
                             font-weight: bold;
                         ">
                     Submit Coordination Request
@@ -18980,7 +18980,7 @@ def manual_request():
         <button type="submit"
                 style="
                     padding: 10px 18px;
-                    font-size: 15px;
+                    font-size: 14px;
                     font-weight: bold;
                 ">
 
@@ -19274,7 +19274,7 @@ Change Notes:
             </tr>
         </table>
 
-        <div style="background-color: #fff3cd; border: 1px solid #fd7e14; padding: 10px; border-radius: 6px; margin-bottom: 12px;">
+        <div style="background-color: #fff3cd; border: 1px solid #fd7e14; padding: 6px; border-radius: 6px; margin-bottom: 12px;">
             <strong>Your change request was saved.</strong><br>
             <small>I’ll review the new dates and send an update once it’s sorted out.</small>
         </div>
@@ -19557,7 +19557,7 @@ Change Notes:
     <div style="display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; max-width: 1180px;">
 
         <div style="flex: 0 0 285px; background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 10px 12px; line-height: 1.25; font-size: 13px;">
-            <h3 style="margin: 0 0 8px 0; font-size: 16px;">
+            <h3 style="margin: 0 0 8px 0; font-size: 14px;">
                 Current Approved Details
             </h3>
             <div><strong>Guest:</strong> {request_row['name']}</div>
@@ -20897,7 +20897,7 @@ def coordination_group_detail(group_id):
             border: 2px solid #dc3545;
             padding: 12px;
             border-radius: 8px;
-            margin-bottom: 10px;
+            margin-bottom: 6px;
             max-width: 900px;
         ">
             <h3 style="margin-top: 0; color: #842029;">Room Capacity Warning</h3>
@@ -20947,10 +20947,10 @@ def coordination_group_detail(group_id):
             max-width: 720px;
         ">
             <h3 style="margin-top: 0;">
-                Tentative Round Dates
+                Current Tentative Round Dates
             </h3>
 
-            <p style="font-size: 16px; margin-bottom: 4px;">
+            <p style="font-size: 14px; margin-bottom: 4px;">
                 <strong>{format_date(group['tentative_arrival_date'])}</strong>
                 to
                 <strong>{format_date(group['tentative_departure_date'])}</strong>
@@ -21150,7 +21150,7 @@ def coordination_group_detail(group_id):
             border: 1px solid #dee2e6;
             background-color: #f8f9fa;
             padding: 12px;
-            margin-bottom: 10px;
+            margin-bottom: 6px;
             border-radius: 8px;
             max-width: 900px;
         ">
@@ -21234,7 +21234,7 @@ def coordination_group_detail(group_id):
     <div style="
         background-color: {round_status_background};
         border: 1px solid #ced4da;
-        padding: 10px;
+        padding: 6px;
         border-radius: 8px;
         margin-bottom: 12px;
         max-width: 1080px;
@@ -21955,7 +21955,7 @@ def coordination_group_detail(group_id):
                 background-color: #fff3cd;
                 border: 1px solid #f0ad4e;
                 border-radius: 8px;
-                padding: 10px;
+                padding: 6px;
                 margin-top: 12px;
             ">
                 <h4 style="margin: 0 0 6px 0;">Targeted Follow-Up</h4>
@@ -22021,7 +22021,7 @@ def coordination_group_detail(group_id):
                 Best Group Option
             </h3>
 
-            <p style="font-size: 16px; margin: 4px 0;">
+            <p style="font-size: 14px; margin: 4px 0;">
                 <strong>{format_date(best_suggestion['arrival_date'])}</strong>
                 to
                 <strong>{format_date(best_suggestion['departure_date'])}</strong>
@@ -22378,7 +22378,7 @@ def coordination_group_detail(group_id):
             <h2 style="margin-top: 0; color: #198754;">
                 Dates Work for Everyone
             </h2>
-            <p style="font-size: 16px; margin-bottom: 6px;">
+            <p style="font-size: 14px; margin-bottom: 6px;">
                 <strong>{format_date(group['tentative_arrival_date'])}</strong>
                 to
                 <strong>{format_date(group['tentative_departure_date'])}</strong>
@@ -22583,7 +22583,7 @@ def coordination_group_detail(group_id):
     <div style="
         border: 1px solid #dee2e6;
         background-color: #f8f9fa;
-        padding: 10px;
+        padding: 6px;
         margin-bottom: 12px;
         border-radius: 8px;
         max-width: 760px;
@@ -23202,7 +23202,7 @@ def coordination_group_handoff(group_id):
                             border-radius: 5px;
                             font-weight: bold;
                         ">
-                    Send Tentative Round Dates Emails
+                    Send Current Tentative Round Dates Emails
                 </button>
             </form>
             <small style="color: #666;">
@@ -23479,7 +23479,7 @@ def coordination_group_handoff(group_id):
     <div style="
         background-color: #f8f9fa;
         border: 1px solid #dee2e6;
-        padding: 10px;
+        padding: 6px;
         border-radius: 8px;
         margin-bottom: 18px;
         max-width: 1080px;
@@ -23929,7 +23929,7 @@ def coordination_group_email_preview(group_id):
             <pre style="
                 white-space: pre-wrap;
                 background-color: #f8f9fa;
-                padding: 10px;
+                padding: 6px;
                 border: 1px solid #dee2e6;
                 font-size: 13px;
             ">{safe_text(body)}</pre>
@@ -24120,12 +24120,12 @@ John & Mark
 302-521-5401
 """
         previews_html += f"""
-        <div style="border: 1px solid #dee2e6; border-radius: 8px; padding: 10px; margin-bottom: 12px; max-width: 900px;">
+        <div style="border: 1px solid #dee2e6; border-radius: 8px; padding: 6px; margin-bottom: 12px; max-width: 900px;">
             <p style="margin-top: 0;">
                 <strong>To:</strong> {safe_text(member['primary_name'])} &lt;{safe_text(member['primary_email'])}&gt;<br>
                 <strong>Subject:</strong> {safe_text(subject)}
             </p>
-            <pre style="white-space: pre-wrap; background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px;">{safe_text(body)}</pre>
+            <pre style="white-space: pre-wrap; background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 6px;">{safe_text(body)}</pre>
         </div>
         """
 
@@ -25185,7 +25185,7 @@ def coordination_group_member_request(member_id):
 
         if follow_up_mode:
             tentative_member_block = f"""
-            <p style="font-size: 16px; margin-bottom: 4px;">
+            <p style="font-size: 14px; margin-bottom: 4px;">
                 <strong>{format_date(member['tentative_arrival_date'])}</strong>
                 to
                 <strong>{format_date(member['tentative_departure_date'])}</strong>
@@ -25197,7 +25197,7 @@ def coordination_group_member_request(member_id):
 
         else:
             tentative_member_block = f"""
-            <p style="font-size: 16px;">
+            <p style="font-size: 14px;">
                 <strong>{format_date(member['tentative_arrival_date'])}</strong>
                 to
                 <strong>{format_date(member['tentative_departure_date'])}</strong>
@@ -25398,7 +25398,7 @@ def coordination_group_member_request(member_id):
             margin-bottom: 6px;
             border-radius: 10px;
             max-width: 1100px;
-            font-size: 16px;
+            font-size: 14px;
             line-height: 1.3;
         ">
             <div style="font-size: 21px; font-weight: bold; color: #856404; margin-bottom: 3px;">
@@ -25436,13 +25436,13 @@ def coordination_group_member_request(member_id):
             margin-bottom: 8px;
             border-radius: 10px;
             max-width: 1100px;
-            font-size: 16px;
+            font-size: 14px;
             line-height: 1.35;
         ">
             <div style="font-size: 22px; font-weight: bold; color: #856404; margin-bottom: 4px;">
                 ⚠ ACTION NEEDED — Round {safe_text(row_value(member, "current_round")) or "1"}
             </div>
-            <div style="font-size: 16px; font-weight: bold;">
+            <div style="font-size: 14px; font-weight: bold;">
                 Please review the current group date option.
             </div>
             <div style="margin-top: 4px;">
@@ -25514,8 +25514,8 @@ def coordination_group_member_request(member_id):
         border-radius: 8px;
         max-width: 1100px;
     ">
-        <h2 style="margin: 0 0 2px 0; font-size: 15px;">
-            Tentative Round Dates
+        <h2 style="margin: 0 0 2px 0; font-size: 14px;">
+            Current Tentative Round Dates
         </h2>
 
         {tentative_member_block}
@@ -25530,7 +25530,7 @@ def coordination_group_member_request(member_id):
         max-width: 1100px;
     ">
         <h2 style="margin: 0 0 3px 0; font-size: 17px;">
-            Suggested Round Dates
+            Top Suggested Round Dates
         </h2>
 
         <p style="margin: 0 0 5px 0; font-size: 13px; line-height: 1.25;">
@@ -25601,11 +25601,11 @@ def coordination_group_member_request(member_id):
             </form>
 
             <details style="margin: 6px 0;">
-                <summary style="cursor:pointer; font-weight:bold;">Previous Approved Stays</summary>
+                <summary style="cursor:pointer; font-weight:bold;">Previous Approved Stays (History)</summary>
                 {previous_html}
             </details>
 
-            <h3 style="margin: 6px 0 3px 0;">Guest / Room Notes</h3>
+            <h3 style="margin: 6px 0 3px 0;">Guest / Room Notes / Travelers</h3>
 
             <p style="margin: 4px 0;">
                 <strong>Additional Guests for Your Room(s):</strong><br>
@@ -25712,7 +25712,7 @@ def coordination_group_member_request(member_id):
                                     margin-bottom: 6px;
                                     max-width: 420px;
                                 ">
-                                    <label for="default_rooms" style="font-size: 15px; font-weight: bold;">
+                                    <label for="default_rooms" style="font-size: 14px; font-weight: bold;">
                                         Bedrooms needed
                                     </label>
                                     <span style="font-size: 12px; color:#555;">— sleeps up to 2 per room</span><br>
@@ -26664,7 +26664,7 @@ def coordination_group_member_date_options_thanks(member_id):
         padding: 12px 14px;
         border-radius: 8px;
         max-width: 760px;
-        margin-bottom: 10px;
+        margin-bottom: 6px;
         line-height: 1.4;
     ">
         <p style="font-weight: bold; margin-top: 0;">
@@ -28188,7 +28188,7 @@ def coordination_group_send_reminders(group_id):
     return f"""
     {nav_links()}
 
-    <h1>Tentative Round Dates Emails Sent</h1>
+    <h1>Current Tentative Round Dates Emails Sent</h1>
 
     {email_template_metadata_html("tentative_confirmation")}
 
