@@ -4,7 +4,7 @@ We found a possible group date for {{ group_title }}:
 
 {{ suggested_dates }}
 
-Right now, your submitted dates do not overlap with this option.
+Right now, sadly your submitted dates do not overlap with this option as you arse one busy person! 
 
 Please use the link below to review your dates. You can add another date option, increase your flexibility, or let us know if these dates will not work.
 
