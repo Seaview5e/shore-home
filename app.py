@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_17"
+    "app_V33_18"
 )
 
 BASE_URL = os.environ.get(
@@ -3291,6 +3291,50 @@ def coordination_group_is_overdue(group):
         return False
 
 
+def default_coordination_due_date():
+
+    return (date.today() + timedelta(days=3)).strftime("%Y-%m-%d")
+
+
+def ensure_coordination_due_date(conn, group_id, group):
+
+    current_due_date = safe_text(row_value(group, "tentative_response_due_date")).strip()
+
+    if current_due_date and current_due_date.lower() not in ["no due date set", "none", "null"]:
+        return current_due_date, group
+
+    due_date_value = default_coordination_due_date()
+
+    try:
+        conn.execute("""
+            UPDATE coordination_groups
+            SET tentative_response_due_date = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (
+            due_date_value,
+            group_id
+        ))
+
+        conn.commit()
+
+        refreshed_group = conn.execute("""
+            SELECT *
+            FROM coordination_groups
+            WHERE id = ?
+        """, (
+            group_id,
+        )).fetchone()
+
+        if refreshed_group:
+            group = refreshed_group
+
+    except Exception:
+        pass
+
+    return due_date_value, group
+
+
 def add_follow_up_acceptance_date_option(conn, member_id, arrival_date, departure_date):
 
     existing_rooms_row = conn.execute("""
@@ -4882,7 +4926,7 @@ def dashboard():
     coordination_groups = conn.execute("""
         SELECT *
         FROM coordination_groups
-        WHERE status != 'archived'
+        WHERE COALESCE(status, '') != 'archived'
         ORDER BY
             updated_at DESC,
             created_at DESC
@@ -5087,20 +5131,31 @@ def dashboard():
 
         needs_attention = False
 
-        if member_count == 0:
-            needs_attention = True
+        coordination_status = safe_text(coordination_group["status"]).strip()
 
-        if responded_count < member_count:
-            needs_attention = True
+        if coordination_status in ["finalized", "closed", "archived"]:
+            needs_attention = False
+            booking_handoff_status = "Closed / finalized"
+            confirmation_status = "Complete"
+            tentative_status = "Closed / finalized"
+            capacity_status = "OK"
 
-        if unmatched_count > 0:
-            needs_attention = True
+        else:
 
-        if capacity_status in ["Issue", "No Match"]:
-            needs_attention = True
+            if member_count == 0:
+                needs_attention = True
 
-        if converted_requests_needing_review > 0:
-            needs_attention = True
+            if responded_count < member_count:
+                needs_attention = True
+
+            if unmatched_count > 0:
+                needs_attention = True
+
+            if capacity_status in ["Issue", "No Match"]:
+                needs_attention = True
+
+            if converted_requests_needing_review > 0:
+                needs_attention = True
 
         coordination_dashboard_rows.append({
             "group_id": coordination_group["id"],
@@ -20274,7 +20329,7 @@ def coordination_groups():
 
             if status_display == "confirmed_coordination":
                 status_display = "Confirmed Coordination"
-            elif status_display == "finalized":
+            elif status_display in ["finalized", "closed"]:
                 status_display = "Closed / Finalized"
             elif status_display == "tentative":
                 status_display = "Tentative"
@@ -21037,33 +21092,7 @@ def coordination_group_detail(group_id):
 
         due_date_display = safe_text(
             group["tentative_response_due_date"]
-        ).strip()
-
-        if not due_date_display:
-            due_date_display = (date.today() + timedelta(days=3)).strftime("%Y-%m-%d")
-
-            try:
-                conn.execute("""
-                    UPDATE coordination_groups
-                    SET tentative_response_due_date = ?,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                """, (
-                    due_date_display,
-                    group_id
-                ))
-                conn.commit()
-
-                group = conn.execute("""
-                    SELECT *
-                    FROM coordination_groups
-                    WHERE id = ?
-                """, (
-                    group_id,
-                )).fetchone()
-
-            except Exception:
-                pass
+        ).strip() or default_due_date_value
 
         overdue_label = ""
 
@@ -22769,43 +22798,21 @@ def coordination_group_handoff(group_id):
         </p>
         """
 
-    # V33.17: Handoff response due date defaults to today + 3 days if empty.
-    # Save it once so the page display, input value, and email all agree.
-    try:
-        if not safe_text(row_value(group, "tentative_response_due_date")).strip():
-            default_due_date_value = (date.today() + timedelta(days=3)).strftime("%Y-%m-%d")
-            conn.execute("""
-                UPDATE coordination_groups
-                SET tentative_response_due_date = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """, (
-                default_due_date_value,
-                group_id
-            ))
-            conn.commit()
-            group = conn.execute("""
-                SELECT *
-                FROM coordination_groups
-                WHERE id = ?
-            """, (
-                group_id,
-            )).fetchone()
-    except Exception:
-        pass
+    default_due_date_value, group = ensure_coordination_due_date(
+        conn,
+        group_id,
+        group
+    )
 
-    due_date_fallback_script = """
+    due_date_fallback_script = f"""
     <script>
-        document.addEventListener("DOMContentLoaded", function () {
-            document.querySelectorAll('input[name="tentative_response_due_date"]').forEach(function (field) {
-                if (field.value) {
-                    return;
-                }
-                const dateValue = new Date();
-                dateValue.setDate(dateValue.getDate() + 3);
-                field.value = dateValue.toISOString().slice(0, 10);
-            });
-        });
+        document.addEventListener("DOMContentLoaded", function () {{
+            document.querySelectorAll('input[name="tentative_response_due_date"]').forEach(function (field) {{
+                if (!field.value || field.value === "No due date set") {{
+                    field.value = "{default_due_date_value}";
+                }}
+            }});
+        }});
     </script>
     """
 
@@ -23047,10 +23054,8 @@ def coordination_group_handoff(group_id):
 
     default_tentative_due_date = safe_text(group["tentative_response_due_date"]).strip()
 
-    if not default_tentative_due_date:
-        default_tentative_due_date = (
-            date.today() + timedelta(days=3)
-        ).strftime("%Y-%m-%d")
+    if not default_tentative_due_date or default_tentative_due_date.lower() in ["no due date set", "none", "null"]:
+        default_tentative_due_date = default_due_date_value
 
     tentative_confirmation_email_action_html = """
     <p style="color: #666;">
@@ -27746,7 +27751,7 @@ def coordination_group_send_final_email(group_id):
         conn.execute("""
             UPDATE coordination_groups
             SET final_coordination_email_sent_at = CURRENT_TIMESTAMP,
-                status IN ('confirmed_coordination', 'closed'),
+                status = 'confirmed_coordination',
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
         """, (
