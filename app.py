@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_19"
+    "app_V33_20"
 )
 
 BASE_URL = os.environ.get(
@@ -21203,8 +21203,9 @@ def coordination_group_detail(group_id):
         max-width: 1080px;
         font-size: 13px;
     ">
-        <strong>Current Round:</strong> Round {current_round} — {round_status_label}<br>
-        <strong>Status:</strong> {round_waiting_text}
+        <strong>Current Planning Round:</strong> Round {current_round} — {round_status_label}<br>
+        <strong>Status:</strong> {round_waiting_text}<br>
+        <strong>Round Note:</strong> Round 1 starts with organizer setup. Later rounds are used when dates need another pass.
     </div>
     """
 
@@ -21484,7 +21485,7 @@ def coordination_group_detail(group_id):
             organizer_workflow_state = "✅ Complete"
 
     planning_workflow_html = f"""
-    <h2>Planning Workflow</h2>
+    <h2>Action Workflow</h2>
 
     {round_status_html}
 
@@ -21569,7 +21570,7 @@ def coordination_group_detail(group_id):
             </tr>
 
             <tr style="background-color: {tentative_background};">
-                <td><strong>4. Select Tentative Dates</strong></td>
+                <td><strong>5. Select Tentative Dates</strong></td>
                 <td>{tentative_icon} {tentative_state}</td>
                 <td>{step4_detail}</td>
                 <td>{step4_action}</td>
@@ -22358,135 +22359,163 @@ def coordination_group_detail(group_id):
         """
 
     html = nav_links() + f"""
+    <style>
+        .coord-card {{
+            border: 1px solid #dee2e6;
+            border-radius: 10px;
+            padding: 12px;
+            margin-bottom: 14px;
+            max-width: 1080px;
+            background: #ffffff;
+        }}
+        .coord-card h2 {{
+            margin: 0 0 8px 0;
+            font-size: 20px;
+        }}
+        .coord-card h3 {{
+            margin: 8px 0 6px 0;
+        }}
+        .coord-muted {{
+            color: #555;
+            font-size: 13px;
+        }}
+        .coord-mini-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+            gap: 8px;
+            margin: 8px 0;
+        }}
+        .coord-mini-stat {{
+            background:#f8f9fa;
+            border:1px solid #e5e7eb;
+            border-radius:8px;
+            padding:8px;
+            font-size:13px;
+        }}
+        .coord-mini-stat strong {{
+            display:block;
+            font-size:17px;
+            color:#0f4c81;
+        }}
+        details.coord-collapse {{
+            margin-top: 8px;
+        }}
+        details.coord-collapse summary {{
+            cursor:pointer;
+            font-weight:bold;
+            color:#0f4c81;
+        }}
+    </style>
+
     <h1>{safe_text(group['title'])} — Planning</h1>
 
-    <div style="
-        background-color: #f8f9fa;
-        border: 1px solid #dee2e6;
-        padding: 10px;
-        border-radius: 8px;
-        margin-bottom: 18px;
-        max-width: 1080px;
-    ">
+    <div class="coord-card" style="background:#f8f9fa;">
         <strong>Coordination Pages:</strong>
-        <a href="/coordination-group/{group_id}"
-           style="font-weight: bold; margin-left: 8px;">
-            Planning Page
-        </a>
+        <a href="/coordination-group/{group_id}" style="font-weight:bold; margin-left:8px;">Planning Page</a>
         |
-        <a href="/coordination-group/{group_id}/handoff"
-           style="font-weight: bold;">
-            Booking Handoff Page
-        </a>
+        <a href="/coordination-group/{group_id}/handoff" style="font-weight:bold;">Booking Handoff Page</a>
         <br>
-        <small style="color: #555;">
-            Planning is for finding dates. Booking Handoff is for confirmations, booking requests, room assignments, and approvals.
-        </small>
-    </div>
-
-    <div style="
-        background-color: #fff3cd;
-        border: 1px solid #ffc107;
-        padding: 10px;
-        border-radius: 8px;
-        margin-bottom: 14px;
-        max-width: 1080px;
-        font-size: 13px;
-    ">
-        <strong>Admin Cleanup:</strong>
-        <a href="/coordination-group/{group_id}/delete"
-           style="color:#842029; font-weight:bold; margin-left:8px;">
-            Delete Coordination Process
-        </a>
-        <br>
-        <small>Deletes the planning/coordination process only. Guest profiles are never deleted. Confirmed bookings block deletion.</small>
+        <small class="coord-muted">Planning is for finding dates. Booking Handoff is for confirmations, booking requests, room assignments, and approvals.</small>
     </div>
 
     {planning_workflow_html}
 
-    <h2>Current Coordination Status</h2>
+    <div class="coord-card">
+        <h2>Group Setup</h2>
 
-    <div style="
-        background-color: #f8f9fa;
-        padding: 14px;
-        border-radius: 8px;
-        margin-bottom: 18px;
-        max-width: 1080px;
-        line-height: 1.5;
-    ">
-        <p style="margin-top: 0;">
-            <strong>Status:</strong> {safe_text(group['status'])}<br>
-            <strong>Target Year:</strong> {safe_text(group['target_year'])}<br>
-            <strong>Created:</strong> {safe_text(group['created_at'])[:10]}<br>
-            <strong>Confirmed Works:</strong> {tentative_confirmed_count} |
-            <strong>Cannot Make:</strong> {tentative_cannot_count} |
-            <strong>Need Different Dates (Add Comments):</strong> {tentative_discussion_count} |
-            <strong>No Response:</strong> {tentative_no_response_count}
+        <div class="coord-mini-grid">
+            <div class="coord-mini-stat"><strong>{safe_text(group['status'])}</strong>Status</div>
+            <div class="coord-mini-stat"><strong>{len(members)}</strong>Members</div>
+            <div class="coord-mini-stat"><strong>{responded_count}</strong>Responded</div>
+            <div class="coord-mini-stat"><strong>Round {current_round}</strong>Current Round</div>
+        </div>
+
+        <p class="coord-muted" style="margin-bottom:8px;">
+            Target Year: {safe_text(group['target_year'])} |
+            Created: {safe_text(group['created_at'])[:10]}
         </p>
 
-        <div style="
-            background-color: #ffffff;
-            border: 1px solid #dee2e6;
-            padding: 10px;
-            border-radius: 6px;
-            margin-bottom: 12px;
-        ">
+        <div style="background:#f8fbff; border:1px solid #d8e6f3; padding:8px; border-radius:8px; margin-bottom:10px;">
             {safe_text(group['description'])}
         </div>
 
-        <h3>Tentative Group Dates</h3>
+        {organizer_formation_html}
 
-        {tentative_dates_html}
+        <details class="coord-collapse">
+            <summary>Show submitted date options and waiting list</summary>
+            <p>
+                <strong>Waiting On:</strong><br>
+                {not_responded_html}
+            </p>
+            {date_options_summary_html}
+        </details>
     </div>
 
-    <h2 id="best-match-suggestions">Best Match Suggestions</h2>
+    <div class="coord-card" id="best-match-suggestions" style="background:#eef7ee;">
+        <h2>Date Coordination</h2>
 
-    <div style="
-        border: 1px solid #dee2e6;
-        background-color: #eef7ee;
-        padding: 14px;
-        margin-bottom: 18px;
-        border-radius: 8px;
-        max-width: 1080px;
-    ">
-        <p style="margin-top: 0;">
-            These suggestions compare submitted preferred and alternate dates. Use them to pick tentative dates. After tentative dates are picked, this becomes reference information.
-        </p>
+        <div class="coord-mini-grid">
+            <div class="coord-mini-stat"><strong>{tentative_confirmed_count}</strong>Confirmed Works</div>
+            <div class="coord-mini-stat"><strong>{tentative_cannot_count}</strong>Cannot Make</div>
+            <div class="coord-mini-stat"><strong>{tentative_discussion_count}</strong>Need Different Dates</div>
+            <div class="coord-mini-stat"><strong>{tentative_no_response_count}</strong>No Response</div>
+        </div>
+
+        <h3>Current Tentative Dates</h3>
+        {tentative_dates_html}
+
+        <h3>System Overlap / Best Match</h3>
+        <p class="coord-muted">Use this section to compare submitted preferred and alternate dates, then select or adjust tentative dates.</p>
 
         {intersection_suggestions_html}
 
         {phase4_admin_override_html}
 
-        {match_suggestions_html}
+        <details class="coord-collapse">
+            <summary>Show additional best-match detail</summary>
+            {match_suggestions_html}
+        </details>
     </div>
 
-    <h2>Submitted Date Options — Reference Only</h2>
-
-    <div style="
-        border: 1px solid #dee2e6;
-        background-color: #ffffff;
-        padding: 14px;
-        margin-bottom: 18px;
-        border-radius: 8px;
-        max-width: 980px;
-    ">
+    <div class="coord-card">
+        <h2>Issues / Exceptions</h2>
         <p>
-            <strong>Members:</strong> {len(members)}<br>
-            <strong>Responded:</strong> {responded_count}<br>
-            <strong>Not Responded:</strong> {len(not_responded_names)}
+            <strong>Waiting On:</strong> {len(not_responded_names)} guest(s)<br>
+            <strong>Cannot Make Tentative Dates:</strong> {tentative_cannot_count}<br>
+            <strong>Need Different Dates / Comments:</strong> {tentative_discussion_count}
         </p>
-
-        <p>
-            <strong>Waiting On:</strong><br>
-            {not_responded_html}
-        </p>
-
-        {date_options_summary_html}
+        <p class="coord-muted">Use this as the quick scan area. If everything is zero, move toward Booking Handoff.</p>
     </div>
 
-    <h2>Group Formation</h2>
+    <div class="coord-card">
+        <h2>Round History / Testing Visibility</h2>
+        <div class="coord-mini-grid">
+            <div class="coord-mini-stat"><strong>Round {current_round}</strong>Active Round</div>
+            <div class="coord-mini-stat"><strong>{invitation_sent_count}</strong>Emails Sent</div>
+            <div class="coord-mini-stat"><strong>{responded_count}</strong>Responses</div>
+            <div class="coord-mini-stat"><strong>{len(created_booking_request_rows)}</strong>Booking Requests</div>
+        </div>
+        <p class="coord-muted" style="margin-bottom:0;">
+            Round numbering is display-only in this version. Use it to test multi-round coordination without changing booking logic.
+        </p>
+    </div>
 
-    {organizer_formation_html}
+    <div class="coord-card" style="background:#fff8e6;">
+        <h2>Booking / Closeout</h2>
+        <p style="margin-top:0;">
+            Once guests confirm tentative dates, continue to Booking Handoff for booking requests, room assignment, approval emails, final confirmation, and closing.
+        </p>
+        <p>
+            <a href="/coordination-group/{group_id}/handoff" style="font-weight:bold;">Open Booking Handoff Page</a>
+        </p>
+    </div>
+
+    <div class="coord-card" style="background:#fff3cd; font-size:13px;">
+        <strong>Admin Cleanup:</strong>
+        <a href="/coordination-group/{group_id}/delete" style="color:#842029; font-weight:bold; margin-left:8px;">Delete Coordination Process</a>
+        <br>
+        <small>Deletes the planning/coordination process only. Guest profiles are never deleted. Confirmed bookings block deletion.</small>
+    </div>
 
     <h2>Group Members</h2>
 
@@ -22496,11 +22525,14 @@ def coordination_group_detail(group_id):
         <strong>Participant</strong> = guest submitting availability for the group.
     </div>
 
+    <details class="coord-collapse" open>
+        <summary>Add / review group members</summary>
+
     <div style="
         border: 1px solid #dee2e6;
         background-color: #f8f9fa;
-        padding: 14px;
-        margin-bottom: 18px;
+        padding: 10px;
+        margin-bottom: 12px;
         border-radius: 8px;
         max-width: 760px;
     ">
@@ -22632,6 +22664,8 @@ def coordination_group_detail(group_id):
         html += "</table>"
 
     html += f"""
+    </details>
+
     <p>
         <a href="/coordination-groups">
             Back to Coordination Groups
