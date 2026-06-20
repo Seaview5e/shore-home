@@ -4,11 +4,14 @@ Looks like we’re kicking off the process of coordinating dates for the group v
 
 {{ group_title }}
 
-We wanted to give you a quick heads-up before the scheduling puzzle begins.
+that is being organized by:
+{{ organizer_name }} <{{ organizer_email }}>
+
+We wanted to give you a quick heads-up before the scheduling puzzle begins. 
 
 The plan is simple, in theory: everyone shares preferred dates and alternate dates if helpful, we compare availability across the group, and then come back with one or more tentative options for everyone to review.
 
-At this stage, nothing is booked or confirmed yet. We’re simply trying to solve the classic challenge of getting multiple calendars to cooperate.
+At this stage, nothing is booked or confirmed yet. Your organizer has suggested dates to start the process. We’re simply trying to solve the classic challenge of getting multiple calendars to cooperate.
 
 Unlike a normal visit request, this process is designed for groups.
 That means:
