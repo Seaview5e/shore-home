@@ -9,7 +9,6 @@ We’ll circle back once we’ve compared notes and found a path through the sch
 
 Thanks for your patience — apparently coordinating calendars is harder than the actual visit.
 
-
 Current proposed dates:
 {{ tentative_dates }}
 
