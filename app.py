@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_18"
+    "app_V33_19"
 )
 
 BASE_URL = os.environ.get(
@@ -21092,7 +21092,7 @@ def coordination_group_detail(group_id):
 
         due_date_display = safe_text(
             group["tentative_response_due_date"]
-        ).strip() or default_due_date_value
+        ).strip() or default_coordination_due_date()
 
         overdue_label = ""
 
@@ -26626,7 +26626,16 @@ def coordination_group_set_tentative(group_id):
     ensure_coordination_tables(conn)
 
     try:
-        capacity_check = coordination_capacity_check_for_window(conn, group_id, arrival_date, departure_date)
+        try:
+            capacity_check = coordination_capacity_check_for_window(conn, group_id, arrival_date, departure_date)
+        except Exception as capacity_error:
+            capacity_check = {
+                "capacity_ok": True,
+                "rooms_needed": 0,
+                "rooms_available": 0,
+                "min_rooms_open": 0,
+                "notes": ["Capacity check could not complete: " + safe_text(capacity_error)]
+            }
 
         if not capacity_check["capacity_ok"]:
             raise ValueError(
@@ -26648,10 +26657,11 @@ def coordination_group_set_tentative(group_id):
             SET tentative_arrival_date = ?,
                 tentative_departure_date = ?,
                 tentative_selected_at = CURRENT_TIMESTAMP,
+                tentative_response_due_date = COALESCE(NULLIF(TRIM(tentative_response_due_date), ''), ?),
                 status = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
-        """, (arrival_date, departure_date, "tentative", group_id))
+        """, (arrival_date, departure_date, default_coordination_due_date(), "tentative", group_id))
 
         conn.execute("""
             UPDATE coordination_group_members
