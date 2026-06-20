@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_21"
+    "app_V33_22"
 )
 
 BASE_URL = os.environ.get(
@@ -25351,7 +25351,7 @@ def coordination_group_member_request(member_id):
             line-height: 1.35;
         ">
             <div style="font-size: 22px; font-weight: bold; color: #856404; margin-bottom: 4px;">
-                ⚠ ACTION NEEDED — Round {safe_text(row_value(member, 'current_round')) or '1'}
+                ⚠ ACTION NEEDED — Round {safe_text(row_value(member, "current_round")) or "1"}
             </div>
             <div style="font-size: 16px; font-weight: bold;">
                 Please review the current group date option.
@@ -25369,10 +25369,10 @@ def coordination_group_member_request(member_id):
 
     html = nav_links() + f"""
     <style>
-        .shore-admin-nav { font-size: 13px; }
-        input, select, textarea, button { font-size: 14px; }
-        p { line-height: 1.28; }
-        label { line-height: 1.25; }
+        .shore-admin-nav {{ font-size: 13px; }}
+        input, select, textarea, button {{ font-size: 14px; }}
+        p {{ line-height: 1.28; }}
+        label {{ line-height: 1.25; }}
     </style>
     <h1 style="margin: 0 0 4px 0; font-size: 22px;">Pick / Update Your Dates</h1>
 
@@ -29762,3 +29762,5 @@ if __name__ == "__main__":
 # Preserves guest_profiles, rooms, blocked_dates.
 # Clears operational invitation/request/booking/coordination/log data after automatic backup.
 # ============================================================
+
+            
