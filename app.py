@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_22"
+    "app_V33_23"
 )
 
 BASE_URL = os.environ.get(
@@ -311,7 +311,7 @@ EMAIL_TEMPLATE_METADATA = {
         "notes": "Sent to guests whose dates do not overlap with a possible group option."
     },
     "tentative_group_dates": {
-        "name": "Tentative Group Dates Email",
+        "name": "Tentative Round Dates Email",
         "version": "1.0",
         "last_updated": "2026-06-18",
         "updated_by": "John",
@@ -487,17 +487,24 @@ Next step: review the suggested people and dates, then add/confirm guest profile
 """,
     "coordination_invitation.txt": """Hi {{ guest_name }},
 
-We are starting a group date coordination process for {{ group_title }}.
+We are starting a group date coordination process for:
 
-Your role in this group: {{ guest_role }}
+{{ group_title }}
 
-The goal is to collect preferred and alternate dates from everyone, compare overlap, and then propose tentative dates for the group to confirm. Nothing is confirmed or booked yet.
+This visit is being organized by:
+{{ organizer_name }} {{ organizer_email_display }}
+
+Your role in this group:
+{{ guest_role }}
+
+The goal is simple: collect preferred and alternate dates from everyone, compare overlap, and then propose tentative dates for the group to confirm.
+
+Nothing is confirmed or booked yet.
 
 Group members:
 {{ group_member_text }}
 
 Current dates and analysis so far:
-
 {{ suggestion_text }}
 
 Please use your personal link below to submit or update your date options:
@@ -1557,6 +1564,35 @@ def notify_admin(action_title, details, review_path="/dashboard"):
         )
     except Exception as error:
         print("ADMIN NOTIFICATION FAILED:", safe_text(error))
+
+
+def get_coordination_organizer_info(conn, group_id):
+
+    organizer = conn.execute("""
+        SELECT
+            guest_profiles.primary_name,
+            guest_profiles.primary_email
+        FROM coordination_group_members
+        JOIN guest_profiles
+            ON coordination_group_members.guest_profile_id = guest_profiles.id
+        WHERE coordination_group_members.coordination_group_id = ?
+          AND LOWER(COALESCE(coordination_group_members.role, '')) = 'organizer'
+        ORDER BY coordination_group_members.id
+        LIMIT 1
+    """, (
+        group_id,
+    )).fetchone()
+
+    if organizer:
+        return {
+            "name": safe_text(organizer["primary_name"]),
+            "email": safe_text(organizer["primary_email"])
+        }
+
+    return {
+        "name": "John and Mark",
+        "email": ""
+    }
 
 
 def notify_admin_coordination_response(conn, group_id, guest_name, action_title="Coordination dates submitted"):
@@ -20657,7 +20693,8 @@ def coordination_group_detail(group_id):
             coordination_group_members.*,
             guest_profiles.primary_name,
             guest_profiles.primary_email,
-            COUNT(coordination_date_options.id) AS date_option_count
+            COUNT(coordination_date_options.id) AS date_option_count,
+            MAX(COALESCE(coordination_date_options.rooms_requested, 1)) AS rooms_requested
         FROM coordination_group_members
         JOIN guest_profiles
             ON coordination_group_members.guest_profile_id = guest_profiles.id
@@ -20910,7 +20947,7 @@ def coordination_group_detail(group_id):
             max-width: 720px;
         ">
             <h3 style="margin-top: 0;">
-                Tentative Group Dates
+                Tentative Round Dates
             </h3>
 
             <p style="font-size: 16px; margin-bottom: 4px;">
@@ -21009,7 +21046,7 @@ def coordination_group_detail(group_id):
                         color: #198754;
                         margin-top: 0;
                     ">
-                        Phase 5: Ready for Final Confirmation
+                        Round Status: Ready for Final Confirmation
                     </h2>
 
                     <p>
@@ -21063,7 +21100,7 @@ def coordination_group_detail(group_id):
                         color: #856404;
                         margin-top: 0;
                     ">
-                        Phase 5: Needs Another Round
+                        Round Status: Needs Another Round
                     </h2>
 
                     <p>
@@ -21724,7 +21761,7 @@ def coordination_group_detail(group_id):
 
         intersection_suggestions_html = f"""
         <div style="background:#e8f7ea; border:2px solid #198754; border-radius:8px; padding:12px; margin-bottom:14px; max-width:1040px;">
-            <h3 style="margin-top:0;">Phase 3 Shared Overlap Window</h3>
+            <h3 style="margin-top:0;">Round Shared Overlap Window</h3>
             <p style="font-size:16px; margin:4px 0;">
                 <strong>{format_date(best_intersection['arrival_date'])}</strong>
                 to
@@ -21818,7 +21855,7 @@ def coordination_group_detail(group_id):
 
     phase4_admin_override_html = f"""
     <div style="background:#fff8e6; border:2px solid #fd7e14; border-radius:8px; padding:12px; margin:12px 0; max-width:1040px;">
-        <h3 style="margin-top:0;">Phase 4 Admin Adjust Tentative Dates</h3>
+        <h3 style="margin-top:0;">Round Admin Adjust Tentative Dates</h3>
         <p style="margin:4px 0; font-size:13px;">
             <strong>System suggested overlap:</strong> {phase4_system_text}<br>
             <strong>Current tentative dates:</strong> {phase4_current_text}
@@ -22487,6 +22524,21 @@ def coordination_group_detail(group_id):
         <p class="coord-muted">Use this as the quick scan area. If everything is zero, move toward Booking Handoff.</p>
     </div>
 
+    <div class="coord-card" style="background:#fff3cd; border-color:#fd7e14;">
+        <h2>Capacity Review / Over-Room Request</h2>
+        <p style="margin-top:0;">
+            If this round is requesting more rooms than are available, pause here before sending more guest emails.
+        </p>
+        <ol style="margin-top:4px; line-height:1.35;">
+            <li>Review each guest's room count in the Group Members table.</li>
+            <li>Ask the organizer which rooms can be reduced, combined, split, or moved to different dates.</li>
+            <li>After resolving, start/send another round or continue to Booking Handoff.</li>
+        </ol>
+        <p class="coord-muted" style="margin-bottom:0;">
+            If status is <strong>capacity_review</strong>, this is the next action area.
+        </p>
+    </div>
+
     <div class="coord-card">
         <h2>Round History / Testing Visibility</h2>
         <div class="coord-mini-grid">
@@ -22632,6 +22684,7 @@ def coordination_group_detail(group_id):
                 <th align="left">Role</th>
                 <th align="left">Invitation Status</th>
                 <th align="left">Last Response</th>
+                <th align="center">Rooms</th>
                 <th align="center">Date Options</th>
                 <th align="left">Request Link</th>
                 <th align="left">Profile</th>
@@ -22647,6 +22700,7 @@ def coordination_group_detail(group_id):
                 <td>{coordination_role_badge(member['role'])}</td>
                 <td>{safe_text(member['invitation_status'])}</td>
                 <td>{safe_text(member['last_response_at'])}</td>
+                <td align="center">{safe_text(row_value(member, 'rooms_requested')) or '1'}</td>
                 <td align="center">{member['date_option_count']}</td>
                 <td>
                     <a href="/coordination-group-member/{coordination_member_row_id(member)}/request">
@@ -23148,7 +23202,7 @@ def coordination_group_handoff(group_id):
                             border-radius: 5px;
                             font-weight: bold;
                         ">
-                    Send Tentative Group Dates Emails
+                    Send Tentative Round Dates Emails
                 </button>
             </form>
             <small style="color: #666;">
@@ -23832,6 +23886,11 @@ def coordination_group_email_preview(group_id):
 
     suggestion_text = "\n\n".join(suggestion_lines)
 
+    organizer_info = get_coordination_organizer_info(conn, group_id)
+    organizer_email_display = ""
+    if organizer_info["email"]:
+        organizer_email_display = "<" + organizer_info["email"] + ">"
+
     email_preview_html = ""
 
     for member in email_target_members:
@@ -23845,6 +23904,9 @@ def coordination_group_email_preview(group_id):
             guest_name=safe_text(member["primary_name"]),
             group_title=safe_text(group["title"]),
             guest_role=coordination_role_display(row_value(member, "role") or "participant"),
+            organizer_name=organizer_info["name"],
+            organizer_email=organizer_info["email"],
+            organizer_email_display=organizer_email_display,
             group_member_text=group_member_text,
             suggestion_text=suggestion_text,
             request_link=update_link
@@ -24493,6 +24555,11 @@ def coordination_group_send_update_email(group_id):
 
     suggestion_text = "\n\n".join(suggestion_lines)
 
+    organizer_info = get_coordination_organizer_info(conn, group_id)
+    organizer_email_display = ""
+    if organizer_info["email"]:
+        organizer_email_display = "<" + organizer_info["email"] + ">"
+
     sent_count = 0
     sent_member_ids = []
     skipped_members = []
@@ -24518,6 +24585,9 @@ def coordination_group_send_update_email(group_id):
             guest_name=safe_text(member["primary_name"]),
             group_title=safe_text(group["title"]),
             guest_role=coordination_role_display(row_value(member, "role") or "participant"),
+            organizer_name=organizer_info["name"],
+            organizer_email=organizer_info["email"],
+            organizer_email_display=organizer_email_display,
             group_member_text=group_member_text,
             suggestion_text=suggestion_text,
             request_link=update_link
@@ -25319,6 +25389,25 @@ def coordination_group_member_request(member_id):
     follow_up_notice_html = ""
     follow_up_dates_work_button = ""
 
+    if safe_text(member["tentative_arrival_date"]) and safe_text(member["tentative_departure_date"]) and not follow_up_mode:
+        follow_up_notice_html = f"""
+        <div style="
+            border: 2px solid #fd7e14;
+            background-color: #fff3cd;
+            padding: 10px 12px;
+            margin-bottom: 6px;
+            border-radius: 10px;
+            max-width: 1100px;
+            font-size: 16px;
+            line-height: 1.3;
+        ">
+            <div style="font-size: 21px; font-weight: bold; color: #856404; margin-bottom: 3px;">
+                ⚠ ACTION NEEDED — Round {safe_text(row_value(member, "current_round")) or "1"}
+            </div>
+            <div>Please review the tentative round dates below and choose whether they work for you.</div>
+        </div>
+        """
+
     if follow_up_mode:
         suggested_dates_text = ""
 
@@ -25420,13 +25509,13 @@ def coordination_group_member_request(member_id):
     <div style="
         border: 1px solid #198754;
         background-color: #e8f7ea;
-        padding: 4px 7px;
+        padding: 3px 6px;
         margin-bottom: 4px;
         border-radius: 8px;
         max-width: 1100px;
     ">
-        <h2 style="margin: 0 0 3px 0; font-size: 17px;">
-            Tentative Group Dates
+        <h2 style="margin: 0 0 2px 0; font-size: 15px;">
+            Tentative Round Dates
         </h2>
 
         {tentative_member_block}
@@ -25441,7 +25530,7 @@ def coordination_group_member_request(member_id):
         max-width: 1100px;
     ">
         <h2 style="margin: 0 0 3px 0; font-size: 17px;">
-            Current Best Group Dates
+            Suggested Round Dates
         </h2>
 
         <p style="margin: 0 0 5px 0; font-size: 13px; line-height: 1.25;">
@@ -25511,10 +25600,12 @@ def coordination_group_member_request(member_id):
                 </button>
             </form>
 
-            <h3 style="margin: 10px 0 4px 0;">Previous Approved Stays</h3>
-            {previous_html}
+            <details style="margin: 6px 0;">
+                <summary style="cursor:pointer; font-weight:bold;">Previous Approved Stays</summary>
+                {previous_html}
+            </details>
 
-            <h3 style="margin: 10px 0 4px 0;">Guest / Room Notes</h3>
+            <h3 style="margin: 6px 0 3px 0;">Guest / Room Notes</h3>
 
             <p style="margin: 4px 0;">
                 <strong>Additional Guests for Your Room(s):</strong><br>
@@ -25614,19 +25705,17 @@ def coordination_group_member_request(member_id):
                                 </div>
             
                                 <div style="
-                                    border: 2px solid #0d6efd;
+                                    border: 1px solid #0d6efd;
                                     background-color: #f8fbff;
-                                    padding: 10px;
+                                    padding: 6px;
                                     border-radius: 8px;
-                                    margin-bottom: 10px;
-                                    max-width: 520px;
+                                    margin-bottom: 6px;
+                                    max-width: 420px;
                                 ">
-                                    <label for="default_rooms" style="font-size: 18px; font-weight: bold;">
-                                        How many guest bedrooms do you need?
-                                    </label><br>
-                                    <span style="font-size: 15px; font-weight: bold;">
-                                        Each bedroom sleeps up to 2 guests.
-                                    </span><br>
+                                    <label for="default_rooms" style="font-size: 15px; font-weight: bold;">
+                                        Bedrooms needed
+                                    </label>
+                                    <span style="font-size: 12px; color:#555;">— sleeps up to 2 per room</span><br>
                                     <select id="default_rooms"
                                             onchange="syncDefaultRooms(); validateGroupRoomCapacity(false);">
                                         <option value="1">1 Bedroom</option>
@@ -25635,13 +25724,13 @@ def coordination_group_member_request(member_id):
                                         <option value="4">4 Bedrooms</option>
                                     </select>
                                     <p style="font-size: 12px; color: #555; margin: 6px 0 0 0;">
-                                        This fills the bedroom count for both preferred and alternate dates. You can still adjust each date option below if needed.
+                                        Applies to preferred and alternate dates. Adjust below if needed.
                                     </p>
                                 </div>
             
                                 <div style="
                                     display: grid;
-                                    grid-template-columns: 1fr;
+                                    grid-template-columns: repeat(2, minmax(180px, 1fr));
                                     gap: 8px;
                                 ">
                                     <div style="
@@ -28099,7 +28188,7 @@ def coordination_group_send_reminders(group_id):
     return f"""
     {nav_links()}
 
-    <h1>Tentative Group Dates Emails Sent</h1>
+    <h1>Tentative Round Dates Emails Sent</h1>
 
     {email_template_metadata_html("tentative_confirmation")}
 
@@ -28956,6 +29045,11 @@ def coordination_group_add_member(group_id):
 
         if new_member and is_valid_email_address(new_member["primary_email"]):
 
+            organizer_info = get_coordination_organizer_info(conn, group_id)
+            organizer_email_display = ""
+            if organizer_info["email"]:
+                organizer_email_display = "<" + organizer_info["email"] + ">"
+
             request_link = f"{BASE_URL}/coordination-group-member/{new_member_id}/request"
 
             body = render_email_template(
@@ -28963,6 +29057,9 @@ def coordination_group_add_member(group_id):
                 guest_name=safe_text(new_member["primary_name"]),
                 group_title=safe_text(group["title"]),
                 guest_role=coordination_role_display(row_value(new_member, "role") or "participant"),
+                organizer_name=organizer_info["name"],
+                organizer_email=organizer_info["email"],
+                organizer_email_display=organizer_email_display,
                 group_member_text=group_member_text,
                 suggestion_text="No group overlap suggestion is available yet. Please submit or update your date options.",
                 request_link=request_link
@@ -29762,5 +29859,3 @@ if __name__ == "__main__":
 # Preserves guest_profiles, rooms, blocked_dates.
 # Clears operational invitation/request/booking/coordination/log data after automatic backup.
 # ============================================================
-
-            
