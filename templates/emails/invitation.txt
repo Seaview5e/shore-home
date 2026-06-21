@@ -2,7 +2,7 @@ Hi {{ guest_name }},
 
 {{ message }}
 
-Good news — planning season has begun.
+Good news — planning season has finally begun.
 
 This invitation is for requesting a visit.
 
