@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V35_2_2"
+    "app_V35_2_3"
 )
 
 BASE_URL = os.environ.get(
@@ -15654,8 +15654,6 @@ def request_email_preview(request_id):
 
     repeat_visit_url = repeat_visit_request_url_for_row(req)
 
-    conn.close()
-
     rooms_requested = int(req["rooms_requested"] or 1)
 
     nights = (
@@ -15663,10 +15661,10 @@ def request_email_preview(request_id):
         - datetime.strptime(req["arrival_date"], "%Y-%m-%d")
     ).days
 
-    additional_names = safe_text(req["additional_names"]).strip()
-
-    if not additional_names:
-        additional_names = "None listed"
+    additional_names = combined_confirmed_group_members(
+        conn,
+        req
+    )
 
     room_names = []
 
@@ -15753,6 +15751,14 @@ John & Mark
             change_links_section=request_change_links(request_id, repeat_visit_url)
         )
 
+        body = body.replace(
+            "Additional Guests for Your Room(s):",
+            "Confirmed Group Members:"
+        ).replace(
+            "Additional Guests:",
+            "Confirmed Group Members:"
+        )
+
         body = append_guest_visit_history_summary(
             body,
             conn,
@@ -15816,6 +15822,14 @@ John & Mark
             coordinating_with_section=coordinating_with_section,
             optional_admin_message=optional_admin_message,
             change_links_section=request_change_links(request_id, repeat_visit_url)
+        )
+
+        body = body.replace(
+            "Additional Guests for Your Room(s):",
+            "Confirmed Group Members:"
+        ).replace(
+            "Additional Guests:",
+            "Confirmed Group Members:"
         )
 
         body = append_guest_visit_history_summary(
@@ -15984,6 +15998,11 @@ John & Mark
         <a href="/requests">Request Review</a>
     </p>
     """
+
+    try:
+        conn.close()
+    except Exception:
+        pass
 
     return html
 
