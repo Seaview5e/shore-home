@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_26_1"
+    "app_V33_27"
 )
 
 BASE_URL = os.environ.get(
@@ -22551,7 +22551,8 @@ def coordination_group_detail(group_id):
     </div>
 
     <div class="coord-card">
-        <h2>Issues / Exceptions</h2>
+        {capacity_dashboard_html}
+<h2>Issues / Exceptions</h2>
         <p>
             <strong>Waiting On:</strong> {len(not_responded_names)} guest(s)<br>
             <strong>Cannot Make Tentative Dates:</strong> {tentative_cannot_count}<br>
@@ -29901,3 +29902,27 @@ if __name__ == "__main__":
 # Preserves guest_profiles, rooms, blocked_dates.
 # Clears operational invitation/request/booking/coordination/log data after automatic backup.
 # ============================================================
+    capacity_dashboard_html = ""
+    try:
+        requested_rooms=sum(int(row_value(m,"rooms_requested") or 1) for m in members)
+        available_rooms=total_rooms_for_matching
+        room_delta=requested_rooms-available_rooms
+        rows="".join([
+            f"<tr><td>{safe_text(m['primary_name'])}</td><td align='center'>{safe_text(row_value(m,'rooms_requested')) or '1'}</td></tr>"
+            for m in members
+        ])
+        capacity_dashboard_html=f"""
+<div class='coord-card' style='background:#fff8e1;border:2px solid #fd7e14;'>
+<h2>Capacity Status</h2>
+<p><strong>Rooms Requested:</strong> {requested_rooms}<br>
+<strong>Rooms Available:</strong> {available_rooms}<br>
+<strong>Difference:</strong> {room_delta:+}</p>
+<table border='1' cellpadding='4' style='border-collapse:collapse;'>
+<tr><th>Guest</th><th>Rooms</th></tr>{rows}</table>
+<p>If Difference > 0 → reduce rooms, split group, or start another round.</p>
+</div>
+"""
+    except Exception:
+        pass
+
+
