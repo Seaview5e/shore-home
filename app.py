@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V34_2"
+    "app_V34_3"
 )
 
 BASE_URL = os.environ.get(
@@ -20945,7 +20945,6 @@ def coordination_group_detail(group_id):
             )).fetchall()
 
         conn.commit()
-        conn.close()
 
         group_room_demand_by_member = {}
 
@@ -22880,11 +22879,21 @@ def coordination_group_detail(group_id):
         </p>
         """
 
+        try:
+            conn.close()
+        except Exception:
+            pass
+
         return html
 
 
 
     except Exception as planning_error:
+
+        try:
+            conn.close()
+        except Exception:
+            pass
 
         error_text = safe_text(planning_error)
 
