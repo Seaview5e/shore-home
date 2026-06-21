@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V35_1"
+    "app_V35_2"
 )
 
 BASE_URL = os.environ.get(
@@ -30093,3 +30093,13 @@ if __name__ == "__main__":
 # Preserves guest_profiles, rooms, blocked_dates.
 # Clears operational invitation/request/booking/coordination/log data after automatic backup.
 # ============================================================
+
+
+# V35.2 BUILD TARGETS
+# - Calendar availability badge: X ROOMS OPEN
+# - Tentative coordination dates consume availability
+# - Merge Next Recommended Action into Workflow
+# - Capacity action wording: Review Date / Capacity Overlap
+# - Group Previous Approved Stays by date
+# - Confirmation banner includes request additional names
+# - Organizer email cleanup
