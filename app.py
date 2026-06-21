@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V35_2_1"
+    "app_V35_2_2"
 )
 
 BASE_URL = os.environ.get(
@@ -7753,7 +7753,7 @@ def home():
                 padding: 2px;
             " title="{display_line_1} {display_line_2}">
             <strong>{day}</strong><br>
-            <span style="font-size: 10px; font-weight: bold; line-height: 1.1;">
+            <span style="font-size: 9px; font-weight: normal; line-height: 1.05;">
                 {str(rooms_open) + " ROOM" + ("" if rooms_open == 1 else "S") + " OPEN" if (not past_date and current_date_str not in blocked_dates and rooms_open > 0) else ("FULL" if (not past_date and current_date_str not in blocked_dates and rooms_open <= 0) else "")}
             </span><br>
             <span style="font-size: 9px;">{display_line_2 if has_tentative_hold else ''}</span>
@@ -8083,6 +8083,8 @@ def home():
                 const queryDeparture = queryState.get("departure_date") || "";
                 const queryNext = queryState.get("next_date_field") || "";
 
+                // V35.2.2: request pages must open with no stale selected stay.
+                // Only explicit query params from calendar navigation are allowed.
                 if (queryArrival) {{
                     document.getElementById("arrival_date").value = queryArrival;
                     nextDateField = queryNext || "departure";
@@ -8093,25 +8095,16 @@ def home():
                     nextDateField = queryNext || "arrival";
                 }}
 
-                if (queryArrival || queryDeparture) {{
-                    saveDateSelectionState();
-                    return;
-                }}
-
-                const savedState = JSON.parse(localStorage.getItem(dateSelectionStorageKey) || "{{}}");
-
-                if (savedState.arrival) {{
-                    document.getElementById("arrival_date").value = savedState.arrival;
-                    nextDateField = savedState.next || "departure";
-
-                    if (!savedState.departure) {{
-                        nextDateField = "departure";
-                    }}
-                }}
-
-                if (savedState.departure) {{
-                    document.getElementById("departure_date").value = savedState.departure;
+                if (!queryArrival && !queryDeparture) {{
+                    document.getElementById("arrival_date").value = "";
+                    document.getElementById("departure_date").value = "";
+                    document.getElementById("date_selection_message").innerText = "No dates selected yet.";
+                    document.getElementById("nights_message").innerText = "";
                     nextDateField = "arrival";
+
+                    try {{
+                        localStorage.removeItem(dateSelectionStorageKey);
+                    }} catch (storageError) {{}}
                 }}
             }} catch (error) {{}}
         }}
@@ -8740,7 +8733,7 @@ def invite_request(invitation_id):
                 padding: 2px;
             " title="{display_line_1} {display_line_2}">
             <strong>{day}</strong><br>
-            <span style="font-size: 10px; font-weight: bold; line-height: 1.1;">
+            <span style="font-size: 9px; font-weight: normal; line-height: 1.05;">
                 {str(rooms_open) + " ROOM" + ("" if rooms_open == 1 else "S") + " OPEN" if (not past_date and current_date_str not in blocked_dates and rooms_open > 0) else ("FULL" if (not past_date and current_date_str not in blocked_dates and rooms_open <= 0) else "")}
             </span><br>
             <span style="font-size: 9px;">{display_line_2 if has_tentative_hold else ''}</span>
@@ -9087,6 +9080,8 @@ def invite_request(invitation_id):
                 const queryDeparture = queryState.get("departure_date") || "";
                 const queryNext = queryState.get("next_date_field") || "";
 
+                // V35.2.2: request pages must open with no stale selected stay.
+                // Only explicit query params from calendar navigation are allowed.
                 if (queryArrival) {{
                     document.getElementById("arrival_date").value = queryArrival;
                     nextDateField = queryNext || "departure";
@@ -9097,25 +9092,16 @@ def invite_request(invitation_id):
                     nextDateField = queryNext || "arrival";
                 }}
 
-                if (queryArrival || queryDeparture) {{
-                    saveDateSelectionState();
-                    return;
-                }}
-
-                const savedState = JSON.parse(localStorage.getItem(dateSelectionStorageKey) || "{{}}");
-
-                if (savedState.arrival) {{
-                    document.getElementById("arrival_date").value = savedState.arrival;
-                    nextDateField = savedState.next || "departure";
-
-                    if (!savedState.departure) {{
-                        nextDateField = "departure";
-                    }}
-                }}
-
-                if (savedState.departure) {{
-                    document.getElementById("departure_date").value = savedState.departure;
+                if (!queryArrival && !queryDeparture) {{
+                    document.getElementById("arrival_date").value = "";
+                    document.getElementById("departure_date").value = "";
+                    document.getElementById("date_selection_message").innerText = "No dates selected yet.";
+                    document.getElementById("nights_message").innerText = "";
                     nextDateField = "arrival";
+
+                    try {{
+                        localStorage.removeItem(dateSelectionStorageKey);
+                    }} catch (storageError) {{}}
                 }}
             }} catch (error) {{}}
         }}
@@ -19594,7 +19580,7 @@ Change Notes:
             data-rooms-open="{rooms_open}"
             style="background-color: {background}; cursor: {cursor}; vertical-align: top; height: 62px; min-width: 90px; padding: 4px;">
             <strong>{day}</strong><br>
-            <span style="font-size: 11px; font-weight: bold;">
+            <span style="font-size: 10px; font-weight: normal;">
                 {str(rooms_open) + " ROOM" + ("" if rooms_open == 1 else "S") + " OPEN" if (not past_date and current_date_str not in blocked_dates and rooms_open > 0) else ("FULL" if (not past_date and current_date_str not in blocked_dates and rooms_open <= 0) else "")}
             </span><br>
             <span style="font-size: 10px;">{display_line_2}</span>
