@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V35_2"
+    "app_V35_2_1"
 )
 
 BASE_URL = os.environ.get(
@@ -145,7 +145,7 @@ Arrival: {arrival_date}
 Departure: {departure_date}
 Length of Stay: {nights} night(s)
 Rooms Requested: {rooms_requested}
-Additional Guests for Your Room(s): {additional_names}
+Confirmed Group Members: {additional_names}
 
 ━━━━━━━━━━━━━━━━━━
 Additional Notes:
@@ -175,7 +175,7 @@ VISIT DETAILS:
 - Rooms: {rooms_requested}
 - Assigned Room(s): {room_list}
 
-Additional Guests for Your Room(s): {additional_names}
+Confirmed Group Members: {additional_names}
 {coordinating_with_section}{optional_admin_message}If anything does not look right, just reply to this email.
 
 Looking forward to seeing everyone at the shore!
@@ -188,7 +188,7 @@ Change Request:
 Cancel Visit:
 {{ cancel_link }}
 
-Request a Visit:
+Request Another Visit:
 {{ new_request_link }}
 
 John & Mark
@@ -208,7 +208,7 @@ VISIT DETAILS:
 - Assigned Room(s): {room_list}
 (this may still adjust slightly depending on final house planning)
 
-Additional Guests for Your Room(s): {additional_names}
+Confirmed Group Members: {additional_names}
 {coordinating_with_section}{optional_admin_message}If your plans change or you need anything before your visit, just reply to this email.
 
 Looking forward to having everyone down at the shore and hoping for great weather.
@@ -361,7 +361,7 @@ VISIT DETAILS:
 - Assigned Room(s): {{ room_list }}
 (this may still adjust slightly depending on final house planning)
 
-Additional Guests: {{ additional_names }}
+Confirmed Group Members: {{ additional_names }}
 {{ coordinating_with_section }}{{ optional_admin_message }}If your plans change or you need anything before your visit, just reply to this email.
 
 {{ change_links_section }}
@@ -385,7 +385,7 @@ Arrival: {{ arrival_date }}
 Departure: {{ departure_date }}
 Length of Stay: {{ nights }} night(s)
 Rooms Requested: {{ rooms_requested }}
-Additional Guests: {{ additional_names }}
+Confirmed Group Members: {{ additional_names }}
 
 ━━━━━━━━━━━━━━━━━━
 Additional Notes:
@@ -413,7 +413,7 @@ VISIT DETAILS:
 - Rooms: {{ rooms_requested }}
 - Assigned Room(s): {{ room_list }}
 
-Additional Guests: {{ additional_names }}
+Confirmed Group Members: {{ additional_names }}
 {{ coordinating_with_section }}{{ optional_admin_message }}If anything does not look right, just reply to this email.
 
 {{ change_links_section }}
@@ -568,7 +568,7 @@ VISIT DETAILS:
 - Nights: {{ nights }}
 - Room(s): {{ room_list }}
 
-Additional Guests: {{ additional_names }}
+Confirmed Group Members: {{ additional_names }}
 
 {{ change_links_section }}
 
@@ -4504,6 +4504,54 @@ def normalize_rooms_requested(value, total_rooms=4):
     return value
 
 
+def combined_confirmed_group_members(conn, request_row):
+
+    names = []
+
+    def add_names(raw_value):
+        raw_text = safe_text(raw_value).strip()
+
+        if not raw_text or raw_text.lower() in ["none", "none listed", "n/a", "na"]:
+            return
+
+        # Keep casual text usable, but split common separators.
+        parts = re.split(r"[,;\n]+", raw_text)
+
+        for part in parts:
+            clean_part = safe_text(part).strip()
+
+            if clean_part and clean_part.lower() not in [safe_text(existing).strip().lower() for existing in names]:
+                names.append(clean_part)
+
+    add_names(row_value(request_row, "name"))
+
+    try:
+        guest_profile_id = row_value(request_row, "guest_profile_id")
+
+        if guest_profile_id:
+            profile_row = conn.execute("""
+                SELECT primary_name, additional_names
+                FROM guest_profiles
+                WHERE id = ?
+            """, (
+                guest_profile_id,
+            )).fetchone()
+
+            if profile_row:
+                add_names(row_value(profile_row, "primary_name"))
+                add_names(row_value(profile_row, "additional_names"))
+
+    except Exception:
+        pass
+
+    add_names(row_value(request_row, "additional_names"))
+
+    if not names:
+        return "None listed"
+
+    return ", ".join(names)
+
+
 def resolve_request_recipient_email(conn, request_row):
 
     if not request_row:
@@ -7705,7 +7753,10 @@ def home():
                 padding: 2px;
             " title="{display_line_1} {display_line_2}">
             <strong>{day}</strong><br>
-            <span style="font-size: 10px;">{display_line_2 if has_tentative_hold else ''}</span>
+            <span style="font-size: 10px; font-weight: bold; line-height: 1.1;">
+                {str(rooms_open) + " ROOM" + ("" if rooms_open == 1 else "S") + " OPEN" if (not past_date and current_date_str not in blocked_dates and rooms_open > 0) else ("FULL" if (not past_date and current_date_str not in blocked_dates and rooms_open <= 0) else "")}
+            </span><br>
+            <span style="font-size: 9px;">{display_line_2 if has_tentative_hold else ''}</span>
         </td>
         """
 
@@ -8689,7 +8740,10 @@ def invite_request(invitation_id):
                 padding: 2px;
             " title="{display_line_1} {display_line_2}">
             <strong>{day}</strong><br>
-            <span style="font-size: 10px;">{display_line_2 if has_tentative_hold else ''}</span>
+            <span style="font-size: 10px; font-weight: bold; line-height: 1.1;">
+                {str(rooms_open) + " ROOM" + ("" if rooms_open == 1 else "S") + " OPEN" if (not past_date and current_date_str not in blocked_dates and rooms_open > 0) else ("FULL" if (not past_date and current_date_str not in blocked_dates and rooms_open <= 0) else "")}
+            </span><br>
+            <span style="font-size: 9px;">{display_line_2 if has_tentative_hold else ''}</span>
         </td>
         """
 
@@ -10450,12 +10504,10 @@ def approve_request(request_id):
     if response_message:
         optional_admin_message = response_message.strip() + "\n"
 
-    additional_names = safe_text(
-        request_row["additional_names"]
-    ).strip()
-
-    if not additional_names:
-        additional_names = "None listed"
+    additional_names = combined_confirmed_group_members(
+        conn,
+        request_row
+    )
 
     coordinating_with = safe_text(
         request_row["coordination_notes"]
@@ -10497,6 +10549,14 @@ def approve_request(request_id):
         room_list=room_list,
         coordinating_with_section=coordinating_with_section,
         optional_admin_message=optional_admin_message
+    )
+
+    approval_email_body = approval_email_body.replace(
+        "Additional Guests for Your Room(s):",
+        "Confirmed Group Members:"
+    ).replace(
+        "Additional Guests:",
+        "Confirmed Group Members:"
     )
 
     approval_email_body = append_guest_visit_history_summary(
@@ -15673,6 +15733,14 @@ John & Mark
 302-521-5401
 """
 
+        body = body.replace(
+            "Additional Guests for Your Room(s):",
+            "Confirmed Group Members:"
+        ).replace(
+            "Additional Guests:",
+            "Confirmed Group Members:"
+        )
+
         body = append_guest_visit_history_summary(
             body,
             conn,
@@ -19526,7 +19594,9 @@ Change Notes:
             data-rooms-open="{rooms_open}"
             style="background-color: {background}; cursor: {cursor}; vertical-align: top; height: 62px; min-width: 90px; padding: 4px;">
             <strong>{day}</strong><br>
-            <span style="font-size: 11px;">{display_line_1}</span><br>
+            <span style="font-size: 11px; font-weight: bold;">
+                {str(rooms_open) + " ROOM" + ("" if rooms_open == 1 else "S") + " OPEN" if (not past_date and current_date_str not in blocked_dates and rooms_open > 0) else ("FULL" if (not past_date and current_date_str not in blocked_dates and rooms_open <= 0) else "")}
+            </span><br>
             <span style="font-size: 10px;">{display_line_2}</span>
         </td>
         """
