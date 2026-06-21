@@ -8,10 +8,10 @@ VISIT DETAILS:
 - Nights: {{ nights }} night(s)
 - Room(s) Approved: {{ rooms_requested }}
 - Assigned Room(s): {{ room_list }}
-(this may still adjust slightly depending on final house planning)
-
-Additional Guests: {{ additional_names }}
+- Additional Guests: {{ additional_names }}
 {{ coordinating_with_section }}{{ optional_admin_message }}
+
+(this may still adjust slightly depending on final house planning)
 
 Please use the links below if your plans change. Remember you can always request a new date later on. 
 
