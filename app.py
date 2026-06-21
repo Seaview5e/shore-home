@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V34_1"
+    "app_V34_2"
 )
 
 BASE_URL = os.environ.get(
@@ -20671,30 +20671,2207 @@ def coordination_group_new():
 @app.route("/coordination-group/<int:group_id>")
 def coordination_group_detail(group_id):
 
-    conn = get_db_connection()
+    # V34.2 Planning View hard fallback: never crash the admin View page.
+    try:
 
-    ensure_coordination_tables(conn)
+        conn = get_db_connection()
 
-    group = conn.execute("""
-        SELECT *
-        FROM coordination_groups
-        WHERE id = ?
-    """, (
-        group_id,
-    )).fetchone()
+        ensure_coordination_tables(conn)
 
-    if not group:
+        group = conn.execute("""
+            SELECT *
+            FROM coordination_groups
+            WHERE id = ?
+        """, (
+            group_id,
+        )).fetchone()
 
+        if not group:
+
+            conn.close()
+
+            return f"""
+            {nav_links()}
+
+            <h1>Coordination Group Not Found</h1>
+
+            <p>
+                The coordination group could not be found.
+            </p>
+
+            <p>
+                <a href="/coordination-groups">
+                    Back to Coordination Groups
+                </a>
+            </p>
+            """
+
+        try:
+            members = conn.execute("""
+                SELECT
+                    coordination_group_members.*,
+                    guest_profiles.primary_name,
+                    guest_profiles.primary_email,
+                    COUNT(coordination_date_options.id) AS date_option_count,
+                    MAX(COALESCE(coordination_date_options.rooms_requested, 1)) AS rooms_requested
+                FROM coordination_group_members
+                JOIN guest_profiles
+                    ON coordination_group_members.guest_profile_id = guest_profiles.id
+                LEFT JOIN coordination_date_options
+                    ON coordination_group_members.id = coordination_date_options.coordination_group_member_id
+                WHERE coordination_group_members.coordination_group_id = ?
+                GROUP BY coordination_group_members.id
+                ORDER BY
+                    guest_profiles.primary_name
+            """, (
+                group_id,
+            )).fetchall()
+        except Exception:
+            members = conn.execute("""
+                SELECT
+                    coordination_group_members.*,
+                    guest_profiles.primary_name,
+                    guest_profiles.primary_email,
+                    COUNT(coordination_date_options.id) AS date_option_count,
+                    1 AS rooms_requested
+                FROM coordination_group_members
+                JOIN guest_profiles
+                    ON coordination_group_members.guest_profile_id = guest_profiles.id
+                LEFT JOIN coordination_date_options
+                    ON coordination_group_members.id = coordination_date_options.coordination_group_member_id
+                WHERE coordination_group_members.coordination_group_id = ?
+                GROUP BY coordination_group_members.id
+                ORDER BY
+                    guest_profiles.primary_name
+            """, (
+                group_id,
+            )).fetchall()
+
+        available_profiles = conn.execute("""
+            SELECT
+                guest_profiles.id,
+                guest_profiles.primary_name,
+                guest_profiles.primary_email,
+                guest_profiles.status
+            FROM guest_profiles
+            WHERE guest_profiles.id NOT IN (
+                SELECT guest_profile_id
+                FROM coordination_group_members
+                WHERE coordination_group_id = ?
+            )
+            ORDER BY
+                guest_profiles.primary_name,
+                guest_profiles.primary_email
+        """, (
+            group_id,
+        )).fetchall()
+
+        group_date_options = conn.execute("""
+            SELECT
+                coordination_date_options.*,
+                coordination_group_members.id AS member_id,
+                coordination_group_members.invitation_status,
+                coordination_group_members.role,
+                guest_profiles.primary_name,
+                guest_profiles.primary_email
+            FROM coordination_date_options
+            JOIN coordination_group_members
+                ON coordination_date_options.coordination_group_member_id = coordination_group_members.id
+            JOIN guest_profiles
+                ON coordination_group_members.guest_profile_id = guest_profiles.id
+            WHERE coordination_group_members.coordination_group_id = ?
+            ORDER BY
+                coordination_date_options.arrival_date,
+                coordination_date_options.departure_date,
+                CASE coordination_date_options.priority
+                    WHEN 'preferred' THEN 1
+                    WHEN 'alternate' THEN 2
+                    ELSE 3
+                END,
+                guest_profiles.primary_name
+        """, (
+            group_id,
+        )).fetchall()
+
+        approved_bookings_for_matching = conn.execute("""
+            SELECT arrival_date, departure_date
+            FROM bookings
+            WHERE status = 'approved'
+        """).fetchall()
+
+        blocked_ranges_for_matching = conn.execute("""
+            SELECT *
+            FROM blocked_dates
+            ORDER BY start_date
+        """).fetchall()
+
+        total_rooms_for_matching = conn.execute("""
+            SELECT COUNT(*) AS count
+            FROM rooms
+        """).fetchone()["count"]
+
+        tentative_holds_for_matching = get_coordination_tentative_holds(
+            conn,
+            exclude_group_id=group_id,
+            expand_rooms=True
+        )
+
+        match_suggestions = build_coordination_match_suggestions(
+            group_date_options,
+            list(approved_bookings_for_matching) + tentative_holds_for_matching,
+            blocked_ranges_for_matching,
+            total_rooms_for_matching
+        )
+
+        intersection_suggestions = build_coordination_intersection_suggestions(
+            group_date_options,
+            list(approved_bookings_for_matching) + tentative_holds_for_matching,
+            blocked_ranges_for_matching,
+            total_rooms_for_matching
+        )
+
+        tentative_adjustments = conn.execute("""
+            SELECT *
+            FROM coordination_tentative_adjustments
+            WHERE coordination_group_id = ?
+            ORDER BY created_at DESC
+            LIMIT 5
+        """, (
+            group_id,
+        )).fetchall()
+
+        try:
+            created_booking_request_rows = conn.execute("""
+                SELECT
+                    coordination_group_members.id AS member_id,
+                    coordination_group_members.converted_request_id,
+                    guest_profiles.primary_name,
+                    guest_profiles.primary_email,
+                    booking_requests.status AS request_status,
+                    booking_requests.email_status,
+                    booking_requests.email_needed_type,
+                    booking_requests.additional_names,
+                    booking_requests.arrival_date,
+                    booking_requests.departure_date,
+                    booking_requests.rooms_requested,
+                    COUNT(bookings.id) AS approved_booking_count,
+                    GROUP_CONCAT(rooms.name, ', ') AS approved_room_names
+                FROM coordination_group_members
+
+                JOIN guest_profiles
+                    ON coordination_group_members.guest_profile_id = guest_profiles.id
+
+                LEFT JOIN booking_requests
+                    ON coordination_group_members.converted_request_id = booking_requests.id
+
+                LEFT JOIN bookings
+                    ON booking_requests.id = bookings.request_id
+                   AND bookings.status = 'approved'
+
+                LEFT JOIN rooms
+                    ON bookings.room_id = rooms.id
+
+                WHERE coordination_group_members.coordination_group_id = ?
+                  AND coordination_group_members.converted_request_id IS NOT NULL
+
+                GROUP BY
+                    coordination_group_members.id,
+                    coordination_group_members.converted_request_id,
+                    guest_profiles.primary_name,
+                    guest_profiles.primary_email,
+                    booking_requests.status,
+                    booking_requests.email_status,
+                    booking_requests.email_needed_type,
+                    booking_requests.additional_names,
+                    booking_requests.arrival_date,
+                    booking_requests.departure_date,
+                    booking_requests.rooms_requested
+
+                ORDER BY guest_profiles.primary_name
+            """, (
+                group_id,
+            )).fetchall()
+
+        except Exception:
+            # Fallback for live databases missing newer email-status columns.
+            # Keeps the Planning/View page loading after Booking Handoff.
+            created_booking_request_rows = conn.execute("""
+                SELECT
+                    coordination_group_members.id AS member_id,
+                    coordination_group_members.converted_request_id,
+                    guest_profiles.primary_name,
+                    guest_profiles.primary_email,
+                    booking_requests.status AS request_status,
+                    '' AS email_status,
+                    '' AS email_needed_type,
+                    booking_requests.additional_names,
+                    booking_requests.arrival_date,
+                    booking_requests.departure_date,
+                    booking_requests.rooms_requested,
+                    COUNT(bookings.id) AS approved_booking_count,
+                    GROUP_CONCAT(rooms.name, ', ') AS approved_room_names
+                FROM coordination_group_members
+
+                JOIN guest_profiles
+                    ON coordination_group_members.guest_profile_id = guest_profiles.id
+
+                LEFT JOIN booking_requests
+                    ON coordination_group_members.converted_request_id = booking_requests.id
+
+                LEFT JOIN bookings
+                    ON booking_requests.id = bookings.request_id
+                   AND bookings.status = 'approved'
+
+                LEFT JOIN rooms
+                    ON bookings.room_id = rooms.id
+
+                WHERE coordination_group_members.coordination_group_id = ?
+                  AND coordination_group_members.converted_request_id IS NOT NULL
+
+                GROUP BY
+                    coordination_group_members.id,
+                    coordination_group_members.converted_request_id,
+                    guest_profiles.primary_name,
+                    guest_profiles.primary_email,
+                    booking_requests.status,
+                    booking_requests.additional_names,
+                    booking_requests.arrival_date,
+                    booking_requests.departure_date,
+                    booking_requests.rooms_requested
+
+                ORDER BY guest_profiles.primary_name
+            """, (
+                group_id,
+            )).fetchall()
+
+        conn.commit()
         conn.close()
 
-        return f"""
-        {nav_links()}
+        group_room_demand_by_member = {}
 
-        <h1>Coordination Group Not Found</h1>
+        for option in group_date_options:
 
+            member_key = option["member_id"]
+            option_rooms = normalize_rooms_requested(
+                option["rooms_requested"],
+                total_rooms_for_matching
+            )
+
+            if member_key not in group_room_demand_by_member:
+                group_room_demand_by_member[member_key] = option_rooms
+            elif option_rooms > group_room_demand_by_member[member_key]:
+                group_room_demand_by_member[member_key] = option_rooms
+
+        total_group_rooms_requested = sum(group_room_demand_by_member.values())
+
+        capacity_warning_html = ""
+
+        if total_group_rooms_requested > total_rooms_for_matching:
+
+            guest_room_rows = ""
+
+            for option in group_date_options:
+
+                if option["member_id"] in group_room_demand_by_member:
+
+                    guest_room_rows += f"""
+                    <tr>
+                        <td>{safe_text(option['primary_name'])}</td>
+                        <td align="center">{group_room_demand_by_member[option['member_id']]}</td>
+                    </tr>
+                    """
+
+                    del group_room_demand_by_member[option["member_id"]]
+
+            capacity_warning_html = f"""
+            <div style="
+                background-color: #f8d7da;
+                border: 2px solid #dc3545;
+                padding: 12px;
+                border-radius: 8px;
+                margin-bottom: 10px;
+                max-width: 900px;
+            ">
+                <h3 style="margin-top: 0; color: #842029;">Room Capacity Warning</h3>
+                <p>
+                    <strong>Maximum rooms available:</strong> {total_rooms_for_matching}<br>
+                    <strong>Rooms requested by group:</strong> {total_group_rooms_requested}
+                </p>
+                <p>
+                    The group is requesting more rooms than the house has available.
+                    No single date option can work for the full group until rooms are reduced,
+                    guests are split into separate visits, or the group plan changes.
+                </p>
+                <table border="1" cellpadding="4" cellspacing="0" style="border-collapse: collapse; font-size: 13px;">
+                    <tr style="background-color: #f5f5f5;">
+                        <th align="left">Guest</th>
+                        <th align="center">Rooms Requested</th>
+                    </tr>
+                    {guest_room_rows}
+                </table>
+            </div>
+            """
+
+        tentative_dates_html = """
+        <p>No tentative group dates selected yet.</p>
+        """
+
+        tentative_confirmation_html = """
+        <p>No tentative confirmation responses yet.</p>
+        """
+
+        tentative_confirmed_count = 0
+        tentative_cannot_count = 0
+        tentative_discussion_count = 0
+        tentative_no_response_count = 0
+
+        all_confirmed_banner = ""
+
+        if safe_text(group["tentative_arrival_date"]) and safe_text(group["tentative_departure_date"]):
+
+            tentative_dates_html = f"""
+            <div style="
+                border: 2px solid #198754;
+                background-color: #e8f7ea;
+                padding: 12px;
+                margin-bottom: 14px;
+                border-radius: 8px;
+                max-width: 720px;
+            ">
+                <h3 style="margin-top: 0;">
+                    Tentative Round Dates
+                </h3>
+
+                <p style="font-size: 16px; margin-bottom: 4px;">
+                    <strong>{format_date(group['tentative_arrival_date'])}</strong>
+                    to
+                    <strong>{format_date(group['tentative_departure_date'])}</strong>
+                </p>
+
+                <small>
+                    Selected: {safe_text(group['tentative_selected_at'])}<br>
+                    Calendar status: Tentative Coordination Hold is active until the group is closed, canceled, or tentative dates are changed.
+                </small>
+            </div>
+            """
+
+            response_rows = []
+
+            for member in members:
+
+                response_status = safe_text(
+                    member["tentative_response_status"]
+                )
+
+                if response_status == "confirmed":
+                    tentative_confirmed_count += 1
+                elif response_status == "cannot_make":
+                    tentative_cannot_count += 1
+                elif response_status == "needs_discussion":
+                    tentative_discussion_count += 1
+                else:
+                    tentative_no_response_count += 1
+
+                response_rows.append(f"""
+                <tr style="background-color: {tentative_response_color(response_status)};">
+                    <td>{safe_text(member['primary_name'])}</td>
+                    <td>{coordination_role_badge(member['role'])}</td>
+                    <td>{safe_text(member['primary_email'])}</td>
+                    <td>{tentative_response_display(response_status)}</td>
+                    <td>{safe_text(member['tentative_response_at'])}</td>
+                    <td>{safe_text(member['tentative_response_notes'])}</td>
+                </tr>
+                """)
+
+            tentative_confirmation_html = f"""
+            <table border="1"
+                   cellpadding="5"
+                   cellspacing="0"
+                   style="
+                       border-collapse: collapse;
+                       width: 100%;
+                       font-size: 13px;
+                       margin-top: 8px;
+                       margin-bottom: 18px;
+                   ">
+                <tr style="background-color: #f5f5f5;">
+                    <th align="left">Guest</th>
+                    <th align="left">Role</th>
+                    <th align="left">Email</th>
+                    <th align="left">Response</th>
+                    <th align="left">Responded At</th>
+                    <th align="left">Notes</th>
+                </tr>
+                {''.join(response_rows)}
+            </table>
+            """
+
+            if len(members) > 0 and tentative_confirmed_count == len(members):
+
+                final_email_sent_display = safe_text(
+                    group["final_coordination_email_sent_at"]
+                )
+
+                if not final_email_sent_display:
+                    final_email_sent_display = "Not sent yet"
+
+                final_capacity_check = coordination_capacity_check_for_window(
+                    conn,
+                    group_id,
+                    group["tentative_arrival_date"],
+                    group["tentative_departure_date"]
+                )
+
+                if final_capacity_check["capacity_ok"]:
+
+                    all_confirmed_banner = f"""
+                    <div style="
+                        background-color: #d4edda;
+                        border: 2px solid #198754;
+                        padding: 14px;
+                        border-radius: 8px;
+                        margin-bottom: 18px;
+                        max-width: 900px;
+                    ">
+
+                        <h2 style="
+                            color: #198754;
+                            margin-top: 0;
+                        ">
+                            Round Status: Ready for Final Confirmation
+                        </h2>
+
+                        <p>
+                            All coordination members have confirmed the tentative dates and capacity still checks out.
+                        </p>
+
+                        <p>
+                            <strong>Tentative Dates:</strong>
+                            {format_date(group['tentative_arrival_date'])}
+                            to
+                            {format_date(group['tentative_departure_date'])}<br>
+                            <strong>Rooms Needed:</strong> {safe_text(final_capacity_check['rooms_needed'])}<br>
+                            <strong>Final Coordination Email:</strong> {final_email_sent_display}
+                        </p>
+
+                        <p>
+                            <a href="/coordination-group/{group_id}/handoff"
+                               style="
+                                   display: inline-block;
+                                   background-color: #198754;
+                                   color: white;
+                                   padding: 8px 12px;
+                                   border-radius: 5px;
+                                   text-decoration: none;
+                                   font-weight: bold;
+                               ">
+                                Continue to Booking Handoff / Finalize Group Visit
+                            </a>
+                        </p>
+
+                        <p style="font-size: 13px; color: #555; margin-bottom: 0;">
+                            Use Booking Handoff for guest confirmations, booking requests, room assignments, final confirmation, and closing.
+                        </p>
+
+                    </div>
+                    """
+
+                else:
+
+                    all_confirmed_banner = f"""
+                    <div style="
+                        background-color: #fff3cd;
+                        border: 2px solid #fd7e14;
+                        padding: 14px;
+                        border-radius: 8px;
+                        margin-bottom: 18px;
+                        max-width: 900px;
+                    ">
+
+                        <h2 style="
+                            color: #856404;
+                            margin-top: 0;
+                        ">
+                            Round Status: Needs Another Round
+                        </h2>
+
+                        <p>
+                            Guests confirmed the tentative dates, but capacity or availability changed before finalization.
+                        </p>
+
+                        <p>
+                            <strong>Issue:</strong><br>
+                            {safe_text('; '.join(final_capacity_check['notes']))}
+                        </p>
+
+                        <p style="font-size: 13px; color: #555; margin-bottom: 0;">
+                            Adjust tentative dates or room counts before finalizing the group visit.
+                        </p>
+
+                    </div>
+                    """
+
+        tentative_management_html = """
         <p>
-            The coordination group could not be found.
+            First select tentative dates from a best match. Then guests confirm whether those dates work. After that, create booking requests for confirmed guests.
         </p>
+        """
+
+        if safe_text(group["tentative_arrival_date"]) and safe_text(group["tentative_departure_date"]):
+
+            due_date_display = safe_text(
+                group["tentative_response_due_date"]
+            ).strip() or default_coordination_due_date()
+
+            overdue_label = ""
+
+            if coordination_group_is_overdue(group):
+                overdue_label = """
+                <strong style='color: red;'>Overdue</strong>
+                """
+
+            converted_count = 0
+
+            for member in members:
+
+                if member["converted_request_id"]:
+                    converted_count += 1
+
+            tentative_management_html = f"""
+            <div style="
+                border: 1px solid #dee2e6;
+                background-color: #f8f9fa;
+                padding: 12px;
+                margin-bottom: 10px;
+                border-radius: 8px;
+                max-width: 900px;
+            ">
+                <h3 style="margin-top: 0;">Planning Complete — Next Step</h3>
+
+                <p>
+                    <strong>RSVP Due Date:</strong> {due_date_display} {overdue_label}<br>
+                    <strong>Booking Requests Created:</strong> {converted_count} of {len(members)}
+                </p>
+
+                <p>
+                    Tentative dates have been selected. Use the Booking Handoff page for confirmation emails, booking requests, room assignments, final confirmation, and closing.
+                </p>
+
+                <p style="margin-bottom: 0;">
+                    <a href="/coordination-group/{group_id}/handoff"
+                       style="
+                           display: inline-block;
+                           background-color: #0d6efd;
+                           color: white;
+                           padding: 8px 12px;
+                           border-radius: 5px;
+                           text-decoration: none;
+                           font-weight: bold;
+                       ">
+                        Go to Booking Handoff Page
+                    </a>
+                </p>
+            </div>
+            """
+
+        responded_count = 0
+        not_responded_names = []
+
+        for member in members:
+
+            if member["date_option_count"]:
+
+                responded_count += 1
+
+            else:
+
+                not_responded_names.append(
+                    safe_text(member["primary_name"])
+                )
+
+        current_round = coordination_round_number(group)
+        round_pending_follow_up_members = []
+        round_completed_follow_up_members = []
+
+        for member in members:
+
+            try:
+                member_follow_up_round = int(row_value(member, "follow_up_round") or 0)
+            except Exception:
+                member_follow_up_round = 0
+
+            if member_follow_up_round == current_round and safe_text(row_value(member, "follow_up_sent_at")).strip():
+
+                if safe_text(row_value(member, "follow_up_response_at")).strip():
+                    round_completed_follow_up_members.append(member)
+                else:
+                    round_pending_follow_up_members.append(member)
+
+        round_status_label = "Collecting initial dates"
+        round_status_background = "#eef5ff"
+        round_waiting_text = "Waiting for initial group responses."
+
+        if current_round > 1:
+
+            if round_pending_follow_up_members:
+                round_status_label = "Targeted follow-up in progress"
+                round_status_background = "#fff3cd"
+                round_waiting_text = "Waiting for: " + safe_text(", ".join([safe_text(member["primary_name"]) for member in round_pending_follow_up_members]))
+            else:
+                round_status_label = "Follow-up round complete"
+                round_status_background = "#e8f7ea"
+                round_waiting_text = "All targeted follow-up guests have responded. Review the updated Best Group Option below."
+
+        round_status_html = f"""
+        <div style="
+            background-color: {round_status_background};
+            border: 1px solid #ced4da;
+            padding: 10px;
+            border-radius: 8px;
+            margin-bottom: 12px;
+            max-width: 1080px;
+            font-size: 13px;
+        ">
+            <strong>Current Planning Round:</strong> Round {current_round} — {round_status_label}<br>
+            <strong>Status:</strong> {round_waiting_text}<br>
+            <strong>Round Note:</strong> Round 1 starts with organizer setup. Later rounds are used when dates need another pass.
+        </div>
+        """
+
+        date_options_summary_html = """
+        <p>No date options have been submitted yet.</p>
+        """
+
+        if group_date_options:
+
+            date_options_summary_html = """
+            <table border="1"
+                   cellpadding="5"
+                   cellspacing="0"
+                   style="
+                       border-collapse: collapse;
+                       width: 100%;
+                       font-size: 13px;
+                       margin-top: 8px;
+                   ">
+                <tr style="background-color: #f5f5f5;">
+                    <th align="left">Guest</th>
+                    <th align="left">Role</th>
+                    <th align="left">Priority</th>
+                    <th align="left">Arrival</th>
+                    <th align="left">Departure</th>
+                    <th align="center">Nights</th>
+                    <th align="center">Rooms</th>
+                    <th align="center">Flexibility</th>
+                    <th align="left">Notes</th>
+                    <th align="left">Request Page</th>
+                </tr>
+            """
+
+            for option in group_date_options:
+
+                try:
+
+                    nights = (
+                        datetime.strptime(
+                            option["departure_date"],
+                            "%Y-%m-%d"
+                        )
+                        - datetime.strptime(
+                            option["arrival_date"],
+                            "%Y-%m-%d"
+                        )
+                    ).days
+
+                except:
+
+                    nights = ""
+
+                date_options_summary_html += f"""
+                <tr>
+                    <td>{safe_text(option['primary_name'])}</td>
+                    <td>{coordination_role_badge(option['role'])}</td>
+                    <td>{safe_text(option['priority']).title()}</td>
+                    <td>{format_date(option['arrival_date'])}</td>
+                    <td>{format_date(option['departure_date'])}</td>
+                    <td align="center">{safe_text(nights)}</td>
+                    <td align="center">{safe_text(option['rooms_requested'])}</td>
+                    <td align="center">± {safe_text(option['flexibility_days'])} day(s)</td>
+                    <td>{safe_text(option['notes'])}</td>
+                    <td>
+                        <a href="/coordination-group-member/{option['member_id']}/request">
+                            Open
+                        </a>
+                    </td>
+                </tr>
+                """
+
+            date_options_summary_html += "</table>"
+
+        not_responded_html = """
+        <span style="color: green; font-weight: bold;">
+            Everyone with a profile in this group has submitted date options.
+        </span>
+        """
+
+        if not_responded_names:
+
+            not_responded_html = safe_text(
+                ", ".join(not_responded_names)
+            )
+
+        invitation_sent_count = 0
+        invitation_not_sent_count = 0
+        invitation_sent_names = []
+        invitation_not_sent_names = []
+
+        for member in members:
+
+            member_invitation_status = safe_text(member["invitation_status"]).strip()
+
+            if member_invitation_status in ["sent", "viewed", "responded"]:
+
+                invitation_sent_count += 1
+                invitation_sent_names.append(safe_text(member["primary_name"]))
+
+            else:
+
+                invitation_not_sent_count += 1
+                invitation_not_sent_names.append(safe_text(member["primary_name"]))
+
+        planning_invitation_state = "Not Started"
+        planning_invitation_icon = "⬜"
+        planning_invitation_background = "#f8f9fa"
+
+        if len(members) > 0 and invitation_sent_count == len(members):
+
+            planning_invitation_state = "Done"
+            planning_invitation_icon = "✅"
+            planning_invitation_background = "#e8f7ea"
+
+        elif invitation_sent_count > 0:
+
+            planning_invitation_state = "Needs Action"
+            planning_invitation_icon = "⚠️"
+            planning_invitation_background = "#fff3cd"
+
+        response_state = "Not Started"
+        response_icon = "⬜"
+        response_background = "#f8f9fa"
+
+        if len(members) > 0 and responded_count == len(members):
+
+            response_state = "Done"
+            response_icon = "✅"
+            response_background = "#e8f7ea"
+
+        elif responded_count > 0 or invitation_sent_count > 0:
+
+            response_state = "Needs Action"
+            response_icon = "⚠️"
+            response_background = "#fff3cd"
+
+        overlap_state = "Not Started"
+        overlap_icon = "⬜"
+        overlap_background = "#f8f9fa"
+
+        if group_date_options:
+
+            overlap_state = "Review"
+            overlap_icon = "⚠️"
+            overlap_background = "#fff3cd"
+
+            if match_suggestions:
+
+                overlap_state = "Ready"
+                overlap_icon = "✅"
+                overlap_background = "#e8f7ea"
+
+        tentative_state = "Not Started"
+        tentative_icon = "⬜"
+        tentative_background = "#f8f9fa"
+
+        tentative_selected = bool(
+            safe_text(group["tentative_arrival_date"])
+            and safe_text(group["tentative_departure_date"])
+        )
+
+        planning_ready_for_booking = (
+            safe_text(group["status"]) == "ready_for_booking"
+            and tentative_selected
+        )
+
+        if safe_text(group["tentative_arrival_date"]) and safe_text(group["tentative_departure_date"]):
+
+            tentative_state = "Done"
+            tentative_icon = "✅"
+            tentative_background = "#e8f7ea"
+
+        outstanding_invitation_display = "None"
+
+        if invitation_not_sent_names:
+
+            outstanding_invitation_display = safe_text(", ".join(invitation_not_sent_names))
+
+        step4_detail = "Pick the best overlap window and ask guests to confirm."
+        step4_action = '<a href="#best-match-suggestions">Set Tentative Dates</a>'
+
+        if tentative_selected:
+            step4_detail = "Tentative dates selected. Planning is complete; continue on the Booking Handoff page."
+            step4_action = f"""
+            <a href="/coordination-group/{group_id}/handoff"
+               style="display: inline-block; background-color: #198754; color: white; padding: 7px 10px; border-radius: 5px; text-decoration: none; font-weight: bold;">
+                Go to Booking Handoff Page
+            </a>
+            """
+
+        if planning_ready_for_booking:
+            overlap_state = "Done"
+            overlap_icon = "✅"
+            overlap_background = "#e8f7ea"
+            tentative_state = "Ready for Booking"
+            tentative_icon = "✅"
+            tentative_background = "#d4edda"
+            step4_detail = "All guests now fit these dates. Planning is closed; use Booking Handoff for the rest."
+            step4_action = f"""
+            <a href="/coordination-group/{group_id}/handoff"
+               style="display: inline-block; background-color: #198754; color: white; padding: 8px 12px; border-radius: 5px; text-decoration: none; font-weight: bold;">
+                Go to Booking Handoff Page
+            </a>
+            """
+
+        organizer_member = None
+
+        for member in members:
+
+            if safe_text(row_value(member, "role")).strip() == "organizer":
+                organizer_member = member
+                break
+
+        organizer_formation_html = """
+        <p>No organizer has been assigned yet.</p>
+        """
+
+        if organizer_member:
+
+            organizer_link = organizer_planning_url(coordination_member_row_id(organizer_member))
+            organizer_suggested_guests = safe_text(row_value(organizer_member, "organizer_suggested_guests")).strip()
+            organizer_suggested_dates_notes = safe_text(row_value(organizer_member, "organizer_suggested_dates_notes")).strip()
+            organizer_suggestions_at = safe_text(row_value(organizer_member, "organizer_suggestions_at")).strip()
+            organizer_kickoff_sent_at = safe_text(row_value(organizer_member, "organizer_kickoff_sent_at")).strip()
+
+            if not organizer_suggested_guests:
+                organizer_suggested_guests = "No suggested guests submitted yet."
+
+            if not organizer_suggested_dates_notes:
+                organizer_suggested_dates_notes = "No organizer date notes submitted yet."
+
+            if not organizer_suggestions_at:
+                organizer_suggestions_at = "Not submitted yet"
+
+            if not organizer_kickoff_sent_at:
+                organizer_kickoff_sent_at = "Not sent yet"
+
+            organizer_formation_html = f"""
+            <div style="border:2px solid #0d6efd; background:#eef5ff; border-radius:8px; padding:12px; max-width:980px; margin-bottom:14px; font-size:13px;">
+                <h3 style="margin-top:0;">Organizer-Led Formation</h3>
+                <p style="margin-bottom:6px;">
+                    <strong>Organizer:</strong> {safe_text(organizer_member['primary_name'])} &lt;{safe_text(organizer_member['primary_email'])}&gt;<br>
+                    <strong>Kickoff Email:</strong> {safe_text(organizer_kickoff_sent_at)}<br>
+                    <strong>Organizer Email Sent / Returned Suggestions:</strong> {safe_text(organizer_suggestions_at)}
+                </p>
+                <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:13px; background:white;">
+                    <tr style="background:#f5f5f5;">
+                        <th align="left">Organizer Link</th>
+                        <th align="left">Suggested Guests</th>
+                        <th align="left">Initial Date Notes</th>
+                    </tr>
+                    <tr>
+                        <td><a href="{organizer_link}">Open Organizer Planning Page</a></td>
+                        <td style="white-space:pre-wrap;">{safe_text(organizer_suggested_guests)}</td>
+                        <td style="white-space:pre-wrap;">{safe_text(organizer_suggested_dates_notes)}</td>
+                    </tr>
+                </table>
+                <p style="margin-bottom:0;">
+                    <a href="/coordination-group/{group_id}/organizer-kickoff-preview" style="font-weight:bold;">Preview / Send Organizer Kickoff Email</a>
+                </p>
+            </div>
+            """
+
+        organizer_workflow_state = "Needs Action"
+        organizer_workflow_name = "None assigned"
+        organizer_workflow_kickoff = "Not sent"
+        organizer_workflow_returned = "Not returned"
+        organizer_workflow_action = "Assign an Organizer first"
+
+        if organizer_member:
+            organizer_workflow_name = safe_text(organizer_member["primary_name"])
+            organizer_workflow_kickoff = safe_text(row_value(organizer_member, "organizer_kickoff_sent_at")).strip() or "Not sent"
+            organizer_workflow_returned = safe_text(row_value(organizer_member, "organizer_suggestions_at")).strip() or "Not returned"
+            organizer_workflow_action = f'<a href="/coordination-group/{group_id}/organizer-kickoff-preview">Preview / Send Organizer Email</a>'
+
+            if organizer_workflow_kickoff != "Not sent" and organizer_workflow_returned != "Not returned":
+                organizer_workflow_state = "✅ Complete"
+
+        planning_workflow_html = f"""
+        <h2>Action Workflow</h2>
+
+        {round_status_html}
+
+        <div style="
+            background-color: #eef5ff;
+            border: 2px solid #4a90e2;
+            padding: 14px;
+            border-radius: 8px;
+            margin-bottom: 18px;
+            max-width: 1080px;
+        ">
+            <p style="margin-top: 0;">
+                Use this section to move the group through date planning before booking handoff.
+            </p>
+
+            <table border="1"
+                   cellpadding="6"
+                   cellspacing="0"
+                   style="
+                       border-collapse: collapse;
+                       width: 100%;
+                       font-size: 13px;
+                       margin-bottom: 14px;
+                   ">
+                <tr style="background-color: #f5f5f5;">
+                    <th align="left">Step</th>
+                    <th align="left">Status</th>
+                    <th align="left">Details</th>
+                    <th align="left">Action</th>
+                </tr>
+
+                <tr style="background-color:#fff8e6;">
+                    <td><strong>1. Organizer Email Sent / Returned</strong></td>
+                    <td>
+                        {organizer_workflow_state}
+                    </td>
+                    <td>
+                        Organizer: {organizer_workflow_name}<br>
+                        Kickoff Email: {organizer_workflow_kickoff}<br>
+                        Organizer Returned: {organizer_workflow_returned}
+                    </td>
+                    <td>
+                        {organizer_workflow_action}
+                    </td>
+                </tr>
+
+                <tr style="background-color: {planning_invitation_background};">
+                    <td><strong>2. Send Coordination Invitations</strong></td>
+                    <td>{planning_invitation_icon} {planning_invitation_state}</td>
+                    <td>
+                        Members Added: {len(members)}<br>
+                        Invitations Sent: {invitation_sent_count}<br>
+                        Not Sent: {invitation_not_sent_count}<br>
+                        <small>Outstanding: {outstanding_invitation_display}</small>
+                    </td>
+                    <td>
+                        <a href="/coordination-group/{group_id}/email-preview">
+                            Preview / Send Invitations
+                        </a>
+                    </td>
+                </tr>
+
+                <tr style="background-color: {response_background};">
+                    <td><strong>3. Collect Responses</strong></td>
+                    <td>{response_icon} {response_state}</td>
+                    <td>
+                        Responses Received: {responded_count} of {len(members)}<br>
+                        Waiting On: {not_responded_html}
+                    </td>
+                    <td>
+                        <a href="/coordination-group/{group_id}/email-preview">
+                            Resend / Remind Guests
+                        </a>
+                    </td>
+                </tr>
+
+                <tr style="background-color: {overlap_background};">
+                    <td><strong>4. Review Date Overlap</strong></td>
+                    <td>{overlap_icon} {overlap_state}</td>
+                    <td>Review best match suggestions and unmatched guests below.</td>
+                    <td><a href="#best-match-suggestions">View Suggestions</a></td>
+                </tr>
+
+                <tr style="background-color: {tentative_background};">
+                    <td><strong>5. Select Tentative Dates</strong></td>
+                    <td>{tentative_icon} {tentative_state}</td>
+                    <td>{step4_detail}</td>
+                    <td>{step4_action}</td>
+                </tr>
+            </table>
+
+            <p style="font-size: 13px; color: #555; margin-bottom: 0;">
+                After tentative dates are selected, use the Booking Handoff page for confirmations, booking requests, room assignments, approvals, and closing.
+            </p>
+        </div>
+        """
+
+        created_booking_requests_html = """
+        <p>No booking requests have been created from this coordination group yet.</p>
+        """
+
+        if created_booking_request_rows:
+
+            created_booking_requests_html = """
+            <table border="1"
+                   cellpadding="5"
+                   cellspacing="0"
+                   style="
+                       border-collapse: collapse;
+                       width: 100%;
+                       font-size: 13px;
+                       margin-bottom: 18px;
+                   ">
+                <tr style="background-color: #f5f5f5;">
+                    <th align="left">Guest</th>
+                    <th align="left">Email</th>
+                    <th align="left">Additional Guests</th>
+                    <th align="left">Request</th>
+                    <th align="left">Dates</th>
+                    <th align="center">Rooms Requested</th>
+                    <th align="left">Request Status</th>
+                    <th align="left">Email Status</th>
+                    <th align="left">Room Assignment</th>
+                    <th align="left">Action</th>
+                </tr>
+            """
+
+            for created_request in created_booking_request_rows:
+
+                room_assignment_display = "Not assigned yet"
+
+                if row_value(created_request, "approved_room_names"):
+                    room_assignment_display = safe_text(
+                        row_value(created_request, "approved_room_names")
+                    )
+
+                request_status_display_text = safe_text(
+                    row_value(created_request, "request_status")
+                )
+
+                row_background = "#fff3cd"
+
+                if request_status_display_text == "approved" and (row_value(created_request, "approved_booking_count") or 0) > 0:
+                    row_background = "#e8f7ea"
+
+                created_booking_requests_html += f"""
+                <tr style="background-color: {row_background};">
+                    <td>{safe_text(created_request['primary_name'])}</td>
+                    <td>{safe_text(created_request['primary_email'])}</td>
+                    <td>{safe_text(created_request['additional_names']) or 'None listed'}</td>
+                    <td>
+                        <a href="/request/{created_request['converted_request_id']}">
+                            Request {created_request['converted_request_id']}
+                        </a>
+                    </td>
+                    <td>
+                        {format_date(created_request['arrival_date'])}<br>
+                        to {format_date(created_request['departure_date'])}
+                    </td>
+                    <td align="center">
+                        {safe_text(created_request['rooms_requested'])}
+                    </td>
+                    <td>{request_status_display_text}</td>
+                    <td>{email_status_display(row_value(created_request, "email_status"), row_value(created_request, "email_needed_type"), row_value(created_request, "converted_request_id"))}</td>
+                    <td>{room_assignment_display}</td>
+                    <td>
+                        <a href="/room-assignments">
+                            Open Room Assignments
+                        </a>
+                        <br>
+                        <small>
+                            Request #{created_request['converted_request_id']}
+                        </small>
+                    </td>
+                </tr>
+                """
+
+            created_booking_requests_html += "</table>"
+
+        intersection_suggestions_html = """
+        <p>No shared overlap yet. Once guests submit date options, Phase 3 will look for the common window where everyone can attend.</p>
+        """
+
+        if intersection_suggestions:
+
+            best_intersection = intersection_suggestions[0]
+
+            intersection_capacity_display = "<strong style='color: green;'>Capacity OK</strong>"
+
+            if not best_intersection["capacity_ok"]:
+                intersection_capacity_display = "<strong style='color: red;'>Capacity needs review</strong>"
+
+            changed_names_display = "None — all submitted windows match this exact range"
+
+            if best_intersection["changed_range_names"]:
+                changed_names_display = safe_text(", ".join(best_intersection["changed_range_names"]))
+
+            flexibility_names_display = "None"
+
+            if best_intersection["flexibility_used_names"]:
+                flexibility_names_display = safe_text(", ".join(best_intersection["flexibility_used_names"]))
+
+            other_intersections_html = ""
+
+            if len(intersection_suggestions) > 1:
+                other_rows = ""
+                rank = 2
+                for suggestion in intersection_suggestions[1:5]:
+                    other_rows += f"""
+                    <tr>
+                        <td>{rank}</td>
+                        <td>{format_date(suggestion['arrival_date'])} to {format_date(suggestion['departure_date'])}</td>
+                        <td align="center">{suggestion['nights']}</td>
+                        <td align="center">{suggestion['rooms_needed']} of {suggestion['rooms_available']}</td>
+                        <td>{'OK' if suggestion['capacity_ok'] else 'Needs Review'}</td>
+                        <td>
+                            <form method="POST" action="/coordination-group/{group_id}/set-tentative">
+                                <input type="hidden" name="arrival_date" value="{suggestion['arrival_date']}">
+                                <input type="hidden" name="departure_date" value="{suggestion['departure_date']}">
+                                <button type="submit" style="font-size:12px; padding:4px 8px;">Set Tentative</button>
+                            </form>
+                        </td>
+                    </tr>
+                    """
+                    rank += 1
+
+                other_intersections_html = f"""
+                <h4 style="margin-bottom:6px;">Other Shared Overlap Options</h4>
+                <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:13px;">
+                    <tr style="background:#f5f5f5;">
+                        <th>Rank</th><th>Dates</th><th>Nights</th><th>Rooms</th><th>Capacity</th><th>Action</th>
+                    </tr>
+                    {other_rows}
+                </table>
+                """
+
+            intersection_suggestions_html = f"""
+            <div style="background:#e8f7ea; border:2px solid #198754; border-radius:8px; padding:12px; margin-bottom:14px; max-width:1040px;">
+                <h3 style="margin-top:0;">Round Shared Overlap Window</h3>
+                <p style="font-size:16px; margin:4px 0;">
+                    <strong>{format_date(best_intersection['arrival_date'])}</strong>
+                    to
+                    <strong>{format_date(best_intersection['departure_date'])}</strong>
+                    ({best_intersection['nights']} night(s))
+                </p>
+                <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:13px; margin-top:8px;">
+                    <tr style="background:#f5f5f5;">
+                        <th align="left">Guests Included</th>
+                        <th align="left">Rooms Needed</th>
+                        <th align="left">Capacity</th>
+                        <th align="left">Adjusted From Original Dates</th>
+                        <th align="left">Flexibility Used</th>
+                    </tr>
+                    <tr>
+                        <td>{best_intersection['matched_count']} of {best_intersection['total_member_count']}</td>
+                        <td>{best_intersection['rooms_needed']} of {best_intersection['rooms_available']}</td>
+                        <td>{intersection_capacity_display}</td>
+                        <td>{changed_names_display}</td>
+                        <td>{flexibility_names_display}</td>
+                    </tr>
+                </table>
+                <p style="font-size:13px; color:#555;">
+                    This uses the intersection rule: latest usable arrival plus earliest usable departure. It reserves only this shared overlap window, not every guest's full requested range.
+                </p>
+                <form method="POST" action="/coordination-group/{group_id}/set-tentative" style="margin-top:10px;">
+                    <input type="hidden" name="arrival_date" value="{best_intersection['arrival_date']}">
+                    <input type="hidden" name="departure_date" value="{best_intersection['departure_date']}">
+                    <button type="submit" style="font-size:14px; padding:7px 12px; font-weight:bold;">
+                        Set Shared Overlap As Tentative
+                    </button>
+                </form>
+                {other_intersections_html}
+            </div>
+            """
+
+
+        tentative_adjustments_html = ""
+
+        if tentative_adjustments:
+            adjustment_rows = ""
+            for adjustment in tentative_adjustments:
+                adjustment_rows += f"""
+                <tr>
+                    <td>{format_datetime_display(adjustment['created_at'])}</td>
+                    <td>{format_date(adjustment['system_arrival_date'])} to {format_date(adjustment['system_departure_date'])}</td>
+                    <td>{format_date(adjustment['admin_arrival_date'])} to {format_date(adjustment['admin_departure_date'])}</td>
+                    <td>{safe_text(adjustment['rooms_needed'])}</td>
+                    <td>{safe_text(adjustment['capacity_status'])}</td>
+                    <td>{safe_text(adjustment['adjustment_reason'])}</td>
+                </tr>
+                """
+
+            tentative_adjustments_html = f"""
+            <div style="background:#f8fbff; border:1px solid #d8e6f3; border-radius:8px; padding:10px; margin:10px 0; max-width:1040px;">
+                <h3 style="margin:0 0 6px 0;">Admin Tentative Date Adjustment History</h3>
+                <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:12px;">
+                    <tr style="background:#f5f5f5;">
+                        <th>When</th>
+                        <th>System Suggested</th>
+                        <th>Admin Selected</th>
+                        <th>Rooms</th>
+                        <th>Capacity</th>
+                        <th>Reason</th>
+                    </tr>
+                    {adjustment_rows}
+                </table>
+            </div>
+            """
+
+        phase4_default_arrival = safe_text(row_value(group, "tentative_arrival_date")).strip()
+        phase4_default_departure = safe_text(row_value(group, "tentative_departure_date")).strip()
+        phase4_system_arrival = ""
+        phase4_system_departure = ""
+
+        if intersection_suggestions:
+            phase4_system_arrival = intersection_suggestions[0]["arrival_date"]
+            phase4_system_departure = intersection_suggestions[0]["departure_date"]
+            if not phase4_default_arrival:
+                phase4_default_arrival = phase4_system_arrival
+            if not phase4_default_departure:
+                phase4_default_departure = phase4_system_departure
+
+        phase4_system_text = "No system shared-overlap suggestion is available yet."
+        if phase4_system_arrival and phase4_system_departure:
+            phase4_system_text = f"{format_date(phase4_system_arrival)} to {format_date(phase4_system_departure)}"
+
+        phase4_current_text = "No tentative dates currently selected."
+        if phase4_default_arrival and phase4_default_departure:
+            phase4_current_text = f"{format_date(phase4_default_arrival)} to {format_date(phase4_default_departure)}"
+
+        phase4_admin_override_html = f"""
+        <div style="background:#fff8e6; border:2px solid #fd7e14; border-radius:8px; padding:12px; margin:12px 0; max-width:1040px;">
+            <h3 style="margin-top:0;">Round Admin Adjust Tentative Dates</h3>
+            <p style="margin:4px 0; font-size:13px;">
+                <strong>System suggested overlap:</strong> {phase4_system_text}<br>
+                <strong>Current tentative dates:</strong> {phase4_current_text}
+            </p>
+
+            <form method="POST" action="/coordination-group/{group_id}/set-tentative" style="display:grid; grid-template-columns: repeat(2, minmax(180px, 1fr)); gap:8px; max-width:720px;">
+                <input type="hidden" name="system_arrival_date" value="{safe_text(phase4_system_arrival)}">
+                <input type="hidden" name="system_departure_date" value="{safe_text(phase4_system_departure)}">
+                <input type="hidden" name="admin_adjustment" value="yes">
+
+                <label>
+                    Tentative Arrival<br>
+                    <input type="date" name="arrival_date" value="{safe_text(phase4_default_arrival)}" required style="width:100%; padding:6px;">
+                </label>
+
+                <label>
+                    Tentative Departure<br>
+                    <input type="date" name="departure_date" value="{safe_text(phase4_default_departure)}" required style="width:100%; padding:6px;">
+                </label>
+
+                <label style="grid-column:1 / -1;">
+                    Adjustment reason / planning note<br>
+                    <textarea name="adjustment_reason" rows="3" style="width:100%; padding:6px;" placeholder="Example: Better fit for family travel, room pressure, or guest flexibility."></textarea>
+                </label>
+
+                <div style="grid-column:1 / -1;">
+                    <button type="submit" style="font-weight:bold; padding:7px 12px;">
+                        Save Admin Tentative Dates
+                    </button>
+                    <small style="color:#555; margin-left:8px;">
+                        Validates against blocked dates, bookings, partial blocks, and other tentative holds.
+                    </small>
+                </div>
+            </form>
+        </div>
+        """ + tentative_adjustments_html
+
+        match_suggestions_html = """
+        <p>No match suggestions yet. Add date options for at least one group member.</p>
+        """
+
+        if match_suggestions:
+
+            best_suggestion = match_suggestions[0]
+
+            best_capacity_display = "<strong style='color: green;'>Capacity OK</strong>"
+
+            if not best_suggestion["capacity_ok"]:
+                best_capacity_display = "<strong style='color: red;'>Capacity needs review</strong>"
+
+            all_group_member_names = []
+
+            for member in members:
+                all_group_member_names.append(
+                    safe_text(member["primary_name"])
+                )
+
+            best_unmatched_names = []
+
+            for member_name in all_group_member_names:
+                if member_name not in best_suggestion["guest_names"]:
+                    best_unmatched_names.append(member_name)
+
+            best_unmatched_display = "None"
+
+            best_unmatched_members = []
+
+            if best_unmatched_names:
+                best_unmatched_display = safe_text(", ".join(sorted(best_unmatched_names)))
+
+                for member in members:
+                    if safe_text(member["primary_name"]) in best_unmatched_names:
+                        best_unmatched_members.append(member)
+
+            targeted_follow_up_html = ""
+
+            if best_unmatched_members:
+
+                targeted_follow_up_rows = ""
+
+                for member in best_unmatched_members:
+
+                    targeted_follow_up_rows += f"""
+                    <tr>
+                        <td>{safe_text(member['primary_name'])}</td>
+                        <td>{safe_text(member['primary_email'])}</td>
+                        <td>
+                            <a href="/coordination-group-member/{coordination_member_row_id(member)}/request?follow_up=1&suggested_arrival={best_suggestion['arrival_date']}&suggested_departure={best_suggestion['departure_date']}">
+                                Open Date Link
+                            </a>
+                        </td>
+                    </tr>
+                    """
+
+                targeted_follow_up_html = f"""
+                <div style="
+                    background-color: #fff3cd;
+                    border: 1px solid #f0ad4e;
+                    border-radius: 8px;
+                    padding: 10px;
+                    margin-top: 12px;
+                ">
+                    <h4 style="margin: 0 0 6px 0;">Targeted Follow-Up</h4>
+                    <p style="margin: 0 0 8px 0; font-size: 13px;">
+                        This option works for most guests. Start the next round by following up only with the guest(s) who do not match.
+                    </p>
+                    <table border="1" cellpadding="5" cellspacing="0"
+                           style="border-collapse: collapse; width: 100%; font-size: 13px; margin-bottom: 8px;">
+                        <tr style="background-color: #f5f5f5;">
+                            <th align="left">Guest</th>
+                            <th align="left">Email</th>
+                            <th align="left">Date Link</th>
+                        </tr>
+                        {targeted_follow_up_rows}
+                    </table>
+                    <p style="margin: 0;">
+                        <a href="/coordination-group/{group_id}/follow-up-unmatched?arrival_date={best_suggestion['arrival_date']}&departure_date={best_suggestion['departure_date']}"
+                           style="display: inline-block; background-color: #fd7e14; color: white; padding: 7px 10px; border-radius: 5px; text-decoration: none; font-weight: bold;">
+                            Email Guest(s) To Update Availability
+                        </a>
+                    </p>
+                </div>
+                """
+
+            best_why_html = f"<li>{best_suggestion['matched_count']} of {len(members)} guest(s) can attend</li>"
+
+            for why_item in best_suggestion["why_bullets"]:
+                if "guest(s) can attend" in safe_text(why_item):
+                    continue
+                best_why_html += f"<li>{safe_text(why_item)}</li>"
+
+            nearby_html = ""
+
+            if best_suggestion["nearby_before_names"]:
+                nearby_html += f"""
+                <li>
+                    {format_date(best_suggestion['nearby_before_date'])} works for:
+                    {safe_text(', '.join(best_suggestion['nearby_before_names']))}
+                </li>
+                """
+
+            if best_suggestion["nearby_after_names"]:
+                nearby_html += f"""
+                <li>
+                    {format_date(best_suggestion['nearby_after_date'])} works for:
+                    {safe_text(', '.join(best_suggestion['nearby_after_names']))}
+                </li>
+                """
+
+            if not nearby_html:
+                nearby_html = "<li>No nearby fallback dates found from the submitted windows.</li>"
+
+            match_suggestions_html = f"""
+            <div style="
+                background-color: #e8f7ea;
+                border: 2px solid #198754;
+                border-radius: 8px;
+                padding: 12px;
+                margin-bottom: 12px;
+                max-width: 1040px;
+            ">
+                <h3 style="margin-top: 0; margin-bottom: 6px;">
+                    Best Group Option
+                </h3>
+
+                <p style="font-size: 16px; margin: 4px 0;">
+                    <strong>{format_date(best_suggestion['arrival_date'])}</strong>
+                    to
+                    <strong>{format_date(best_suggestion['departure_date'])}</strong>
+                    ({best_suggestion['nights']} night(s))
+                </p>
+
+                <table border="1"
+                       cellpadding="5"
+                       cellspacing="0"
+                       style="border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 8px;">
+                    <tr style="background-color: #f5f5f5;">
+                        <th align="left">Matched</th>
+                        <th align="left">Rooms</th>
+                        <th align="left">Preferred / Alternate</th>
+                        <th align="left">Capacity</th>
+                        <th align="left">Needs Follow-Up</th>
+                    </tr>
+                    <tr>
+                        <td>{best_suggestion['matched_count']} of {len(members)}</td>
+                        <td>{best_suggestion['rooms_needed']} of {best_suggestion['rooms_available']}</td>
+                        <td>{best_suggestion['preferred_count']} preferred / {best_suggestion['alternate_count']} alternate</td>
+                        <td>{best_capacity_display}</td>
+                        <td>{best_unmatched_display}</td>
+                    </tr>
+                </table>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 10px;">
+                    <div>
+                        <strong>Why this is suggested:</strong>
+                        <ul style="margin-top: 4px; margin-bottom: 0; padding-left: 20px;">
+                            {best_why_html}
+                        </ul>
+                    </div>
+                    <div>
+                        <strong>Nearby dates that almost work:</strong>
+                        <ul style="margin-top: 4px; margin-bottom: 0; padding-left: 20px;">
+                            {nearby_html}
+                        </ul>
+                    </div>
+                </div>
+
+                <form method="POST"
+                      action="/coordination-group/{group_id}/set-tentative"
+                      style="margin-top: 12px;">
+                    <input type="hidden" name="arrival_date" value="{best_suggestion['arrival_date']}">
+                    <input type="hidden" name="departure_date" value="{best_suggestion['departure_date']}">
+                    <button type="submit"
+                            style="font-size: 14px; padding: 7px 12px; font-weight: bold;">
+                        Set Best Option As Tentative
+                    </button>
+                </form>
+
+                {targeted_follow_up_html}
+            </div>
+            """
+
+            if len(match_suggestions) > 1:
+
+                match_suggestions_html += """
+                <h3 style="margin-bottom: 6px;">Other Possible Options</h3>
+                <table border="1"
+                       cellpadding="5"
+                       cellspacing="0"
+                       style="
+                           border-collapse: collapse;
+                           width: 100%;
+                           font-size: 13px;
+                           margin-top: 6px;
+                       ">
+                    <tr style="background-color: #f5f5f5;">
+                        <th align="left">Rank</th>
+                        <th align="left">Dates</th>
+                        <th align="center">Guests</th>
+                        <th align="center">Rooms</th>
+                        <th align="left">Why / Follow-Up</th>
+                        <th align="left">Action</th>
+                    </tr>
+                """
+
+                rank = 2
+
+                for suggestion in match_suggestions[1:4]:
+
+                    other_capacity_display = "Capacity OK"
+
+                    if not suggestion["capacity_ok"]:
+                        other_capacity_display = "Capacity needs review"
+
+                    other_unmatched_names = []
+
+                    for member_name in all_group_member_names:
+                        if member_name not in suggestion["guest_names"]:
+                            other_unmatched_names.append(member_name)
+
+                    follow_up_display = "No follow-up needed"
+
+                    if other_unmatched_names:
+                        follow_up_display = "Follow up with: " + safe_text(", ".join(sorted(other_unmatched_names)))
+
+                    match_suggestions_html += f"""
+                    <tr>
+                        <td>{rank}</td>
+                        <td>
+                            <strong>{format_date(suggestion['arrival_date'])}</strong><br>
+                            to {format_date(suggestion['departure_date'])}<br>
+                            <small>{suggestion['nights']} night(s)</small>
+                        </td>
+                        <td align="center">{suggestion['matched_count']} of {len(members)}</td>
+                        <td align="center">{suggestion['rooms_needed']} of {suggestion['rooms_available']}</td>
+                        <td>
+                            {suggestion['preferred_count']} preferred / {suggestion['alternate_count']} alternate<br>
+                            {other_capacity_display}<br>
+                            <small>{follow_up_display}</small>
+                        </td>
+                        <td>
+                            <form method="POST"
+                                  action="/coordination-group/{group_id}/set-tentative">
+                                <input type="hidden" name="arrival_date" value="{suggestion['arrival_date']}">
+                                <input type="hidden" name="departure_date" value="{suggestion['departure_date']}">
+                                <button type="submit" style="font-size: 12px; padding: 4px 8px;">
+                                    Set Tentative
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    """
+
+                    rank += 1
+
+                match_suggestions_html += "</table>"
+
+
+        def workflow_status_row(label, state, detail):
+
+            if state == "done":
+                icon = "✅"
+                status_text = "Done"
+                background = "#e8f7ea"
+                border = "#198754"
+
+            elif state == "needs_action":
+                icon = "⚠️"
+                status_text = "Needs Action"
+                background = "#fff3cd"
+                border = "#f0ad4e"
+
+            else:
+                icon = "⬜"
+                status_text = "Not Started"
+                background = "#f8f9fa"
+                border = "#dee2e6"
+
+            return f"""
+            <tr style="background-color: {background};">
+                <td style="width: 42px; font-size: 18px; text-align: center;">
+                    {icon}
+                </td>
+                <td>
+                    <strong>{label}</strong><br>
+                    <small>{detail}</small>
+                </td>
+                <td style="width: 140px; font-weight: bold; border-left: 4px solid {border};">
+                    {status_text}
+                </td>
+            </tr>
+            """
+
+        tentative_selected = bool(
+            safe_text(group["tentative_arrival_date"])
+            and safe_text(group["tentative_departure_date"])
+        )
+
+        all_guests_confirmed = (
+            len(members) > 0
+            and tentative_confirmed_count == len(members)
+        )
+
+        final_coordination_email_sent = bool(
+            safe_text(group["final_coordination_email_sent_at"])
+        )
+
+        final_visit_confirmation_sent = bool(
+            safe_text(group["final_visit_confirmation_sent_at"])
+        )
+
+        converted_member_count = 0
+
+        for member in members:
+
+            if member["converted_request_id"]:
+                converted_member_count += 1
+
+        booking_requests_created = converted_member_count > 0
+
+        all_confirmed_guests_converted = (
+            all_guests_confirmed
+            and converted_member_count >= tentative_confirmed_count
+        )
+
+        all_created_requests_reviewed = False
+
+        if created_booking_request_rows:
+
+            all_created_requests_reviewed = True
+
+            for created_request in created_booking_request_rows:
+
+                try:
+                    rooms_requested_for_check = int(created_request["rooms_requested"] or 1)
+                except:
+                    rooms_requested_for_check = 1
+
+                if safe_text(created_request["request_status"]) != "approved":
+                    all_created_requests_reviewed = False
+
+                if int(created_request["approved_booking_count"] or 0) < rooms_requested_for_check:
+                    all_created_requests_reviewed = False
+
+        group_raw_closed = safe_text(group["status"]) in [
+            "closed",
+            "finalized",
+            "archived"
+        ]
+
+        group_is_closed = (
+            group_raw_closed
+            and all_created_requests_reviewed
+            and final_visit_confirmation_sent
+        )
+
+        tentative_step_state = "not_started"
+
+        if tentative_selected:
+            tentative_step_state = "done"
+        elif match_suggestions:
+            tentative_step_state = "needs_action"
+
+        confirmation_step_state = "not_started"
+
+        if all_guests_confirmed:
+            confirmation_step_state = "done"
+        elif tentative_selected:
+            confirmation_step_state = "needs_action"
+
+        tentative_email_step_state = "not_started"
+
+        if safe_text(group["coordination_reminder_sent_at"]):
+            tentative_email_step_state = "done"
+        elif tentative_selected:
+            tentative_email_step_state = "needs_action"
+
+        final_visit_email_step_state = "not_started"
+
+        if final_visit_confirmation_sent and all_created_requests_reviewed:
+            final_visit_email_step_state = "done"
+        elif all_created_requests_reviewed:
+            final_visit_email_step_state = "needs_action"
+
+        conversion_step_state = "not_started"
+
+        if all_confirmed_guests_converted:
+            conversion_step_state = "done"
+        elif all_guests_confirmed:
+            conversion_step_state = "needs_action"
+
+        room_assignment_step_state = "not_started"
+
+        if all_created_requests_reviewed:
+            room_assignment_step_state = "done"
+        elif booking_requests_created:
+            room_assignment_step_state = "needs_action"
+
+        close_step_state = "not_started"
+
+        if group_is_closed:
+            close_step_state = "done"
+        elif all_created_requests_reviewed:
+            close_step_state = "needs_action"
+
+        workflow_progress_html = f"""
+        <div style="
+            background-color: #eef5ff;
+            border: 2px solid #4a90e2;
+            padding: 14px;
+            border-radius: 8px;
+            margin-bottom: 18px;
+            max-width: 1080px;
+        ">
+            <h2 style="margin-top: 0;">
+                Workflow Progress
+            </h2>
+
+            <p style="margin-top: 0; color: #555;">
+                This shows what is done, what needs action, and what has not started yet.
+            </p>
+
+            <table border="1"
+                   cellpadding="6"
+                   cellspacing="0"
+                   style="
+                       border-collapse: collapse;
+                       width: 100%;
+                       font-size: 13px;
+                   ">
+                <tr style="background-color: #f5f5f5;">
+                    <th></th>
+                    <th align="left">Workflow Step</th>
+                    <th align="left">Status</th>
+                </tr>
+                {workflow_status_row(
+                    "Pick or review tentative dates",
+                    tentative_step_state,
+                    "Choose the best overlap window from the suggested matches."
+                )}
+                {workflow_status_row(
+                    "Get guest confirmations",
+                    confirmation_step_state,
+                    f"Confirmed: {tentative_confirmed_count} of {len(members)}"
+                )}
+                {workflow_status_row(
+                    "Send final visit confirmation email",
+                    final_visit_email_step_state,
+                    "Send after booking requests are approved and rooms are assigned."
+                )}
+                {workflow_status_row(
+                    "Create booking requests",
+                    conversion_step_state,
+                    f"Booking requests created: {converted_member_count} of {len(members)}"
+                )}
+                {workflow_status_row(
+                    "Assign rooms and approve requests",
+                    room_assignment_step_state,
+                    "Use the Booking Handoff section below to review requests and assign rooms."
+                )}
+                {workflow_status_row(
+                    "Close coordination group",
+                    close_step_state,
+                    "Close only after booking requests have been reviewed and the group is no longer active."
+                )}
+            </table>
+        </div>
+        """
+
+        if planning_ready_for_booking:
+            match_suggestions_html = f"""
+            <div style="
+                background-color: #d4edda;
+                border: 2px solid #198754;
+                border-radius: 8px;
+                padding: 14px;
+                margin-bottom: 14px;
+                max-width: 1040px;
+            ">
+                <h2 style="margin-top: 0; color: #198754;">
+                    Dates Work for Everyone
+                </h2>
+                <p style="font-size: 16px; margin-bottom: 6px;">
+                    <strong>{format_date(group['tentative_arrival_date'])}</strong>
+                    to
+                    <strong>{format_date(group['tentative_departure_date'])}</strong>
+                </p>
+                <p>
+                    No more planning follow-up is needed. The next step is Booking Handoff.
+                </p>
+                <p style="margin-bottom: 0;">
+                    <a href="/coordination-group/{group_id}/handoff"
+                       style="display: inline-block; background-color: #198754; color: white; padding: 8px 12px; border-radius: 5px; text-decoration: none; font-weight: bold;">
+                        Go to Booking Handoff Page
+                    </a>
+                </p>
+            </div>
+            """
+
+        capacity_dashboard_html = ""
+
+        try:
+            requested_rooms = 0
+            capacity_rows = ""
+
+            for member_row in members:
+                member_rooms = row_value(member_row, "rooms_requested") or 1
+
+                try:
+                    member_rooms = int(member_rooms)
+                except Exception:
+                    member_rooms = 1
+
+                requested_rooms += member_rooms
+
+                capacity_rows += f"""
+                <tr>
+                    <td>{safe_text(member_row['primary_name'])}</td>
+                    <td align="center">{member_rooms}</td>
+                </tr>
+                """
+
+            available_rooms = total_rooms_for_matching
+
+            try:
+                available_rooms = int(available_rooms)
+            except Exception:
+                available_rooms = 0
+
+            room_delta = requested_rooms - available_rooms
+
+            capacity_dashboard_html = f"""
+            <div class="coord-card" style="background:#fff8e1; border:2px solid #fd7e14;">
+                <h2>Capacity Status</h2>
+
+                <p style="margin-top:0;">
+                    <strong>Rooms Requested:</strong> {requested_rooms}<br>
+                    <strong>Rooms Available:</strong> {available_rooms}<br>
+                    <strong>Difference:</strong> {room_delta:+}
+                </p>
+
+                <table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse; max-width:420px;">
+                    <tr style="background:#f5f5f5;">
+                        <th align="left">Guest</th>
+                        <th align="center">Rooms</th>
+                    </tr>
+                    {capacity_rows}
+                </table>
+
+                <p style="margin-bottom:0;">
+                    If Difference is positive, reduce rooms, split the group, choose different dates, or start another round.
+                </p>
+            </div>
+            """
+
+        except Exception:
+            capacity_dashboard_html = ""
+
+        html = nav_links() + f"""
+        <style>
+            .coord-card {{
+                border: 1px solid #dee2e6;
+                border-radius: 10px;
+                padding: 12px;
+                margin-bottom: 14px;
+                max-width: 1080px;
+                background: #ffffff;
+            }}
+            .coord-card h2 {{
+                margin: 0 0 8px 0;
+                font-size: 20px;
+            }}
+            .coord-card h3 {{
+                margin: 8px 0 6px 0;
+            }}
+            .coord-muted {{
+                color: #555;
+                font-size: 13px;
+            }}
+            .coord-mini-grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+                gap: 8px;
+                margin: 8px 0;
+            }}
+            .coord-mini-stat {{
+                background:#f8f9fa;
+                border:1px solid #e5e7eb;
+                border-radius:8px;
+                padding:8px;
+                font-size:13px;
+            }}
+            .coord-mini-stat strong {{
+                display:block;
+                font-size:17px;
+                color:#0f4c81;
+            }}
+            details.coord-collapse {{
+                margin-top: 8px;
+            }}
+            details.coord-collapse summary {{
+                cursor:pointer;
+                font-weight:bold;
+                color:#0f4c81;
+            }}
+        </style>
+
+        <h1>{safe_text(group['title'])} — Planning</h1>
+
+        <div class="coord-card" style="background:#f8f9fa;">
+            <strong>Coordination Pages:</strong>
+            <a href="/coordination-group/{group_id}" style="font-weight:bold; margin-left:8px;">Planning Page</a>
+            |
+            <a href="/coordination-group/{group_id}/handoff" style="font-weight:bold;">Booking Handoff Page</a>
+            <br>
+            <small class="coord-muted">Planning is for finding dates. Booking Handoff is for confirmations, booking requests, room assignments, and approvals.</small>
+        </div>
+
+        {planning_workflow_html}
+
+        <div class="coord-card">
+            <h2>Group Setup</h2>
+
+            <div class="coord-mini-grid">
+                <div class="coord-mini-stat"><strong>{safe_text(group['status'])}</strong>Status</div>
+                <div class="coord-mini-stat"><strong>{len(members)}</strong>Members</div>
+                <div class="coord-mini-stat"><strong>{responded_count}</strong>Responded</div>
+                <div class="coord-mini-stat"><strong>Round {current_round}</strong>Current Round</div>
+            </div>
+
+            <p class="coord-muted" style="margin-bottom:8px;">
+                Target Year: {safe_text(group['target_year'])} |
+                Created: {safe_text(group['created_at'])[:10]}
+            </p>
+
+            <div style="background:#f8fbff; border:1px solid #d8e6f3; padding:8px; border-radius:8px; margin-bottom:10px;">
+                {safe_text(group['description'])}
+            </div>
+
+            {organizer_formation_html}
+
+            <details class="coord-collapse">
+                <summary>Show submitted date options and waiting list</summary>
+                <p>
+                    <strong>Waiting On:</strong><br>
+                    {not_responded_html}
+                </p>
+                {date_options_summary_html}
+            </details>
+        </div>
+
+        <div class="coord-card" id="best-match-suggestions" style="background:#eef7ee;">
+            <h2>Date Coordination</h2>
+
+            <div class="coord-mini-grid">
+                <div class="coord-mini-stat"><strong>{tentative_confirmed_count}</strong>Confirmed Works</div>
+                <div class="coord-mini-stat"><strong>{tentative_cannot_count}</strong>Cannot Make</div>
+                <div class="coord-mini-stat"><strong>{tentative_discussion_count}</strong>Need Different Dates</div>
+                <div class="coord-mini-stat"><strong>{tentative_no_response_count}</strong>No Response</div>
+            </div>
+
+            <h3>Current Tentative Dates</h3>
+            {tentative_dates_html}
+
+            <h3>System Overlap / Best Match</h3>
+            <p class="coord-muted">Use this section to compare submitted preferred and alternate dates, then select or adjust tentative dates.</p>
+
+            {intersection_suggestions_html}
+
+            {phase4_admin_override_html}
+
+            <details class="coord-collapse">
+                <summary>Show additional best-match detail</summary>
+                {match_suggestions_html}
+            </details>
+        </div>
+
+        {capacity_dashboard_html}
+
+        <div class="coord-card">
+            <h2>Issues / Exceptions</h2>
+            <p>
+                <strong>Waiting On:</strong> {len(not_responded_names)} guest(s)<br>
+                <strong>Cannot Make Tentative Dates:</strong> {tentative_cannot_count}<br>
+                <strong>Need Different Dates / Comments:</strong> {tentative_discussion_count}
+            </p>
+            <p class="coord-muted">Use this as the quick scan area. If everything is zero, move toward Booking Handoff.</p>
+        </div>
+
+        <div class="coord-card" style="background:#fff3cd; border-color:#fd7e14;">
+            <h2>Capacity Review / Over-Room Request</h2>
+            <p style="margin-top:0;">
+                If this round is requesting more rooms than are available, pause here before sending more guest emails.
+            </p>
+            <ol style="margin-top:4px; line-height:1.35;">
+                <li>Review each guest's room count in the Group Members table.</li>
+                <li>Ask the organizer which rooms can be reduced, combined, split, or moved to different dates.</li>
+                <li>After resolving, start/send another round or continue to Booking Handoff.</li>
+            </ol>
+            <p class="coord-muted" style="margin-bottom:0;">
+                If status is <strong>capacity_review</strong>, this is the next action area.
+            </p>
+        </div>
+
+        <div class="coord-card">
+            <h2>Round History / Testing Visibility</h2>
+            <div class="coord-mini-grid">
+                <div class="coord-mini-stat"><strong>Round {current_round}</strong>Active Round</div>
+                <div class="coord-mini-stat"><strong>{invitation_sent_count}</strong>Emails Sent</div>
+                <div class="coord-mini-stat"><strong>{responded_count}</strong>Responses</div>
+                <div class="coord-mini-stat"><strong>{len(created_booking_request_rows)}</strong>Booking Requests</div>
+            </div>
+            <p class="coord-muted" style="margin-bottom:0;">
+                Round numbering is display-only in this version. Use it to test multi-round coordination without changing booking logic.
+            </p>
+        </div>
+
+        <div class="coord-card" style="background:#fff8e6;">
+            <h2>Booking / Closeout</h2>
+            <p style="margin-top:0;">
+                Once guests confirm tentative dates, continue to Booking Handoff for booking requests, room assignment, approval emails, final confirmation, and closing.
+            </p>
+            <p>
+                <a href="/coordination-group/{group_id}/handoff" style="font-weight:bold;">Open Booking Handoff Page</a>
+            </p>
+        </div>
+
+        <div class="coord-card" style="background:#fff3cd; font-size:13px;">
+            <strong>Admin Cleanup:</strong>
+            <a href="/coordination-group/{group_id}/delete" style="color:#842029; font-weight:bold; margin-left:8px;">Delete Coordination Process</a>
+            <br>
+            <small>Deletes the planning/coordination process only. Guest profiles are never deleted. Confirmed bookings block deletion.</small>
+        </div>
+
+        <h2>Group Members</h2>
+
+        <div style="background:#eef5ff; border:1px solid #b6d4fe; border-radius:8px; padding:10px; max-width:760px; margin-bottom:10px; font-size:13px;">
+            <strong>Coordination Roles:</strong><br>
+            <strong>Organizer</strong> = main planning contact / helps suggest group dates.<br>
+            <strong>Participant</strong> = guest submitting availability for the group.
+        </div>
+
+        <details class="coord-collapse" open>
+            <summary>Add / review group members</summary>
+
+        <div style="
+            border: 1px solid #dee2e6;
+            background-color: #f8f9fa;
+            padding: 10px;
+            margin-bottom: 12px;
+            border-radius: 8px;
+            max-width: 760px;
+        ">
+            <h3 style="
+                margin-top: 0;
+            ">
+                Add Guest Profile to Group
+            </h3>
+        """
+
+        if not available_profiles:
+
+            html += """
+            <p>
+                No available guest profiles found to add.
+            </p>
+            """
+
+        else:
+
+            html += f"""
+            <form method="POST"
+                  action="/coordination-group/{group_id}/add-member">
+
+                <label>
+                    <strong>Guest Profile</strong>
+                </label><br>
+
+                <select name="guest_profile_id"
+                        required
+                        style="width: 420px;">
+            """
+
+            for profile in available_profiles:
+
+                html += f"""
+                    <option value="{profile['id']}">
+                        {safe_text(profile['primary_name'])} — {safe_text(profile['primary_email'])} ({safe_text(profile['status'])})
+                    </option>
+                """
+
+            html += """
+                </select>
+
+                <br>
+
+                <label>
+                    <strong>Role</strong>
+                </label><br>
+
+                <select name="role">
+                    <option value="participant">Participant</option>
+                    <option value="organizer">Organizer</option>
+                </select>
+
+                <br>
+
+                <button type="submit">
+                    Add Guest to Group
+                </button>
+
+            </form>
+            """
+
+        html += """
+        </div>
+        """
+
+        if not members:
+
+            html += """
+            <p>
+                No guest profiles have been added yet.
+            </p>
+
+            <p>
+                Add existing guest profiles above. Next V10 step after this
+                is generating group request links.
+            </p>
+            """
+
+        else:
+
+            html += """
+            <table border="1"
+                   cellpadding="5"
+                   cellspacing="0"
+                   style="
+                       border-collapse: collapse;
+                       width: 100%;
+                       font-size: 13px;
+                   ">
+
+                <tr style="background-color: #f5f5f5;">
+                    <th align="left">Guest</th>
+                    <th align="left">Email</th>
+                    <th align="left">Role</th>
+                    <th align="left">Invitation Status</th>
+                    <th align="left">Last Response</th>
+                    <th align="center">Rooms</th>
+                    <th align="center">Date Options</th>
+                    <th align="left">Request Link</th>
+                    <th align="left">Profile</th>
+                </tr>
+            """
+
+            for member in members:
+
+                html += f"""
+                <tr>
+                    <td>{safe_text(member['primary_name'])}</td>
+                    <td>{safe_text(member['primary_email'])}</td>
+                    <td>{coordination_role_badge(member['role'])}</td>
+                    <td>{safe_text(member['invitation_status'])}</td>
+                    <td>{safe_text(member['last_response_at'])}</td>
+                    <td align="center">{safe_text(row_value(member, 'rooms_requested')) or '1'}</td>
+                    <td align="center">{member['date_option_count']}</td>
+                    <td>
+                        <a href="/coordination-group-member/{coordination_member_row_id(member)}/request">
+                            Open Request Page
+                        </a>
+                    </td>
+                    <td>
+                        <a href="/profile/{member['guest_profile_id']}">
+                            View
+                        </a>
+                    </td>
+                </tr>
+                """
+
+            html += "</table>"
+
+        html += f"""
+        </details>
 
         <p>
             <a href="/coordination-groups">
@@ -20703,2183 +22880,58 @@ def coordination_group_detail(group_id):
         </p>
         """
 
-    try:
-        members = conn.execute("""
-            SELECT
-                coordination_group_members.*,
-                guest_profiles.primary_name,
-                guest_profiles.primary_email,
-                COUNT(coordination_date_options.id) AS date_option_count,
-                MAX(COALESCE(coordination_date_options.rooms_requested, 1)) AS rooms_requested
-            FROM coordination_group_members
-            JOIN guest_profiles
-                ON coordination_group_members.guest_profile_id = guest_profiles.id
-            LEFT JOIN coordination_date_options
-                ON coordination_group_members.id = coordination_date_options.coordination_group_member_id
-            WHERE coordination_group_members.coordination_group_id = ?
-            GROUP BY coordination_group_members.id
-            ORDER BY
-                guest_profiles.primary_name
-        """, (
-            group_id,
-        )).fetchall()
-    except Exception:
-        members = conn.execute("""
-            SELECT
-                coordination_group_members.*,
-                guest_profiles.primary_name,
-                guest_profiles.primary_email,
-                COUNT(coordination_date_options.id) AS date_option_count,
-                1 AS rooms_requested
-            FROM coordination_group_members
-            JOIN guest_profiles
-                ON coordination_group_members.guest_profile_id = guest_profiles.id
-            LEFT JOIN coordination_date_options
-                ON coordination_group_members.id = coordination_date_options.coordination_group_member_id
-            WHERE coordination_group_members.coordination_group_id = ?
-            GROUP BY coordination_group_members.id
-            ORDER BY
-                guest_profiles.primary_name
-        """, (
-            group_id,
-        )).fetchall()
+        return html
 
-    available_profiles = conn.execute("""
-        SELECT
-            guest_profiles.id,
-            guest_profiles.primary_name,
-            guest_profiles.primary_email,
-            guest_profiles.status
-        FROM guest_profiles
-        WHERE guest_profiles.id NOT IN (
-            SELECT guest_profile_id
-            FROM coordination_group_members
-            WHERE coordination_group_id = ?
-        )
-        ORDER BY
-            guest_profiles.primary_name,
-            guest_profiles.primary_email
-    """, (
-        group_id,
-    )).fetchall()
 
-    group_date_options = conn.execute("""
-        SELECT
-            coordination_date_options.*,
-            coordination_group_members.id AS member_id,
-            coordination_group_members.invitation_status,
-            coordination_group_members.role,
-            guest_profiles.primary_name,
-            guest_profiles.primary_email
-        FROM coordination_date_options
-        JOIN coordination_group_members
-            ON coordination_date_options.coordination_group_member_id = coordination_group_members.id
-        JOIN guest_profiles
-            ON coordination_group_members.guest_profile_id = guest_profiles.id
-        WHERE coordination_group_members.coordination_group_id = ?
-        ORDER BY
-            coordination_date_options.arrival_date,
-            coordination_date_options.departure_date,
-            CASE coordination_date_options.priority
-                WHEN 'preferred' THEN 1
-                WHEN 'alternate' THEN 2
-                ELSE 3
-            END,
-            guest_profiles.primary_name
-    """, (
-        group_id,
-    )).fetchall()
 
-    approved_bookings_for_matching = conn.execute("""
-        SELECT arrival_date, departure_date
-        FROM bookings
-        WHERE status = 'approved'
-    """).fetchall()
+    except Exception as planning_error:
 
-    blocked_ranges_for_matching = conn.execute("""
-        SELECT *
-        FROM blocked_dates
-        ORDER BY start_date
-    """).fetchall()
-
-    total_rooms_for_matching = conn.execute("""
-        SELECT COUNT(*) AS count
-        FROM rooms
-    """).fetchone()["count"]
-
-    tentative_holds_for_matching = get_coordination_tentative_holds(
-        conn,
-        exclude_group_id=group_id,
-        expand_rooms=True
-    )
-
-    match_suggestions = build_coordination_match_suggestions(
-        group_date_options,
-        list(approved_bookings_for_matching) + tentative_holds_for_matching,
-        blocked_ranges_for_matching,
-        total_rooms_for_matching
-    )
-
-    intersection_suggestions = build_coordination_intersection_suggestions(
-        group_date_options,
-        list(approved_bookings_for_matching) + tentative_holds_for_matching,
-        blocked_ranges_for_matching,
-        total_rooms_for_matching
-    )
-
-    tentative_adjustments = conn.execute("""
-        SELECT *
-        FROM coordination_tentative_adjustments
-        WHERE coordination_group_id = ?
-        ORDER BY created_at DESC
-        LIMIT 5
-    """, (
-        group_id,
-    )).fetchall()
-
-    try:
-        created_booking_request_rows = conn.execute("""
-            SELECT
-                coordination_group_members.id AS member_id,
-                coordination_group_members.converted_request_id,
-                guest_profiles.primary_name,
-                guest_profiles.primary_email,
-                booking_requests.status AS request_status,
-                booking_requests.email_status,
-                booking_requests.email_needed_type,
-                booking_requests.additional_names,
-                booking_requests.arrival_date,
-                booking_requests.departure_date,
-                booking_requests.rooms_requested,
-                COUNT(bookings.id) AS approved_booking_count,
-                GROUP_CONCAT(rooms.name, ', ') AS approved_room_names
-            FROM coordination_group_members
-
-            JOIN guest_profiles
-                ON coordination_group_members.guest_profile_id = guest_profiles.id
-
-            LEFT JOIN booking_requests
-                ON coordination_group_members.converted_request_id = booking_requests.id
-
-            LEFT JOIN bookings
-                ON booking_requests.id = bookings.request_id
-               AND bookings.status = 'approved'
-
-            LEFT JOIN rooms
-                ON bookings.room_id = rooms.id
-
-            WHERE coordination_group_members.coordination_group_id = ?
-              AND coordination_group_members.converted_request_id IS NOT NULL
-
-            GROUP BY
-                coordination_group_members.id,
-                coordination_group_members.converted_request_id,
-                guest_profiles.primary_name,
-                guest_profiles.primary_email,
-                booking_requests.status,
-                booking_requests.email_status,
-                booking_requests.email_needed_type,
-                booking_requests.additional_names,
-                booking_requests.arrival_date,
-                booking_requests.departure_date,
-                booking_requests.rooms_requested
-
-            ORDER BY guest_profiles.primary_name
-        """, (
-            group_id,
-        )).fetchall()
-
-    except Exception:
-        # Fallback for live databases missing newer email-status columns.
-        # Keeps the Planning/View page loading after Booking Handoff.
-        created_booking_request_rows = conn.execute("""
-            SELECT
-                coordination_group_members.id AS member_id,
-                coordination_group_members.converted_request_id,
-                guest_profiles.primary_name,
-                guest_profiles.primary_email,
-                booking_requests.status AS request_status,
-                '' AS email_status,
-                '' AS email_needed_type,
-                booking_requests.additional_names,
-                booking_requests.arrival_date,
-                booking_requests.departure_date,
-                booking_requests.rooms_requested,
-                COUNT(bookings.id) AS approved_booking_count,
-                GROUP_CONCAT(rooms.name, ', ') AS approved_room_names
-            FROM coordination_group_members
-
-            JOIN guest_profiles
-                ON coordination_group_members.guest_profile_id = guest_profiles.id
-
-            LEFT JOIN booking_requests
-                ON coordination_group_members.converted_request_id = booking_requests.id
-
-            LEFT JOIN bookings
-                ON booking_requests.id = bookings.request_id
-               AND bookings.status = 'approved'
-
-            LEFT JOIN rooms
-                ON bookings.room_id = rooms.id
-
-            WHERE coordination_group_members.coordination_group_id = ?
-              AND coordination_group_members.converted_request_id IS NOT NULL
-
-            GROUP BY
-                coordination_group_members.id,
-                coordination_group_members.converted_request_id,
-                guest_profiles.primary_name,
-                guest_profiles.primary_email,
-                booking_requests.status,
-                booking_requests.additional_names,
-                booking_requests.arrival_date,
-                booking_requests.departure_date,
-                booking_requests.rooms_requested
-
-            ORDER BY guest_profiles.primary_name
-        """, (
-            group_id,
-        )).fetchall()
-
-    conn.commit()
-    conn.close()
-
-    group_room_demand_by_member = {}
-
-    for option in group_date_options:
-
-        member_key = option["member_id"]
-        option_rooms = normalize_rooms_requested(
-            option["rooms_requested"],
-            total_rooms_for_matching
-        )
-
-        if member_key not in group_room_demand_by_member:
-            group_room_demand_by_member[member_key] = option_rooms
-        elif option_rooms > group_room_demand_by_member[member_key]:
-            group_room_demand_by_member[member_key] = option_rooms
-
-    total_group_rooms_requested = sum(group_room_demand_by_member.values())
-
-    capacity_warning_html = ""
-
-    if total_group_rooms_requested > total_rooms_for_matching:
-
-        guest_room_rows = ""
-
-        for option in group_date_options:
-
-            if option["member_id"] in group_room_demand_by_member:
-
-                guest_room_rows += f"""
-                <tr>
-                    <td>{safe_text(option['primary_name'])}</td>
-                    <td align="center">{group_room_demand_by_member[option['member_id']]}</td>
-                </tr>
-                """
-
-                del group_room_demand_by_member[option["member_id"]]
-
-        capacity_warning_html = f"""
-        <div style="
-            background-color: #f8d7da;
-            border: 2px solid #dc3545;
-            padding: 12px;
-            border-radius: 8px;
-            margin-bottom: 10px;
-            max-width: 900px;
-        ">
-            <h3 style="margin-top: 0; color: #842029;">Room Capacity Warning</h3>
-            <p>
-                <strong>Maximum rooms available:</strong> {total_rooms_for_matching}<br>
-                <strong>Rooms requested by group:</strong> {total_group_rooms_requested}
-            </p>
-            <p>
-                The group is requesting more rooms than the house has available.
-                No single date option can work for the full group until rooms are reduced,
-                guests are split into separate visits, or the group plan changes.
-            </p>
-            <table border="1" cellpadding="4" cellspacing="0" style="border-collapse: collapse; font-size: 13px;">
-                <tr style="background-color: #f5f5f5;">
-                    <th align="left">Guest</th>
-                    <th align="center">Rooms Requested</th>
-                </tr>
-                {guest_room_rows}
-            </table>
-        </div>
-        """
-
-    tentative_dates_html = """
-    <p>No tentative group dates selected yet.</p>
-    """
-
-    tentative_confirmation_html = """
-    <p>No tentative confirmation responses yet.</p>
-    """
-
-    tentative_confirmed_count = 0
-    tentative_cannot_count = 0
-    tentative_discussion_count = 0
-    tentative_no_response_count = 0
-
-    all_confirmed_banner = ""
-
-    if safe_text(group["tentative_arrival_date"]) and safe_text(group["tentative_departure_date"]):
-
-        tentative_dates_html = f"""
-        <div style="
-            border: 2px solid #198754;
-            background-color: #e8f7ea;
-            padding: 12px;
-            margin-bottom: 14px;
-            border-radius: 8px;
-            max-width: 720px;
-        ">
-            <h3 style="margin-top: 0;">
-                Tentative Round Dates
-            </h3>
-
-            <p style="font-size: 16px; margin-bottom: 4px;">
-                <strong>{format_date(group['tentative_arrival_date'])}</strong>
-                to
-                <strong>{format_date(group['tentative_departure_date'])}</strong>
-            </p>
-
-            <small>
-                Selected: {safe_text(group['tentative_selected_at'])}<br>
-                Calendar status: Tentative Coordination Hold is active until the group is closed, canceled, or tentative dates are changed.
-            </small>
-        </div>
-        """
-
-        response_rows = []
-
-        for member in members:
-
-            response_status = safe_text(
-                member["tentative_response_status"]
-            )
-
-            if response_status == "confirmed":
-                tentative_confirmed_count += 1
-            elif response_status == "cannot_make":
-                tentative_cannot_count += 1
-            elif response_status == "needs_discussion":
-                tentative_discussion_count += 1
-            else:
-                tentative_no_response_count += 1
-
-            response_rows.append(f"""
-            <tr style="background-color: {tentative_response_color(response_status)};">
-                <td>{safe_text(member['primary_name'])}</td>
-                <td>{coordination_role_badge(member['role'])}</td>
-                <td>{safe_text(member['primary_email'])}</td>
-                <td>{tentative_response_display(response_status)}</td>
-                <td>{safe_text(member['tentative_response_at'])}</td>
-                <td>{safe_text(member['tentative_response_notes'])}</td>
-            </tr>
-            """)
-
-        tentative_confirmation_html = f"""
-        <table border="1"
-               cellpadding="5"
-               cellspacing="0"
-               style="
-                   border-collapse: collapse;
-                   width: 100%;
-                   font-size: 13px;
-                   margin-top: 8px;
-                   margin-bottom: 18px;
-               ">
-            <tr style="background-color: #f5f5f5;">
-                <th align="left">Guest</th>
-                <th align="left">Role</th>
-                <th align="left">Email</th>
-                <th align="left">Response</th>
-                <th align="left">Responded At</th>
-                <th align="left">Notes</th>
-            </tr>
-            {''.join(response_rows)}
-        </table>
-        """
-
-        if len(members) > 0 and tentative_confirmed_count == len(members):
-
-            final_email_sent_display = safe_text(
-                group["final_coordination_email_sent_at"]
-            )
-
-            if not final_email_sent_display:
-                final_email_sent_display = "Not sent yet"
-
-            final_capacity_check = coordination_capacity_check_for_window(
-                conn,
-                group_id,
-                group["tentative_arrival_date"],
-                group["tentative_departure_date"]
-            )
-
-            if final_capacity_check["capacity_ok"]:
-
-                all_confirmed_banner = f"""
-                <div style="
-                    background-color: #d4edda;
-                    border: 2px solid #198754;
-                    padding: 14px;
-                    border-radius: 8px;
-                    margin-bottom: 18px;
-                    max-width: 900px;
-                ">
-
-                    <h2 style="
-                        color: #198754;
-                        margin-top: 0;
-                    ">
-                        Round Status: Ready for Final Confirmation
-                    </h2>
-
-                    <p>
-                        All coordination members have confirmed the tentative dates and capacity still checks out.
-                    </p>
-
-                    <p>
-                        <strong>Tentative Dates:</strong>
-                        {format_date(group['tentative_arrival_date'])}
-                        to
-                        {format_date(group['tentative_departure_date'])}<br>
-                        <strong>Rooms Needed:</strong> {safe_text(final_capacity_check['rooms_needed'])}<br>
-                        <strong>Final Coordination Email:</strong> {final_email_sent_display}
-                    </p>
-
-                    <p>
-                        <a href="/coordination-group/{group_id}/handoff"
-                           style="
-                               display: inline-block;
-                               background-color: #198754;
-                               color: white;
-                               padding: 8px 12px;
-                               border-radius: 5px;
-                               text-decoration: none;
-                               font-weight: bold;
-                           ">
-                            Continue to Booking Handoff / Finalize Group Visit
-                        </a>
-                    </p>
-
-                    <p style="font-size: 13px; color: #555; margin-bottom: 0;">
-                        Use Booking Handoff for guest confirmations, booking requests, room assignments, final confirmation, and closing.
-                    </p>
-
-                </div>
-                """
-
-            else:
-
-                all_confirmed_banner = f"""
-                <div style="
-                    background-color: #fff3cd;
-                    border: 2px solid #fd7e14;
-                    padding: 14px;
-                    border-radius: 8px;
-                    margin-bottom: 18px;
-                    max-width: 900px;
-                ">
-
-                    <h2 style="
-                        color: #856404;
-                        margin-top: 0;
-                    ">
-                        Round Status: Needs Another Round
-                    </h2>
-
-                    <p>
-                        Guests confirmed the tentative dates, but capacity or availability changed before finalization.
-                    </p>
-
-                    <p>
-                        <strong>Issue:</strong><br>
-                        {safe_text('; '.join(final_capacity_check['notes']))}
-                    </p>
-
-                    <p style="font-size: 13px; color: #555; margin-bottom: 0;">
-                        Adjust tentative dates or room counts before finalizing the group visit.
-                    </p>
-
-                </div>
-                """
-
-    tentative_management_html = """
-    <p>
-        First select tentative dates from a best match. Then guests confirm whether those dates work. After that, create booking requests for confirmed guests.
-    </p>
-    """
-
-    if safe_text(group["tentative_arrival_date"]) and safe_text(group["tentative_departure_date"]):
-
-        due_date_display = safe_text(
-            group["tentative_response_due_date"]
-        ).strip() or default_coordination_due_date()
-
-        overdue_label = ""
-
-        if coordination_group_is_overdue(group):
-            overdue_label = """
-            <strong style='color: red;'>Overdue</strong>
-            """
-
-        converted_count = 0
-
-        for member in members:
-
-            if member["converted_request_id"]:
-                converted_count += 1
-
-        tentative_management_html = f"""
-        <div style="
-            border: 1px solid #dee2e6;
-            background-color: #f8f9fa;
-            padding: 12px;
-            margin-bottom: 10px;
-            border-radius: 8px;
-            max-width: 900px;
-        ">
-            <h3 style="margin-top: 0;">Planning Complete — Next Step</h3>
-
-            <p>
-                <strong>RSVP Due Date:</strong> {due_date_display} {overdue_label}<br>
-                <strong>Booking Requests Created:</strong> {converted_count} of {len(members)}
-            </p>
-
-            <p>
-                Tentative dates have been selected. Use the Booking Handoff page for confirmation emails, booking requests, room assignments, final confirmation, and closing.
-            </p>
-
-            <p style="margin-bottom: 0;">
-                <a href="/coordination-group/{group_id}/handoff"
-                   style="
-                       display: inline-block;
-                       background-color: #0d6efd;
-                       color: white;
-                       padding: 8px 12px;
-                       border-radius: 5px;
-                       text-decoration: none;
-                       font-weight: bold;
-                   ">
-                    Go to Booking Handoff Page
-                </a>
-            </p>
-        </div>
-        """
-
-    responded_count = 0
-    not_responded_names = []
-
-    for member in members:
-
-        if member["date_option_count"]:
-
-            responded_count += 1
-
-        else:
-
-            not_responded_names.append(
-                safe_text(member["primary_name"])
-            )
-
-    current_round = coordination_round_number(group)
-    round_pending_follow_up_members = []
-    round_completed_follow_up_members = []
-
-    for member in members:
+        error_text = safe_text(planning_error)
 
         try:
-            member_follow_up_round = int(row_value(member, "follow_up_round") or 0)
+            navigation_html = nav_links()
         except Exception:
-            member_follow_up_round = 0
-
-        if member_follow_up_round == current_round and safe_text(row_value(member, "follow_up_sent_at")).strip():
-
-            if safe_text(row_value(member, "follow_up_response_at")).strip():
-                round_completed_follow_up_members.append(member)
-            else:
-                round_pending_follow_up_members.append(member)
-
-    round_status_label = "Collecting initial dates"
-    round_status_background = "#eef5ff"
-    round_waiting_text = "Waiting for initial group responses."
-
-    if current_round > 1:
-
-        if round_pending_follow_up_members:
-            round_status_label = "Targeted follow-up in progress"
-            round_status_background = "#fff3cd"
-            round_waiting_text = "Waiting for: " + safe_text(", ".join([safe_text(member["primary_name"]) for member in round_pending_follow_up_members]))
-        else:
-            round_status_label = "Follow-up round complete"
-            round_status_background = "#e8f7ea"
-            round_waiting_text = "All targeted follow-up guests have responded. Review the updated Best Group Option below."
-
-    round_status_html = f"""
-    <div style="
-        background-color: {round_status_background};
-        border: 1px solid #ced4da;
-        padding: 10px;
-        border-radius: 8px;
-        margin-bottom: 12px;
-        max-width: 1080px;
-        font-size: 13px;
-    ">
-        <strong>Current Planning Round:</strong> Round {current_round} — {round_status_label}<br>
-        <strong>Status:</strong> {round_waiting_text}<br>
-        <strong>Round Note:</strong> Round 1 starts with organizer setup. Later rounds are used when dates need another pass.
-    </div>
-    """
-
-    date_options_summary_html = """
-    <p>No date options have been submitted yet.</p>
-    """
-
-    if group_date_options:
-
-        date_options_summary_html = """
-        <table border="1"
-               cellpadding="5"
-               cellspacing="0"
-               style="
-                   border-collapse: collapse;
-                   width: 100%;
-                   font-size: 13px;
-                   margin-top: 8px;
-               ">
-            <tr style="background-color: #f5f5f5;">
-                <th align="left">Guest</th>
-                <th align="left">Role</th>
-                <th align="left">Priority</th>
-                <th align="left">Arrival</th>
-                <th align="left">Departure</th>
-                <th align="center">Nights</th>
-                <th align="center">Rooms</th>
-                <th align="center">Flexibility</th>
-                <th align="left">Notes</th>
-                <th align="left">Request Page</th>
-            </tr>
-        """
-
-        for option in group_date_options:
-
-            try:
-
-                nights = (
-                    datetime.strptime(
-                        option["departure_date"],
-                        "%Y-%m-%d"
-                    )
-                    - datetime.strptime(
-                        option["arrival_date"],
-                        "%Y-%m-%d"
-                    )
-                ).days
-
-            except:
-
-                nights = ""
-
-            date_options_summary_html += f"""
-            <tr>
-                <td>{safe_text(option['primary_name'])}</td>
-                <td>{coordination_role_badge(option['role'])}</td>
-                <td>{safe_text(option['priority']).title()}</td>
-                <td>{format_date(option['arrival_date'])}</td>
-                <td>{format_date(option['departure_date'])}</td>
-                <td align="center">{safe_text(nights)}</td>
-                <td align="center">{safe_text(option['rooms_requested'])}</td>
-                <td align="center">± {safe_text(option['flexibility_days'])} day(s)</td>
-                <td>{safe_text(option['notes'])}</td>
-                <td>
-                    <a href="/coordination-group-member/{option['member_id']}/request">
-                        Open
-                    </a>
-                </td>
-            </tr>
-            """
-
-        date_options_summary_html += "</table>"
-
-    not_responded_html = """
-    <span style="color: green; font-weight: bold;">
-        Everyone with a profile in this group has submitted date options.
-    </span>
-    """
-
-    if not_responded_names:
-
-        not_responded_html = safe_text(
-            ", ".join(not_responded_names)
-        )
-
-    invitation_sent_count = 0
-    invitation_not_sent_count = 0
-    invitation_sent_names = []
-    invitation_not_sent_names = []
-
-    for member in members:
-
-        member_invitation_status = safe_text(member["invitation_status"]).strip()
-
-        if member_invitation_status in ["sent", "viewed", "responded"]:
-
-            invitation_sent_count += 1
-            invitation_sent_names.append(safe_text(member["primary_name"]))
-
-        else:
-
-            invitation_not_sent_count += 1
-            invitation_not_sent_names.append(safe_text(member["primary_name"]))
-
-    planning_invitation_state = "Not Started"
-    planning_invitation_icon = "⬜"
-    planning_invitation_background = "#f8f9fa"
-
-    if len(members) > 0 and invitation_sent_count == len(members):
-
-        planning_invitation_state = "Done"
-        planning_invitation_icon = "✅"
-        planning_invitation_background = "#e8f7ea"
-
-    elif invitation_sent_count > 0:
-
-        planning_invitation_state = "Needs Action"
-        planning_invitation_icon = "⚠️"
-        planning_invitation_background = "#fff3cd"
-
-    response_state = "Not Started"
-    response_icon = "⬜"
-    response_background = "#f8f9fa"
-
-    if len(members) > 0 and responded_count == len(members):
-
-        response_state = "Done"
-        response_icon = "✅"
-        response_background = "#e8f7ea"
-
-    elif responded_count > 0 or invitation_sent_count > 0:
-
-        response_state = "Needs Action"
-        response_icon = "⚠️"
-        response_background = "#fff3cd"
-
-    overlap_state = "Not Started"
-    overlap_icon = "⬜"
-    overlap_background = "#f8f9fa"
-
-    if group_date_options:
-
-        overlap_state = "Review"
-        overlap_icon = "⚠️"
-        overlap_background = "#fff3cd"
-
-        if match_suggestions:
-
-            overlap_state = "Ready"
-            overlap_icon = "✅"
-            overlap_background = "#e8f7ea"
-
-    tentative_state = "Not Started"
-    tentative_icon = "⬜"
-    tentative_background = "#f8f9fa"
-
-    tentative_selected = bool(
-        safe_text(group["tentative_arrival_date"])
-        and safe_text(group["tentative_departure_date"])
-    )
-
-    planning_ready_for_booking = (
-        safe_text(group["status"]) == "ready_for_booking"
-        and tentative_selected
-    )
-
-    if safe_text(group["tentative_arrival_date"]) and safe_text(group["tentative_departure_date"]):
-
-        tentative_state = "Done"
-        tentative_icon = "✅"
-        tentative_background = "#e8f7ea"
-
-    outstanding_invitation_display = "None"
-
-    if invitation_not_sent_names:
-
-        outstanding_invitation_display = safe_text(", ".join(invitation_not_sent_names))
-
-    step4_detail = "Pick the best overlap window and ask guests to confirm."
-    step4_action = '<a href="#best-match-suggestions">Set Tentative Dates</a>'
-
-    if tentative_selected:
-        step4_detail = "Tentative dates selected. Planning is complete; continue on the Booking Handoff page."
-        step4_action = f"""
-        <a href="/coordination-group/{group_id}/handoff"
-           style="display: inline-block; background-color: #198754; color: white; padding: 7px 10px; border-radius: 5px; text-decoration: none; font-weight: bold;">
-            Go to Booking Handoff Page
-        </a>
-        """
-
-    if planning_ready_for_booking:
-        overlap_state = "Done"
-        overlap_icon = "✅"
-        overlap_background = "#e8f7ea"
-        tentative_state = "Ready for Booking"
-        tentative_icon = "✅"
-        tentative_background = "#d4edda"
-        step4_detail = "All guests now fit these dates. Planning is closed; use Booking Handoff for the rest."
-        step4_action = f"""
-        <a href="/coordination-group/{group_id}/handoff"
-           style="display: inline-block; background-color: #198754; color: white; padding: 8px 12px; border-radius: 5px; text-decoration: none; font-weight: bold;">
-            Go to Booking Handoff Page
-        </a>
-        """
-
-    organizer_member = None
-
-    for member in members:
-
-        if safe_text(row_value(member, "role")).strip() == "organizer":
-            organizer_member = member
-            break
-
-    organizer_formation_html = """
-    <p>No organizer has been assigned yet.</p>
-    """
-
-    if organizer_member:
-
-        organizer_link = organizer_planning_url(coordination_member_row_id(organizer_member))
-        organizer_suggested_guests = safe_text(row_value(organizer_member, "organizer_suggested_guests")).strip()
-        organizer_suggested_dates_notes = safe_text(row_value(organizer_member, "organizer_suggested_dates_notes")).strip()
-        organizer_suggestions_at = safe_text(row_value(organizer_member, "organizer_suggestions_at")).strip()
-        organizer_kickoff_sent_at = safe_text(row_value(organizer_member, "organizer_kickoff_sent_at")).strip()
-
-        if not organizer_suggested_guests:
-            organizer_suggested_guests = "No suggested guests submitted yet."
-
-        if not organizer_suggested_dates_notes:
-            organizer_suggested_dates_notes = "No organizer date notes submitted yet."
-
-        if not organizer_suggestions_at:
-            organizer_suggestions_at = "Not submitted yet"
-
-        if not organizer_kickoff_sent_at:
-            organizer_kickoff_sent_at = "Not sent yet"
-
-        organizer_formation_html = f"""
-        <div style="border:2px solid #0d6efd; background:#eef5ff; border-radius:8px; padding:12px; max-width:980px; margin-bottom:14px; font-size:13px;">
-            <h3 style="margin-top:0;">Organizer-Led Formation</h3>
-            <p style="margin-bottom:6px;">
-                <strong>Organizer:</strong> {safe_text(organizer_member['primary_name'])} &lt;{safe_text(organizer_member['primary_email'])}&gt;<br>
-                <strong>Kickoff Email:</strong> {safe_text(organizer_kickoff_sent_at)}<br>
-                <strong>Organizer Email Sent / Returned Suggestions:</strong> {safe_text(organizer_suggestions_at)}
-            </p>
-            <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:13px; background:white;">
-                <tr style="background:#f5f5f5;">
-                    <th align="left">Organizer Link</th>
-                    <th align="left">Suggested Guests</th>
-                    <th align="left">Initial Date Notes</th>
-                </tr>
-                <tr>
-                    <td><a href="{organizer_link}">Open Organizer Planning Page</a></td>
-                    <td style="white-space:pre-wrap;">{safe_text(organizer_suggested_guests)}</td>
-                    <td style="white-space:pre-wrap;">{safe_text(organizer_suggested_dates_notes)}</td>
-                </tr>
-            </table>
-            <p style="margin-bottom:0;">
-                <a href="/coordination-group/{group_id}/organizer-kickoff-preview" style="font-weight:bold;">Preview / Send Organizer Kickoff Email</a>
-            </p>
-        </div>
-        """
-
-    organizer_workflow_state = "Needs Action"
-    organizer_workflow_name = "None assigned"
-    organizer_workflow_kickoff = "Not sent"
-    organizer_workflow_returned = "Not returned"
-    organizer_workflow_action = "Assign an Organizer first"
-
-    if organizer_member:
-        organizer_workflow_name = safe_text(organizer_member["primary_name"])
-        organizer_workflow_kickoff = safe_text(row_value(organizer_member, "organizer_kickoff_sent_at")).strip() or "Not sent"
-        organizer_workflow_returned = safe_text(row_value(organizer_member, "organizer_suggestions_at")).strip() or "Not returned"
-        organizer_workflow_action = f'<a href="/coordination-group/{group_id}/organizer-kickoff-preview">Preview / Send Organizer Email</a>'
-
-        if organizer_workflow_kickoff != "Not sent" and organizer_workflow_returned != "Not returned":
-            organizer_workflow_state = "✅ Complete"
-
-    planning_workflow_html = f"""
-    <h2>Action Workflow</h2>
-
-    {round_status_html}
-
-    <div style="
-        background-color: #eef5ff;
-        border: 2px solid #4a90e2;
-        padding: 14px;
-        border-radius: 8px;
-        margin-bottom: 18px;
-        max-width: 1080px;
-    ">
-        <p style="margin-top: 0;">
-            Use this section to move the group through date planning before booking handoff.
-        </p>
-
-        <table border="1"
-               cellpadding="6"
-               cellspacing="0"
-               style="
-                   border-collapse: collapse;
-                   width: 100%;
-                   font-size: 13px;
-                   margin-bottom: 14px;
-               ">
-            <tr style="background-color: #f5f5f5;">
-                <th align="left">Step</th>
-                <th align="left">Status</th>
-                <th align="left">Details</th>
-                <th align="left">Action</th>
-            </tr>
-
-            <tr style="background-color:#fff8e6;">
-                <td><strong>1. Organizer Email Sent / Returned</strong></td>
-                <td>
-                    {organizer_workflow_state}
-                </td>
-                <td>
-                    Organizer: {organizer_workflow_name}<br>
-                    Kickoff Email: {organizer_workflow_kickoff}<br>
-                    Organizer Returned: {organizer_workflow_returned}
-                </td>
-                <td>
-                    {organizer_workflow_action}
-                </td>
-            </tr>
-
-            <tr style="background-color: {planning_invitation_background};">
-                <td><strong>2. Send Coordination Invitations</strong></td>
-                <td>{planning_invitation_icon} {planning_invitation_state}</td>
-                <td>
-                    Members Added: {len(members)}<br>
-                    Invitations Sent: {invitation_sent_count}<br>
-                    Not Sent: {invitation_not_sent_count}<br>
-                    <small>Outstanding: {outstanding_invitation_display}</small>
-                </td>
-                <td>
-                    <a href="/coordination-group/{group_id}/email-preview">
-                        Preview / Send Invitations
-                    </a>
-                </td>
-            </tr>
-
-            <tr style="background-color: {response_background};">
-                <td><strong>3. Collect Responses</strong></td>
-                <td>{response_icon} {response_state}</td>
-                <td>
-                    Responses Received: {responded_count} of {len(members)}<br>
-                    Waiting On: {not_responded_html}
-                </td>
-                <td>
-                    <a href="/coordination-group/{group_id}/email-preview">
-                        Resend / Remind Guests
-                    </a>
-                </td>
-            </tr>
-
-            <tr style="background-color: {overlap_background};">
-                <td><strong>4. Review Date Overlap</strong></td>
-                <td>{overlap_icon} {overlap_state}</td>
-                <td>Review best match suggestions and unmatched guests below.</td>
-                <td><a href="#best-match-suggestions">View Suggestions</a></td>
-            </tr>
-
-            <tr style="background-color: {tentative_background};">
-                <td><strong>5. Select Tentative Dates</strong></td>
-                <td>{tentative_icon} {tentative_state}</td>
-                <td>{step4_detail}</td>
-                <td>{step4_action}</td>
-            </tr>
-        </table>
-
-        <p style="font-size: 13px; color: #555; margin-bottom: 0;">
-            After tentative dates are selected, use the Booking Handoff page for confirmations, booking requests, room assignments, approvals, and closing.
-        </p>
-    </div>
-    """
-
-    created_booking_requests_html = """
-    <p>No booking requests have been created from this coordination group yet.</p>
-    """
-
-    if created_booking_request_rows:
-
-        created_booking_requests_html = """
-        <table border="1"
-               cellpadding="5"
-               cellspacing="0"
-               style="
-                   border-collapse: collapse;
-                   width: 100%;
-                   font-size: 13px;
-                   margin-bottom: 18px;
-               ">
-            <tr style="background-color: #f5f5f5;">
-                <th align="left">Guest</th>
-                <th align="left">Email</th>
-                <th align="left">Additional Guests</th>
-                <th align="left">Request</th>
-                <th align="left">Dates</th>
-                <th align="center">Rooms Requested</th>
-                <th align="left">Request Status</th>
-                <th align="left">Email Status</th>
-                <th align="left">Room Assignment</th>
-                <th align="left">Action</th>
-            </tr>
-        """
-
-        for created_request in created_booking_request_rows:
-
-            room_assignment_display = "Not assigned yet"
-
-            if row_value(created_request, "approved_room_names"):
-                room_assignment_display = safe_text(
-                    row_value(created_request, "approved_room_names")
-                )
-
-            request_status_display_text = safe_text(
-                row_value(created_request, "request_status")
-            )
-
-            row_background = "#fff3cd"
-
-            if request_status_display_text == "approved" and (row_value(created_request, "approved_booking_count") or 0) > 0:
-                row_background = "#e8f7ea"
-
-            created_booking_requests_html += f"""
-            <tr style="background-color: {row_background};">
-                <td>{safe_text(created_request['primary_name'])}</td>
-                <td>{safe_text(created_request['primary_email'])}</td>
-                <td>{safe_text(created_request['additional_names']) or 'None listed'}</td>
-                <td>
-                    <a href="/request/{created_request['converted_request_id']}">
-                        Request {created_request['converted_request_id']}
-                    </a>
-                </td>
-                <td>
-                    {format_date(created_request['arrival_date'])}<br>
-                    to {format_date(created_request['departure_date'])}
-                </td>
-                <td align="center">
-                    {safe_text(created_request['rooms_requested'])}
-                </td>
-                <td>{request_status_display_text}</td>
-                <td>{email_status_display(row_value(created_request, "email_status"), row_value(created_request, "email_needed_type"), row_value(created_request, "converted_request_id"))}</td>
-                <td>{room_assignment_display}</td>
-                <td>
-                    <a href="/room-assignments">
-                        Open Room Assignments
-                    </a>
-                    <br>
-                    <small>
-                        Request #{created_request['converted_request_id']}
-                    </small>
-                </td>
-            </tr>
-            """
-
-        created_booking_requests_html += "</table>"
-
-    intersection_suggestions_html = """
-    <p>No shared overlap yet. Once guests submit date options, Phase 3 will look for the common window where everyone can attend.</p>
-    """
-
-    if intersection_suggestions:
-
-        best_intersection = intersection_suggestions[0]
-
-        intersection_capacity_display = "<strong style='color: green;'>Capacity OK</strong>"
-
-        if not best_intersection["capacity_ok"]:
-            intersection_capacity_display = "<strong style='color: red;'>Capacity needs review</strong>"
-
-        changed_names_display = "None — all submitted windows match this exact range"
-
-        if best_intersection["changed_range_names"]:
-            changed_names_display = safe_text(", ".join(best_intersection["changed_range_names"]))
-
-        flexibility_names_display = "None"
-
-        if best_intersection["flexibility_used_names"]:
-            flexibility_names_display = safe_text(", ".join(best_intersection["flexibility_used_names"]))
-
-        other_intersections_html = ""
-
-        if len(intersection_suggestions) > 1:
-            other_rows = ""
-            rank = 2
-            for suggestion in intersection_suggestions[1:5]:
-                other_rows += f"""
-                <tr>
-                    <td>{rank}</td>
-                    <td>{format_date(suggestion['arrival_date'])} to {format_date(suggestion['departure_date'])}</td>
-                    <td align="center">{suggestion['nights']}</td>
-                    <td align="center">{suggestion['rooms_needed']} of {suggestion['rooms_available']}</td>
-                    <td>{'OK' if suggestion['capacity_ok'] else 'Needs Review'}</td>
-                    <td>
-                        <form method="POST" action="/coordination-group/{group_id}/set-tentative">
-                            <input type="hidden" name="arrival_date" value="{suggestion['arrival_date']}">
-                            <input type="hidden" name="departure_date" value="{suggestion['departure_date']}">
-                            <button type="submit" style="font-size:12px; padding:4px 8px;">Set Tentative</button>
-                        </form>
-                    </td>
-                </tr>
-                """
-                rank += 1
-
-            other_intersections_html = f"""
-            <h4 style="margin-bottom:6px;">Other Shared Overlap Options</h4>
-            <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:13px;">
-                <tr style="background:#f5f5f5;">
-                    <th>Rank</th><th>Dates</th><th>Nights</th><th>Rooms</th><th>Capacity</th><th>Action</th>
-                </tr>
-                {other_rows}
-            </table>
-            """
-
-        intersection_suggestions_html = f"""
-        <div style="background:#e8f7ea; border:2px solid #198754; border-radius:8px; padding:12px; margin-bottom:14px; max-width:1040px;">
-            <h3 style="margin-top:0;">Round Shared Overlap Window</h3>
-            <p style="font-size:16px; margin:4px 0;">
-                <strong>{format_date(best_intersection['arrival_date'])}</strong>
-                to
-                <strong>{format_date(best_intersection['departure_date'])}</strong>
-                ({best_intersection['nights']} night(s))
-            </p>
-            <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:13px; margin-top:8px;">
-                <tr style="background:#f5f5f5;">
-                    <th align="left">Guests Included</th>
-                    <th align="left">Rooms Needed</th>
-                    <th align="left">Capacity</th>
-                    <th align="left">Adjusted From Original Dates</th>
-                    <th align="left">Flexibility Used</th>
-                </tr>
-                <tr>
-                    <td>{best_intersection['matched_count']} of {best_intersection['total_member_count']}</td>
-                    <td>{best_intersection['rooms_needed']} of {best_intersection['rooms_available']}</td>
-                    <td>{intersection_capacity_display}</td>
-                    <td>{changed_names_display}</td>
-                    <td>{flexibility_names_display}</td>
-                </tr>
-            </table>
-            <p style="font-size:13px; color:#555;">
-                This uses the intersection rule: latest usable arrival plus earliest usable departure. It reserves only this shared overlap window, not every guest's full requested range.
-            </p>
-            <form method="POST" action="/coordination-group/{group_id}/set-tentative" style="margin-top:10px;">
-                <input type="hidden" name="arrival_date" value="{best_intersection['arrival_date']}">
-                <input type="hidden" name="departure_date" value="{best_intersection['departure_date']}">
-                <button type="submit" style="font-size:14px; padding:7px 12px; font-weight:bold;">
-                    Set Shared Overlap As Tentative
-                </button>
-            </form>
-            {other_intersections_html}
-        </div>
-        """
-
-
-    tentative_adjustments_html = ""
-
-    if tentative_adjustments:
-        adjustment_rows = ""
-        for adjustment in tentative_adjustments:
-            adjustment_rows += f"""
-            <tr>
-                <td>{format_datetime_display(adjustment['created_at'])}</td>
-                <td>{format_date(adjustment['system_arrival_date'])} to {format_date(adjustment['system_departure_date'])}</td>
-                <td>{format_date(adjustment['admin_arrival_date'])} to {format_date(adjustment['admin_departure_date'])}</td>
-                <td>{safe_text(adjustment['rooms_needed'])}</td>
-                <td>{safe_text(adjustment['capacity_status'])}</td>
-                <td>{safe_text(adjustment['adjustment_reason'])}</td>
-            </tr>
-            """
-
-        tentative_adjustments_html = f"""
-        <div style="background:#f8fbff; border:1px solid #d8e6f3; border-radius:8px; padding:10px; margin:10px 0; max-width:1040px;">
-            <h3 style="margin:0 0 6px 0;">Admin Tentative Date Adjustment History</h3>
-            <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:12px;">
-                <tr style="background:#f5f5f5;">
-                    <th>When</th>
-                    <th>System Suggested</th>
-                    <th>Admin Selected</th>
-                    <th>Rooms</th>
-                    <th>Capacity</th>
-                    <th>Reason</th>
-                </tr>
-                {adjustment_rows}
-            </table>
-        </div>
-        """
-
-    phase4_default_arrival = safe_text(row_value(group, "tentative_arrival_date")).strip()
-    phase4_default_departure = safe_text(row_value(group, "tentative_departure_date")).strip()
-    phase4_system_arrival = ""
-    phase4_system_departure = ""
-
-    if intersection_suggestions:
-        phase4_system_arrival = intersection_suggestions[0]["arrival_date"]
-        phase4_system_departure = intersection_suggestions[0]["departure_date"]
-        if not phase4_default_arrival:
-            phase4_default_arrival = phase4_system_arrival
-        if not phase4_default_departure:
-            phase4_default_departure = phase4_system_departure
-
-    phase4_system_text = "No system shared-overlap suggestion is available yet."
-    if phase4_system_arrival and phase4_system_departure:
-        phase4_system_text = f"{format_date(phase4_system_arrival)} to {format_date(phase4_system_departure)}"
-
-    phase4_current_text = "No tentative dates currently selected."
-    if phase4_default_arrival and phase4_default_departure:
-        phase4_current_text = f"{format_date(phase4_default_arrival)} to {format_date(phase4_default_departure)}"
-
-    phase4_admin_override_html = f"""
-    <div style="background:#fff8e6; border:2px solid #fd7e14; border-radius:8px; padding:12px; margin:12px 0; max-width:1040px;">
-        <h3 style="margin-top:0;">Round Admin Adjust Tentative Dates</h3>
-        <p style="margin:4px 0; font-size:13px;">
-            <strong>System suggested overlap:</strong> {phase4_system_text}<br>
-            <strong>Current tentative dates:</strong> {phase4_current_text}
-        </p>
-
-        <form method="POST" action="/coordination-group/{group_id}/set-tentative" style="display:grid; grid-template-columns: repeat(2, minmax(180px, 1fr)); gap:8px; max-width:720px;">
-            <input type="hidden" name="system_arrival_date" value="{safe_text(phase4_system_arrival)}">
-            <input type="hidden" name="system_departure_date" value="{safe_text(phase4_system_departure)}">
-            <input type="hidden" name="admin_adjustment" value="yes">
-
-            <label>
-                Tentative Arrival<br>
-                <input type="date" name="arrival_date" value="{safe_text(phase4_default_arrival)}" required style="width:100%; padding:6px;">
-            </label>
-
-            <label>
-                Tentative Departure<br>
-                <input type="date" name="departure_date" value="{safe_text(phase4_default_departure)}" required style="width:100%; padding:6px;">
-            </label>
-
-            <label style="grid-column:1 / -1;">
-                Adjustment reason / planning note<br>
-                <textarea name="adjustment_reason" rows="3" style="width:100%; padding:6px;" placeholder="Example: Better fit for family travel, room pressure, or guest flexibility."></textarea>
-            </label>
-
-            <div style="grid-column:1 / -1;">
-                <button type="submit" style="font-weight:bold; padding:7px 12px;">
-                    Save Admin Tentative Dates
-                </button>
-                <small style="color:#555; margin-left:8px;">
-                    Validates against blocked dates, bookings, partial blocks, and other tentative holds.
-                </small>
-            </div>
-        </form>
-    </div>
-    """ + tentative_adjustments_html
-
-    match_suggestions_html = """
-    <p>No match suggestions yet. Add date options for at least one group member.</p>
-    """
-
-    if match_suggestions:
-
-        best_suggestion = match_suggestions[0]
-
-        best_capacity_display = "<strong style='color: green;'>Capacity OK</strong>"
-
-        if not best_suggestion["capacity_ok"]:
-            best_capacity_display = "<strong style='color: red;'>Capacity needs review</strong>"
-
-        all_group_member_names = []
-
-        for member in members:
-            all_group_member_names.append(
-                safe_text(member["primary_name"])
-            )
-
-        best_unmatched_names = []
-
-        for member_name in all_group_member_names:
-            if member_name not in best_suggestion["guest_names"]:
-                best_unmatched_names.append(member_name)
-
-        best_unmatched_display = "None"
-
-        best_unmatched_members = []
-
-        if best_unmatched_names:
-            best_unmatched_display = safe_text(", ".join(sorted(best_unmatched_names)))
-
-            for member in members:
-                if safe_text(member["primary_name"]) in best_unmatched_names:
-                    best_unmatched_members.append(member)
-
-        targeted_follow_up_html = ""
-
-        if best_unmatched_members:
-
-            targeted_follow_up_rows = ""
-
-            for member in best_unmatched_members:
-
-                targeted_follow_up_rows += f"""
-                <tr>
-                    <td>{safe_text(member['primary_name'])}</td>
-                    <td>{safe_text(member['primary_email'])}</td>
-                    <td>
-                        <a href="/coordination-group-member/{coordination_member_row_id(member)}/request?follow_up=1&suggested_arrival={best_suggestion['arrival_date']}&suggested_departure={best_suggestion['departure_date']}">
-                            Open Date Link
-                        </a>
-                    </td>
-                </tr>
-                """
-
-            targeted_follow_up_html = f"""
-            <div style="
-                background-color: #fff3cd;
-                border: 1px solid #f0ad4e;
-                border-radius: 8px;
-                padding: 10px;
-                margin-top: 12px;
-            ">
-                <h4 style="margin: 0 0 6px 0;">Targeted Follow-Up</h4>
-                <p style="margin: 0 0 8px 0; font-size: 13px;">
-                    This option works for most guests. Start the next round by following up only with the guest(s) who do not match.
-                </p>
-                <table border="1" cellpadding="5" cellspacing="0"
-                       style="border-collapse: collapse; width: 100%; font-size: 13px; margin-bottom: 8px;">
-                    <tr style="background-color: #f5f5f5;">
-                        <th align="left">Guest</th>
-                        <th align="left">Email</th>
-                        <th align="left">Date Link</th>
-                    </tr>
-                    {targeted_follow_up_rows}
-                </table>
-                <p style="margin: 0;">
-                    <a href="/coordination-group/{group_id}/follow-up-unmatched?arrival_date={best_suggestion['arrival_date']}&departure_date={best_suggestion['departure_date']}"
-                       style="display: inline-block; background-color: #fd7e14; color: white; padding: 7px 10px; border-radius: 5px; text-decoration: none; font-weight: bold;">
-                        Email Guest(s) To Update Availability
-                    </a>
-                </p>
-            </div>
-            """
-
-        best_why_html = f"<li>{best_suggestion['matched_count']} of {len(members)} guest(s) can attend</li>"
-
-        for why_item in best_suggestion["why_bullets"]:
-            if "guest(s) can attend" in safe_text(why_item):
-                continue
-            best_why_html += f"<li>{safe_text(why_item)}</li>"
-
-        nearby_html = ""
-
-        if best_suggestion["nearby_before_names"]:
-            nearby_html += f"""
-            <li>
-                {format_date(best_suggestion['nearby_before_date'])} works for:
-                {safe_text(', '.join(best_suggestion['nearby_before_names']))}
-            </li>
-            """
-
-        if best_suggestion["nearby_after_names"]:
-            nearby_html += f"""
-            <li>
-                {format_date(best_suggestion['nearby_after_date'])} works for:
-                {safe_text(', '.join(best_suggestion['nearby_after_names']))}
-            </li>
-            """
-
-        if not nearby_html:
-            nearby_html = "<li>No nearby fallback dates found from the submitted windows.</li>"
-
-        match_suggestions_html = f"""
-        <div style="
-            background-color: #e8f7ea;
-            border: 2px solid #198754;
-            border-radius: 8px;
-            padding: 12px;
-            margin-bottom: 12px;
-            max-width: 1040px;
-        ">
-            <h3 style="margin-top: 0; margin-bottom: 6px;">
-                Best Group Option
-            </h3>
-
-            <p style="font-size: 16px; margin: 4px 0;">
-                <strong>{format_date(best_suggestion['arrival_date'])}</strong>
-                to
-                <strong>{format_date(best_suggestion['departure_date'])}</strong>
-                ({best_suggestion['nights']} night(s))
-            </p>
-
-            <table border="1"
-                   cellpadding="5"
-                   cellspacing="0"
-                   style="border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 8px;">
-                <tr style="background-color: #f5f5f5;">
-                    <th align="left">Matched</th>
-                    <th align="left">Rooms</th>
-                    <th align="left">Preferred / Alternate</th>
-                    <th align="left">Capacity</th>
-                    <th align="left">Needs Follow-Up</th>
-                </tr>
-                <tr>
-                    <td>{best_suggestion['matched_count']} of {len(members)}</td>
-                    <td>{best_suggestion['rooms_needed']} of {best_suggestion['rooms_available']}</td>
-                    <td>{best_suggestion['preferred_count']} preferred / {best_suggestion['alternate_count']} alternate</td>
-                    <td>{best_capacity_display}</td>
-                    <td>{best_unmatched_display}</td>
-                </tr>
-            </table>
-
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 10px;">
-                <div>
-                    <strong>Why this is suggested:</strong>
-                    <ul style="margin-top: 4px; margin-bottom: 0; padding-left: 20px;">
-                        {best_why_html}
-                    </ul>
-                </div>
-                <div>
-                    <strong>Nearby dates that almost work:</strong>
-                    <ul style="margin-top: 4px; margin-bottom: 0; padding-left: 20px;">
-                        {nearby_html}
-                    </ul>
-                </div>
-            </div>
-
-            <form method="POST"
-                  action="/coordination-group/{group_id}/set-tentative"
-                  style="margin-top: 12px;">
-                <input type="hidden" name="arrival_date" value="{best_suggestion['arrival_date']}">
-                <input type="hidden" name="departure_date" value="{best_suggestion['departure_date']}">
-                <button type="submit"
-                        style="font-size: 14px; padding: 7px 12px; font-weight: bold;">
-                    Set Best Option As Tentative
-                </button>
-            </form>
-
-            {targeted_follow_up_html}
-        </div>
-        """
-
-        if len(match_suggestions) > 1:
-
-            match_suggestions_html += """
-            <h3 style="margin-bottom: 6px;">Other Possible Options</h3>
-            <table border="1"
-                   cellpadding="5"
-                   cellspacing="0"
-                   style="
-                       border-collapse: collapse;
-                       width: 100%;
-                       font-size: 13px;
-                       margin-top: 6px;
-                   ">
-                <tr style="background-color: #f5f5f5;">
-                    <th align="left">Rank</th>
-                    <th align="left">Dates</th>
-                    <th align="center">Guests</th>
-                    <th align="center">Rooms</th>
-                    <th align="left">Why / Follow-Up</th>
-                    <th align="left">Action</th>
-                </tr>
-            """
-
-            rank = 2
-
-            for suggestion in match_suggestions[1:4]:
-
-                other_capacity_display = "Capacity OK"
-
-                if not suggestion["capacity_ok"]:
-                    other_capacity_display = "Capacity needs review"
-
-                other_unmatched_names = []
-
-                for member_name in all_group_member_names:
-                    if member_name not in suggestion["guest_names"]:
-                        other_unmatched_names.append(member_name)
-
-                follow_up_display = "No follow-up needed"
-
-                if other_unmatched_names:
-                    follow_up_display = "Follow up with: " + safe_text(", ".join(sorted(other_unmatched_names)))
-
-                match_suggestions_html += f"""
-                <tr>
-                    <td>{rank}</td>
-                    <td>
-                        <strong>{format_date(suggestion['arrival_date'])}</strong><br>
-                        to {format_date(suggestion['departure_date'])}<br>
-                        <small>{suggestion['nights']} night(s)</small>
-                    </td>
-                    <td align="center">{suggestion['matched_count']} of {len(members)}</td>
-                    <td align="center">{suggestion['rooms_needed']} of {suggestion['rooms_available']}</td>
-                    <td>
-                        {suggestion['preferred_count']} preferred / {suggestion['alternate_count']} alternate<br>
-                        {other_capacity_display}<br>
-                        <small>{follow_up_display}</small>
-                    </td>
-                    <td>
-                        <form method="POST"
-                              action="/coordination-group/{group_id}/set-tentative">
-                            <input type="hidden" name="arrival_date" value="{suggestion['arrival_date']}">
-                            <input type="hidden" name="departure_date" value="{suggestion['departure_date']}">
-                            <button type="submit" style="font-size: 12px; padding: 4px 8px;">
-                                Set Tentative
-                            </button>
-                        </form>
-                    </td>
-                </tr>
-                """
-
-                rank += 1
-
-            match_suggestions_html += "</table>"
-
-
-    def workflow_status_row(label, state, detail):
-
-        if state == "done":
-            icon = "✅"
-            status_text = "Done"
-            background = "#e8f7ea"
-            border = "#198754"
-
-        elif state == "needs_action":
-            icon = "⚠️"
-            status_text = "Needs Action"
-            background = "#fff3cd"
-            border = "#f0ad4e"
-
-        else:
-            icon = "⬜"
-            status_text = "Not Started"
-            background = "#f8f9fa"
-            border = "#dee2e6"
+            navigation_html = ""
 
         return f"""
-        <tr style="background-color: {background};">
-            <td style="width: 42px; font-size: 18px; text-align: center;">
-                {icon}
-            </td>
-            <td>
-                <strong>{label}</strong><br>
-                <small>{detail}</small>
-            </td>
-            <td style="width: 140px; font-weight: bold; border-left: 4px solid {border};">
-                {status_text}
-            </td>
-        </tr>
-        """
+        {navigation_html}
 
-    tentative_selected = bool(
-        safe_text(group["tentative_arrival_date"])
-        and safe_text(group["tentative_departure_date"])
-    )
+        <h1>Planning Page Needs Review</h1>
 
-    all_guests_confirmed = (
-        len(members) > 0
-        and tentative_confirmed_count == len(members)
-    )
-
-    final_coordination_email_sent = bool(
-        safe_text(group["final_coordination_email_sent_at"])
-    )
-
-    final_visit_confirmation_sent = bool(
-        safe_text(group["final_visit_confirmation_sent_at"])
-    )
-
-    converted_member_count = 0
-
-    for member in members:
-
-        if member["converted_request_id"]:
-            converted_member_count += 1
-
-    booking_requests_created = converted_member_count > 0
-
-    all_confirmed_guests_converted = (
-        all_guests_confirmed
-        and converted_member_count >= tentative_confirmed_count
-    )
-
-    all_created_requests_reviewed = False
-
-    if created_booking_request_rows:
-
-        all_created_requests_reviewed = True
-
-        for created_request in created_booking_request_rows:
-
-            try:
-                rooms_requested_for_check = int(created_request["rooms_requested"] or 1)
-            except:
-                rooms_requested_for_check = 1
-
-            if safe_text(created_request["request_status"]) != "approved":
-                all_created_requests_reviewed = False
-
-            if int(created_request["approved_booking_count"] or 0) < rooms_requested_for_check:
-                all_created_requests_reviewed = False
-
-    group_raw_closed = safe_text(group["status"]) in [
-        "closed",
-        "finalized",
-        "archived"
-    ]
-
-    group_is_closed = (
-        group_raw_closed
-        and all_created_requests_reviewed
-        and final_visit_confirmation_sent
-    )
-
-    tentative_step_state = "not_started"
-
-    if tentative_selected:
-        tentative_step_state = "done"
-    elif match_suggestions:
-        tentative_step_state = "needs_action"
-
-    confirmation_step_state = "not_started"
-
-    if all_guests_confirmed:
-        confirmation_step_state = "done"
-    elif tentative_selected:
-        confirmation_step_state = "needs_action"
-
-    tentative_email_step_state = "not_started"
-
-    if safe_text(group["coordination_reminder_sent_at"]):
-        tentative_email_step_state = "done"
-    elif tentative_selected:
-        tentative_email_step_state = "needs_action"
-
-    final_visit_email_step_state = "not_started"
-
-    if final_visit_confirmation_sent and all_created_requests_reviewed:
-        final_visit_email_step_state = "done"
-    elif all_created_requests_reviewed:
-        final_visit_email_step_state = "needs_action"
-
-    conversion_step_state = "not_started"
-
-    if all_confirmed_guests_converted:
-        conversion_step_state = "done"
-    elif all_guests_confirmed:
-        conversion_step_state = "needs_action"
-
-    room_assignment_step_state = "not_started"
-
-    if all_created_requests_reviewed:
-        room_assignment_step_state = "done"
-    elif booking_requests_created:
-        room_assignment_step_state = "needs_action"
-
-    close_step_state = "not_started"
-
-    if group_is_closed:
-        close_step_state = "done"
-    elif all_created_requests_reviewed:
-        close_step_state = "needs_action"
-
-    workflow_progress_html = f"""
-    <div style="
-        background-color: #eef5ff;
-        border: 2px solid #4a90e2;
-        padding: 14px;
-        border-radius: 8px;
-        margin-bottom: 18px;
-        max-width: 1080px;
-    ">
-        <h2 style="margin-top: 0;">
-            Workflow Progress
-        </h2>
-
-        <p style="margin-top: 0; color: #555;">
-            This shows what is done, what needs action, and what has not started yet.
-        </p>
-
-        <table border="1"
-               cellpadding="6"
-               cellspacing="0"
-               style="
-                   border-collapse: collapse;
-                   width: 100%;
-                   font-size: 13px;
-               ">
-            <tr style="background-color: #f5f5f5;">
-                <th></th>
-                <th align="left">Workflow Step</th>
-                <th align="left">Status</th>
-            </tr>
-            {workflow_status_row(
-                "Pick or review tentative dates",
-                tentative_step_state,
-                "Choose the best overlap window from the suggested matches."
-            )}
-            {workflow_status_row(
-                "Get guest confirmations",
-                confirmation_step_state,
-                f"Confirmed: {tentative_confirmed_count} of {len(members)}"
-            )}
-            {workflow_status_row(
-                "Send final visit confirmation email",
-                final_visit_email_step_state,
-                "Send after booking requests are approved and rooms are assigned."
-            )}
-            {workflow_status_row(
-                "Create booking requests",
-                conversion_step_state,
-                f"Booking requests created: {converted_member_count} of {len(members)}"
-            )}
-            {workflow_status_row(
-                "Assign rooms and approve requests",
-                room_assignment_step_state,
-                "Use the Booking Handoff section below to review requests and assign rooms."
-            )}
-            {workflow_status_row(
-                "Close coordination group",
-                close_step_state,
-                "Close only after booking requests have been reviewed and the group is no longer active."
-            )}
-        </table>
-    </div>
-    """
-
-    if planning_ready_for_booking:
-        match_suggestions_html = f"""
         <div style="
-            background-color: #d4edda;
-            border: 2px solid #198754;
-            border-radius: 8px;
+            border: 2px solid #fd7e14;
+            background: #fff3cd;
             padding: 14px;
-            margin-bottom: 14px;
-            max-width: 1040px;
+            border-radius: 10px;
+            max-width: 820px;
         ">
-            <h2 style="margin-top: 0; color: #198754;">
-                Dates Work for Everyone
-            </h2>
-            <p style="font-size: 16px; margin-bottom: 6px;">
-                <strong>{format_date(group['tentative_arrival_date'])}</strong>
-                to
-                <strong>{format_date(group['tentative_departure_date'])}</strong>
+            <p style="font-weight: bold; margin-top: 0;">
+                The detailed Planning view could not fully load, but the app did not lose any saved data.
             </p>
+
             <p>
-                No more planning follow-up is needed. The next step is Booking Handoff.
+                This usually means the group has booking-handoff data that the Planning page could not summarize safely.
+                Use Booking Handoff for this group, or go back to Coordination Groups.
             </p>
-            <p style="margin-bottom: 0;">
+
+            <p>
+                <strong>Technical detail:</strong><br>
+                {error_text}
+            </p>
+
+            <p>
                 <a href="/coordination-group/{group_id}/handoff"
-                   style="display: inline-block; background-color: #198754; color: white; padding: 8px 12px; border-radius: 5px; text-decoration: none; font-weight: bold;">
-                    Go to Booking Handoff Page
+                   style="font-weight:bold;">
+                    Open Booking Handoff
+                </a>
+                |
+                <a href="/coordination-groups"
+                   style="font-weight:bold;">
+                    Back to Coordination Groups
                 </a>
             </p>
         </div>
         """
-
-    capacity_dashboard_html = ""
-
-    try:
-        requested_rooms = 0
-        capacity_rows = ""
-
-        for member_row in members:
-            member_rooms = row_value(member_row, "rooms_requested") or 1
-
-            try:
-                member_rooms = int(member_rooms)
-            except Exception:
-                member_rooms = 1
-
-            requested_rooms += member_rooms
-
-            capacity_rows += f"""
-            <tr>
-                <td>{safe_text(member_row['primary_name'])}</td>
-                <td align="center">{member_rooms}</td>
-            </tr>
-            """
-
-        available_rooms = total_rooms_for_matching
-
-        try:
-            available_rooms = int(available_rooms)
-        except Exception:
-            available_rooms = 0
-
-        room_delta = requested_rooms - available_rooms
-
-        capacity_dashboard_html = f"""
-        <div class="coord-card" style="background:#fff8e1; border:2px solid #fd7e14;">
-            <h2>Capacity Status</h2>
-
-            <p style="margin-top:0;">
-                <strong>Rooms Requested:</strong> {requested_rooms}<br>
-                <strong>Rooms Available:</strong> {available_rooms}<br>
-                <strong>Difference:</strong> {room_delta:+}
-            </p>
-
-            <table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse; max-width:420px;">
-                <tr style="background:#f5f5f5;">
-                    <th align="left">Guest</th>
-                    <th align="center">Rooms</th>
-                </tr>
-                {capacity_rows}
-            </table>
-
-            <p style="margin-bottom:0;">
-                If Difference is positive, reduce rooms, split the group, choose different dates, or start another round.
-            </p>
-        </div>
-        """
-
-    except Exception:
-        capacity_dashboard_html = ""
-
-    html = nav_links() + f"""
-    <style>
-        .coord-card {{
-            border: 1px solid #dee2e6;
-            border-radius: 10px;
-            padding: 12px;
-            margin-bottom: 14px;
-            max-width: 1080px;
-            background: #ffffff;
-        }}
-        .coord-card h2 {{
-            margin: 0 0 8px 0;
-            font-size: 20px;
-        }}
-        .coord-card h3 {{
-            margin: 8px 0 6px 0;
-        }}
-        .coord-muted {{
-            color: #555;
-            font-size: 13px;
-        }}
-        .coord-mini-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-            gap: 8px;
-            margin: 8px 0;
-        }}
-        .coord-mini-stat {{
-            background:#f8f9fa;
-            border:1px solid #e5e7eb;
-            border-radius:8px;
-            padding:8px;
-            font-size:13px;
-        }}
-        .coord-mini-stat strong {{
-            display:block;
-            font-size:17px;
-            color:#0f4c81;
-        }}
-        details.coord-collapse {{
-            margin-top: 8px;
-        }}
-        details.coord-collapse summary {{
-            cursor:pointer;
-            font-weight:bold;
-            color:#0f4c81;
-        }}
-    </style>
-
-    <h1>{safe_text(group['title'])} — Planning</h1>
-
-    <div class="coord-card" style="background:#f8f9fa;">
-        <strong>Coordination Pages:</strong>
-        <a href="/coordination-group/{group_id}" style="font-weight:bold; margin-left:8px;">Planning Page</a>
-        |
-        <a href="/coordination-group/{group_id}/handoff" style="font-weight:bold;">Booking Handoff Page</a>
-        <br>
-        <small class="coord-muted">Planning is for finding dates. Booking Handoff is for confirmations, booking requests, room assignments, and approvals.</small>
-    </div>
-
-    {planning_workflow_html}
-
-    <div class="coord-card">
-        <h2>Group Setup</h2>
-
-        <div class="coord-mini-grid">
-            <div class="coord-mini-stat"><strong>{safe_text(group['status'])}</strong>Status</div>
-            <div class="coord-mini-stat"><strong>{len(members)}</strong>Members</div>
-            <div class="coord-mini-stat"><strong>{responded_count}</strong>Responded</div>
-            <div class="coord-mini-stat"><strong>Round {current_round}</strong>Current Round</div>
-        </div>
-
-        <p class="coord-muted" style="margin-bottom:8px;">
-            Target Year: {safe_text(group['target_year'])} |
-            Created: {safe_text(group['created_at'])[:10]}
-        </p>
-
-        <div style="background:#f8fbff; border:1px solid #d8e6f3; padding:8px; border-radius:8px; margin-bottom:10px;">
-            {safe_text(group['description'])}
-        </div>
-
-        {organizer_formation_html}
-
-        <details class="coord-collapse">
-            <summary>Show submitted date options and waiting list</summary>
-            <p>
-                <strong>Waiting On:</strong><br>
-                {not_responded_html}
-            </p>
-            {date_options_summary_html}
-        </details>
-    </div>
-
-    <div class="coord-card" id="best-match-suggestions" style="background:#eef7ee;">
-        <h2>Date Coordination</h2>
-
-        <div class="coord-mini-grid">
-            <div class="coord-mini-stat"><strong>{tentative_confirmed_count}</strong>Confirmed Works</div>
-            <div class="coord-mini-stat"><strong>{tentative_cannot_count}</strong>Cannot Make</div>
-            <div class="coord-mini-stat"><strong>{tentative_discussion_count}</strong>Need Different Dates</div>
-            <div class="coord-mini-stat"><strong>{tentative_no_response_count}</strong>No Response</div>
-        </div>
-
-        <h3>Current Tentative Dates</h3>
-        {tentative_dates_html}
-
-        <h3>System Overlap / Best Match</h3>
-        <p class="coord-muted">Use this section to compare submitted preferred and alternate dates, then select or adjust tentative dates.</p>
-
-        {intersection_suggestions_html}
-
-        {phase4_admin_override_html}
-
-        <details class="coord-collapse">
-            <summary>Show additional best-match detail</summary>
-            {match_suggestions_html}
-        </details>
-    </div>
-
-    {capacity_dashboard_html}
-
-    <div class="coord-card">
-        <h2>Issues / Exceptions</h2>
-        <p>
-            <strong>Waiting On:</strong> {len(not_responded_names)} guest(s)<br>
-            <strong>Cannot Make Tentative Dates:</strong> {tentative_cannot_count}<br>
-            <strong>Need Different Dates / Comments:</strong> {tentative_discussion_count}
-        </p>
-        <p class="coord-muted">Use this as the quick scan area. If everything is zero, move toward Booking Handoff.</p>
-    </div>
-
-    <div class="coord-card" style="background:#fff3cd; border-color:#fd7e14;">
-        <h2>Capacity Review / Over-Room Request</h2>
-        <p style="margin-top:0;">
-            If this round is requesting more rooms than are available, pause here before sending more guest emails.
-        </p>
-        <ol style="margin-top:4px; line-height:1.35;">
-            <li>Review each guest's room count in the Group Members table.</li>
-            <li>Ask the organizer which rooms can be reduced, combined, split, or moved to different dates.</li>
-            <li>After resolving, start/send another round or continue to Booking Handoff.</li>
-        </ol>
-        <p class="coord-muted" style="margin-bottom:0;">
-            If status is <strong>capacity_review</strong>, this is the next action area.
-        </p>
-    </div>
-
-    <div class="coord-card">
-        <h2>Round History / Testing Visibility</h2>
-        <div class="coord-mini-grid">
-            <div class="coord-mini-stat"><strong>Round {current_round}</strong>Active Round</div>
-            <div class="coord-mini-stat"><strong>{invitation_sent_count}</strong>Emails Sent</div>
-            <div class="coord-mini-stat"><strong>{responded_count}</strong>Responses</div>
-            <div class="coord-mini-stat"><strong>{len(created_booking_request_rows)}</strong>Booking Requests</div>
-        </div>
-        <p class="coord-muted" style="margin-bottom:0;">
-            Round numbering is display-only in this version. Use it to test multi-round coordination without changing booking logic.
-        </p>
-    </div>
-
-    <div class="coord-card" style="background:#fff8e6;">
-        <h2>Booking / Closeout</h2>
-        <p style="margin-top:0;">
-            Once guests confirm tentative dates, continue to Booking Handoff for booking requests, room assignment, approval emails, final confirmation, and closing.
-        </p>
-        <p>
-            <a href="/coordination-group/{group_id}/handoff" style="font-weight:bold;">Open Booking Handoff Page</a>
-        </p>
-    </div>
-
-    <div class="coord-card" style="background:#fff3cd; font-size:13px;">
-        <strong>Admin Cleanup:</strong>
-        <a href="/coordination-group/{group_id}/delete" style="color:#842029; font-weight:bold; margin-left:8px;">Delete Coordination Process</a>
-        <br>
-        <small>Deletes the planning/coordination process only. Guest profiles are never deleted. Confirmed bookings block deletion.</small>
-    </div>
-
-    <h2>Group Members</h2>
-
-    <div style="background:#eef5ff; border:1px solid #b6d4fe; border-radius:8px; padding:10px; max-width:760px; margin-bottom:10px; font-size:13px;">
-        <strong>Coordination Roles:</strong><br>
-        <strong>Organizer</strong> = main planning contact / helps suggest group dates.<br>
-        <strong>Participant</strong> = guest submitting availability for the group.
-    </div>
-
-    <details class="coord-collapse" open>
-        <summary>Add / review group members</summary>
-
-    <div style="
-        border: 1px solid #dee2e6;
-        background-color: #f8f9fa;
-        padding: 10px;
-        margin-bottom: 12px;
-        border-radius: 8px;
-        max-width: 760px;
-    ">
-        <h3 style="
-            margin-top: 0;
-        ">
-            Add Guest Profile to Group
-        </h3>
-    """
-
-    if not available_profiles:
-
-        html += """
-        <p>
-            No available guest profiles found to add.
-        </p>
-        """
-
-    else:
-
-        html += f"""
-        <form method="POST"
-              action="/coordination-group/{group_id}/add-member">
-
-            <label>
-                <strong>Guest Profile</strong>
-            </label><br>
-
-            <select name="guest_profile_id"
-                    required
-                    style="width: 420px;">
-        """
-
-        for profile in available_profiles:
-
-            html += f"""
-                <option value="{profile['id']}">
-                    {safe_text(profile['primary_name'])} — {safe_text(profile['primary_email'])} ({safe_text(profile['status'])})
-                </option>
-            """
-
-        html += """
-            </select>
-
-            <br>
-
-            <label>
-                <strong>Role</strong>
-            </label><br>
-
-            <select name="role">
-                <option value="participant">Participant</option>
-                <option value="organizer">Organizer</option>
-            </select>
-
-            <br>
-
-            <button type="submit">
-                Add Guest to Group
-            </button>
-
-        </form>
-        """
-
-    html += """
-    </div>
-    """
-
-    if not members:
-
-        html += """
-        <p>
-            No guest profiles have been added yet.
-        </p>
-
-        <p>
-            Add existing guest profiles above. Next V10 step after this
-            is generating group request links.
-        </p>
-        """
-
-    else:
-
-        html += """
-        <table border="1"
-               cellpadding="5"
-               cellspacing="0"
-               style="
-                   border-collapse: collapse;
-                   width: 100%;
-                   font-size: 13px;
-               ">
-
-            <tr style="background-color: #f5f5f5;">
-                <th align="left">Guest</th>
-                <th align="left">Email</th>
-                <th align="left">Role</th>
-                <th align="left">Invitation Status</th>
-                <th align="left">Last Response</th>
-                <th align="center">Rooms</th>
-                <th align="center">Date Options</th>
-                <th align="left">Request Link</th>
-                <th align="left">Profile</th>
-            </tr>
-        """
-
-        for member in members:
-
-            html += f"""
-            <tr>
-                <td>{safe_text(member['primary_name'])}</td>
-                <td>{safe_text(member['primary_email'])}</td>
-                <td>{coordination_role_badge(member['role'])}</td>
-                <td>{safe_text(member['invitation_status'])}</td>
-                <td>{safe_text(member['last_response_at'])}</td>
-                <td align="center">{safe_text(row_value(member, 'rooms_requested')) or '1'}</td>
-                <td align="center">{member['date_option_count']}</td>
-                <td>
-                    <a href="/coordination-group-member/{coordination_member_row_id(member)}/request">
-                        Open Request Page
-                    </a>
-                </td>
-                <td>
-                    <a href="/profile/{member['guest_profile_id']}">
-                        View
-                    </a>
-                </td>
-            </tr>
-            """
-
-        html += "</table>"
-
-    html += f"""
-    </details>
-
-    <p>
-        <a href="/coordination-groups">
-            Back to Coordination Groups
-        </a>
-    </p>
-    """
-
-    return html
-
-
 
 
 
