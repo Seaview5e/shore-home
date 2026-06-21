@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V34_0"
+    "app_V34_1"
 )
 
 BASE_URL = os.environ.get(
@@ -20837,56 +20837,109 @@ def coordination_group_detail(group_id):
         group_id,
     )).fetchall()
 
-    created_booking_request_rows = conn.execute("""
-        SELECT
-            coordination_group_members.id AS member_id,
-            coordination_group_members.converted_request_id,
-            guest_profiles.primary_name,
-            guest_profiles.primary_email,
-            booking_requests.status AS request_status,
-            booking_requests.email_status,
-            booking_requests.email_needed_type,
-            booking_requests.additional_names,
-            booking_requests.arrival_date,
-            booking_requests.departure_date,
-            booking_requests.rooms_requested,
-            COUNT(bookings.id) AS approved_booking_count,
-            GROUP_CONCAT(rooms.name, ', ') AS approved_room_names
-        FROM coordination_group_members
+    try:
+        created_booking_request_rows = conn.execute("""
+            SELECT
+                coordination_group_members.id AS member_id,
+                coordination_group_members.converted_request_id,
+                guest_profiles.primary_name,
+                guest_profiles.primary_email,
+                booking_requests.status AS request_status,
+                booking_requests.email_status,
+                booking_requests.email_needed_type,
+                booking_requests.additional_names,
+                booking_requests.arrival_date,
+                booking_requests.departure_date,
+                booking_requests.rooms_requested,
+                COUNT(bookings.id) AS approved_booking_count,
+                GROUP_CONCAT(rooms.name, ', ') AS approved_room_names
+            FROM coordination_group_members
 
-        JOIN guest_profiles
-            ON coordination_group_members.guest_profile_id = guest_profiles.id
+            JOIN guest_profiles
+                ON coordination_group_members.guest_profile_id = guest_profiles.id
 
-        LEFT JOIN booking_requests
-            ON coordination_group_members.converted_request_id = booking_requests.id
+            LEFT JOIN booking_requests
+                ON coordination_group_members.converted_request_id = booking_requests.id
 
-        LEFT JOIN bookings
-            ON booking_requests.id = bookings.request_id
-           AND bookings.status = 'approved'
+            LEFT JOIN bookings
+                ON booking_requests.id = bookings.request_id
+               AND bookings.status = 'approved'
 
-        LEFT JOIN rooms
-            ON bookings.room_id = rooms.id
+            LEFT JOIN rooms
+                ON bookings.room_id = rooms.id
 
-        WHERE coordination_group_members.coordination_group_id = ?
-          AND coordination_group_members.converted_request_id IS NOT NULL
+            WHERE coordination_group_members.coordination_group_id = ?
+              AND coordination_group_members.converted_request_id IS NOT NULL
 
-        GROUP BY
-            coordination_group_members.id,
-            coordination_group_members.converted_request_id,
-            guest_profiles.primary_name,
-            guest_profiles.primary_email,
-            booking_requests.status,
-            booking_requests.email_status,
-            booking_requests.email_needed_type,
-            booking_requests.additional_names,
-            booking_requests.arrival_date,
-            booking_requests.departure_date,
-            booking_requests.rooms_requested
+            GROUP BY
+                coordination_group_members.id,
+                coordination_group_members.converted_request_id,
+                guest_profiles.primary_name,
+                guest_profiles.primary_email,
+                booking_requests.status,
+                booking_requests.email_status,
+                booking_requests.email_needed_type,
+                booking_requests.additional_names,
+                booking_requests.arrival_date,
+                booking_requests.departure_date,
+                booking_requests.rooms_requested
 
-        ORDER BY guest_profiles.primary_name
-    """, (
-        group_id,
-    )).fetchall()
+            ORDER BY guest_profiles.primary_name
+        """, (
+            group_id,
+        )).fetchall()
+
+    except Exception:
+        # Fallback for live databases missing newer email-status columns.
+        # Keeps the Planning/View page loading after Booking Handoff.
+        created_booking_request_rows = conn.execute("""
+            SELECT
+                coordination_group_members.id AS member_id,
+                coordination_group_members.converted_request_id,
+                guest_profiles.primary_name,
+                guest_profiles.primary_email,
+                booking_requests.status AS request_status,
+                '' AS email_status,
+                '' AS email_needed_type,
+                booking_requests.additional_names,
+                booking_requests.arrival_date,
+                booking_requests.departure_date,
+                booking_requests.rooms_requested,
+                COUNT(bookings.id) AS approved_booking_count,
+                GROUP_CONCAT(rooms.name, ', ') AS approved_room_names
+            FROM coordination_group_members
+
+            JOIN guest_profiles
+                ON coordination_group_members.guest_profile_id = guest_profiles.id
+
+            LEFT JOIN booking_requests
+                ON coordination_group_members.converted_request_id = booking_requests.id
+
+            LEFT JOIN bookings
+                ON booking_requests.id = bookings.request_id
+               AND bookings.status = 'approved'
+
+            LEFT JOIN rooms
+                ON bookings.room_id = rooms.id
+
+            WHERE coordination_group_members.coordination_group_id = ?
+              AND coordination_group_members.converted_request_id IS NOT NULL
+
+            GROUP BY
+                coordination_group_members.id,
+                coordination_group_members.converted_request_id,
+                guest_profiles.primary_name,
+                guest_profiles.primary_email,
+                booking_requests.status,
+                booking_requests.additional_names,
+                booking_requests.arrival_date,
+                booking_requests.departure_date,
+                booking_requests.rooms_requested
+
+            ORDER BY guest_profiles.primary_name
+        """, (
+            group_id,
+        )).fetchall()
 
     conn.commit()
     conn.close()
@@ -21690,18 +21743,18 @@ def coordination_group_detail(group_id):
 
             room_assignment_display = "Not assigned yet"
 
-            if created_request["approved_room_names"]:
+            if row_value(created_request, "approved_room_names"):
                 room_assignment_display = safe_text(
-                    created_request["approved_room_names"]
+                    row_value(created_request, "approved_room_names")
                 )
 
             request_status_display_text = safe_text(
-                created_request["request_status"]
+                row_value(created_request, "request_status")
             )
 
             row_background = "#fff3cd"
 
-            if request_status_display_text == "approved" and created_request["approved_booking_count"] > 0:
+            if request_status_display_text == "approved" and (row_value(created_request, "approved_booking_count") or 0) > 0:
                 row_background = "#e8f7ea"
 
             created_booking_requests_html += f"""
@@ -21722,7 +21775,7 @@ def coordination_group_detail(group_id):
                     {safe_text(created_request['rooms_requested'])}
                 </td>
                 <td>{request_status_display_text}</td>
-                <td>{email_status_display(created_request['email_status'], created_request['email_needed_type'], created_request['converted_request_id'])}</td>
+                <td>{email_status_display(row_value(created_request, "email_status"), row_value(created_request, "email_needed_type"), row_value(created_request, "converted_request_id"))}</td>
                 <td>{room_assignment_display}</td>
                 <td>
                     <a href="/room-assignments">
