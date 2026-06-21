@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V33_25"
+    "app_V33_26_1"
 )
 
 BASE_URL = os.environ.get(
@@ -4368,6 +4368,21 @@ def ensure_coordination_tables(conn):
         try:
             conn.execute(
                 f"ALTER TABLE coordination_group_members ADD COLUMN {column_definition}"
+            )
+        except:
+            pass
+
+    coordination_date_option_columns = [
+        "rooms_requested INTEGER DEFAULT 1",
+        "notes TEXT",
+        "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+    ]
+
+    for column_definition in coordination_date_option_columns:
+
+        try:
+            conn.execute(
+                f"ALTER TABLE coordination_date_options ADD COLUMN {column_definition}"
             )
         except:
             pass
@@ -20688,25 +20703,46 @@ def coordination_group_detail(group_id):
         </p>
         """
 
-    members = conn.execute("""
-        SELECT
-            coordination_group_members.*,
-            guest_profiles.primary_name,
-            guest_profiles.primary_email,
-            COUNT(coordination_date_options.id) AS date_option_count,
-            MAX(COALESCE(coordination_date_options.rooms_requested, 1)) AS rooms_requested
-        FROM coordination_group_members
-        JOIN guest_profiles
-            ON coordination_group_members.guest_profile_id = guest_profiles.id
-        LEFT JOIN coordination_date_options
-            ON coordination_group_members.id = coordination_date_options.coordination_group_member_id
-        WHERE coordination_group_members.coordination_group_id = ?
-        GROUP BY coordination_group_members.id
-        ORDER BY
-            guest_profiles.primary_name
-    """, (
-        group_id,
-    )).fetchall()
+    try:
+        members = conn.execute("""
+            SELECT
+                coordination_group_members.*,
+                guest_profiles.primary_name,
+                guest_profiles.primary_email,
+                COUNT(coordination_date_options.id) AS date_option_count,
+                MAX(COALESCE(coordination_date_options.rooms_requested, 1)) AS rooms_requested
+            FROM coordination_group_members
+            JOIN guest_profiles
+                ON coordination_group_members.guest_profile_id = guest_profiles.id
+            LEFT JOIN coordination_date_options
+                ON coordination_group_members.id = coordination_date_options.coordination_group_member_id
+            WHERE coordination_group_members.coordination_group_id = ?
+            GROUP BY coordination_group_members.id
+            ORDER BY
+                guest_profiles.primary_name
+        """, (
+            group_id,
+        )).fetchall()
+    except Exception:
+        members = conn.execute("""
+            SELECT
+                coordination_group_members.*,
+                guest_profiles.primary_name,
+                guest_profiles.primary_email,
+                COUNT(coordination_date_options.id) AS date_option_count,
+                1 AS rooms_requested
+            FROM coordination_group_members
+            JOIN guest_profiles
+                ON coordination_group_members.guest_profile_id = guest_profiles.id
+            LEFT JOIN coordination_date_options
+                ON coordination_group_members.id = coordination_date_options.coordination_group_member_id
+            WHERE coordination_group_members.coordination_group_id = ?
+            GROUP BY coordination_group_members.id
+            ORDER BY
+                guest_profiles.primary_name
+        """, (
+            group_id,
+        )).fetchall()
 
     available_profiles = conn.execute("""
         SELECT
@@ -23886,7 +23922,11 @@ def coordination_group_email_preview(group_id):
 
     suggestion_text = "\n\n".join(suggestion_lines)
 
-    organizer_info = get_coordination_organizer_info(conn, group_id)
+    organizer_conn = get_db_connection()
+    ensure_coordination_tables(organizer_conn)
+    organizer_info = get_coordination_organizer_info(organizer_conn, group_id)
+    organizer_conn.close()
+
     organizer_email_display = ""
     if organizer_info["email"]:
         organizer_email_display = "<" + organizer_info["email"] + ">"
@@ -24555,7 +24595,11 @@ def coordination_group_send_update_email(group_id):
 
     suggestion_text = "\n\n".join(suggestion_lines)
 
-    organizer_info = get_coordination_organizer_info(conn, group_id)
+    organizer_conn = get_db_connection()
+    ensure_coordination_tables(organizer_conn)
+    organizer_info = get_coordination_organizer_info(organizer_conn, group_id)
+    organizer_conn.close()
+
     organizer_email_display = ""
     if organizer_info["email"]:
         organizer_email_display = "<" + organizer_info["email"] + ">"
@@ -25555,6 +25599,18 @@ def coordination_group_member_request(member_id):
         ">
             {calendar_html}
 
+            <div style="border:1px solid #dee2e6; background:#f8f9fa; border-radius:6px; padding:6px; margin:8px 0 0 0; font-size:13px;">
+                <h3 style="margin:0 0 4px 0; font-size:14px;">Previous Approved Stays</h3>
+                {previous_html}
+            </div>
+
+            <div style="border:1px solid #dee2e6; background:#f8f9fa; border-radius:6px; padding:6px; margin:8px 0 0 0; font-size:13px;">
+                <h3 style="margin:0 0 4px 0; font-size:14px;">Guest / Room Notes</h3>
+                <p style="margin: 3px 0;"><strong>Additional Guests for Your Room(s):</strong><br>{safe_text(member['additional_names'])}</p>
+                <p style="margin: 3px 0;"><strong>Pets:</strong><br>{safe_text(member['pet_notes'])}</p>
+                <p style="margin: 3px 0;"><strong>Food Preferences:</strong><br>{safe_text(member['food_notes'])}</p>
+            </div>
+
         </div>
 
         <div style="
@@ -25564,13 +25620,7 @@ def coordination_group_member_request(member_id):
             border-radius: 8px;
             font-size: 13px;
         ">
-            <h2 style="
-                margin: 0 0 6px 0;
-                font-size: 16px;
-                font-weight: bold;
-            ">
-                Your Selection / Save Dates
-            </h2>
+            <h2 style="margin:0 0 4px 0; font-size:16px; font-weight:bold;">Your Selection / Save Dates</h2>
 
             <form method="POST"
                   action="/coordination-group-member/{member_id}/cannot-change-dates"
@@ -25599,30 +25649,6 @@ def coordination_group_member_request(member_id):
                 </button>
             </form>
 
-            <div style="border:1px solid #dee2e6; background:#f8f9fa; border-radius:6px; padding:6px; margin:6px 0;">
-                <h3 style="margin:0 0 4px 0; font-size:14px;">Previous Approved Stays</h3>
-                {previous_html}
-            </div>
-
-            <div style="border:1px solid #dee2e6; background:#f8f9fa; border-radius:6px; padding:6px; margin:6px 0;">
-            <h3 style="margin:0 0 4px 0; font-size:14px;">Guest / Room Notes</h3>
-
-            <p style="margin: 4px 0;">
-                <strong>Additional Guests for Your Room(s):</strong><br>
-                {safe_text(member['additional_names'])}
-            </p>
-
-            <p style="margin: 4px 0;">
-                <strong>Pets:</strong><br>
-                {safe_text(member['pet_notes'])}
-            </p>
-
-            <p style="margin: 4px 0;">
-                <strong>Food Preferences:</strong><br>
-                {safe_text(member['food_notes'])}
-            </p>
-            </div>
-
                         <div style="
                             border: 1px solid #dee2e6;
                             background-color: #f8f9fa;
@@ -25646,18 +25672,8 @@ def coordination_group_member_request(member_id):
                                   action="/coordination-group-member/{member_id}/date-options"
                                   onsubmit="return validateGroupRoomCapacity();">
             
-                                <div style="
-                                    background-color: #fff3cd;
-                                    border: 1px solid #fd7e14;
-                                    padding: 6px;
-                                    border-radius: 6px;
-                                    margin-bottom: 6px;
-                                    font-size: 13px;
-                                    font-weight: bold;
-                                    white-space: normal;
-                                    overflow-wrap: anywhere;
-                                ">
-                                    Choose what the calendar click should fill: preferred arrival, preferred departure, alternate arrival, or alternate departure.
+                                <div style="background-color:#fff3cd; border:1px solid #fd7e14; padding:4px 6px; border-radius:6px; margin-bottom:5px; font-size:13px; font-weight:bold;">
+                                    Choose what the next calendar click should fill.
                                 </div>
             
                                 <div style="
