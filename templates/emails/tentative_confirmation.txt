@@ -8,9 +8,10 @@ Take a quick look and use this link to let us know if any of these work for you:
 
 {{ request_link }}
 
-With a little luck (and enough calendar magic), we’ll find a match.
+Once this works we will be able to go back and adjust your non-overlap dates for earlier and/or later departures. With a little luck (and enough calendar magic), we’ll find a match.
 
 Thanks!
 
 John & Mark
+Strathmere Visit Request System
 302-521-5401
