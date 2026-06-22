@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V35_2_3"
+    "app_V35_2_4"
 )
 
 BASE_URL = os.environ.get(
@@ -311,7 +311,7 @@ EMAIL_TEMPLATE_METADATA = {
         "notes": "Sent to guests whose dates do not overlap with a possible group option."
     },
     "tentative_group_dates": {
-        "name": "Tentative Round Dates Email",
+        "name": "Tentative Dates That May Work for Everyone Email",
         "version": "1.0",
         "last_updated": "2026-06-18",
         "updated_by": "John",
@@ -550,7 +550,7 @@ Change / Review Dates:
 Cancel / Cannot Make These Dates:
 {{ request_link }}
 
-Request a Visit:
+Request Another Visit:
 {{ base_url }}
 
 Thanks!
@@ -701,7 +701,7 @@ Pets:
 Need to change or cancel this visit?
 Change request: {{ change_link }}
 Cancel request: {{ cancel_link }}
-New request: {{ new_request_link }}
+Request another visit: {{ new_request_link }}
 
 If anything does not look right, just reply to this email.
 
@@ -1172,9 +1172,9 @@ def plain_text_to_html_email(subject, body):
         "Cancel Visit:",
         "Cancel Request:",
         "All Reservations:",
-        "Request a Visit:",
-        "Request a Visit:",
-        "Request a Visit:",
+        "Request Another Visit:",
+        "Request Another Visit:",
+        "Request Another Visit:",
         "Change / Review Dates:",
         "Cancel / Cannot Make These Dates:",
         "Open Group:",
@@ -3926,7 +3926,7 @@ Need to make a change?
 Change Request:
 {change_url}
 {cancel_block}
-Request a Visit:
+Request Another Visit:
 {repeat_visit_url}
 
 All Reservations:
@@ -5914,7 +5914,7 @@ def dashboard():
     action_needed_rows += dashboard_action_row(
         "Pending Requests",
         len(pending_requests),
-        "New requests waiting for review, room assignment, approval, or decline.",
+        "Request another visits waiting for review, room assignment, approval, or decline.",
         "/requests",
         "Review Requests",
         "warning" if len(pending_requests) > 0 else "normal"
@@ -8889,7 +8889,7 @@ def invite_request(invitation_id):
     return f"""
     {nav_links()}
 
-    <h1>Request a Visit</h1>
+    <h1>Request Another Visit</h1>
 
     <div style="
         display: flex;
@@ -9822,7 +9822,7 @@ def submit():
     conn.close()
 
     notify_admin(
-        "New request submitted",
+        "Request another visit submitted",
         f"Guest: {safe_text(name)}\nArrival: {format_date(arrival)}\nDeparture: {format_date(departure)}\nRooms: {rooms_requested}",
         f"/request/{new_request_id}"
     )
@@ -19098,7 +19098,7 @@ def change_request_bad_link(request_id):
 
     <p>Use the new request link from the email, or reply to the email and I’ll help fix it.</p>
 
-    <p><a href="/">Request a Visit</a></p>
+    <p><a href="/">Request Another Visit</a></p>
     """
 
 
@@ -21113,7 +21113,7 @@ def coordination_group_detail(group_id):
                 max-width: 720px;
             ">
                 <h3 style="margin-top: 0;">
-                    Tentative Round Dates
+                    Tentative Dates That May Work for Everyone
                 </h3>
 
                 <p style="font-size: 16px; margin-bottom: 4px;">
@@ -22627,7 +22627,7 @@ def coordination_group_detail(group_id):
             room_delta = requested_rooms - available_rooms
 
             if room_delta > 0 or safe_text(group["status"]) == "capacity_review":
-                next_recommended_action = "Review Capacity"
+                next_recommended_action = "Review Date / Capacity Overlap"
             elif not members:
                 next_recommended_action = "Invite Guests"
             elif not_responded_names:
@@ -22649,7 +22649,7 @@ def coordination_group_detail(group_id):
                 <h2>Next Recommended Action</h2>
                 {next_action_box("Invite Guests")}
                 {next_action_box("Waiting Responses")}
-                {next_action_box("Review Capacity")}
+                {next_action_box("Review Date / Capacity Overlap")}
                 {next_action_box("Set Tentative Dates")}
                 {next_action_box("Booking Handoff")}
                 {next_action_box("Close Group")}
@@ -22668,7 +22668,7 @@ def coordination_group_detail(group_id):
                     <strong>Difference:</strong> {room_delta:+}
                 </p>
 
-                <h3>Preferred Dates</h3>
+                <h3>Your Current Preferred Dates</h3>
                 <table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:13px;">
                     <tr style="background:#f5f5f5;">
                         <th align="left">Guest</th>
@@ -23578,7 +23578,7 @@ def coordination_group_handoff(group_id):
                             border-radius: 5px;
                             font-weight: bold;
                         ">
-                    Send Tentative Round Dates Emails
+                    Send Tentative Dates That May Work for Everyone Emails
                 </button>
             </form>
             <small style="color: #666;">
@@ -25420,7 +25420,10 @@ def coordination_group_member_request(member_id):
                 cursor: {cursor};
                 padding: 2px;
             " title="{display_line_1} {display_line_2}">
-            <strong>{day}</strong>
+            <strong>{day}</strong><br>
+            <span style="font-size: 9px; font-weight: normal; line-height: 1.05;">
+                {str(rooms_open) + " ROOM" + ("" if rooms_open == 1 else "S") + " OPEN" if (not past_date and current_date_str not in blocked_dates and rooms_open > 0) else ("FULL" if (not past_date and current_date_str not in blocked_dates and rooms_open <= 0) else "")}
+            </span>
         </td>
         """
 
@@ -25899,7 +25902,7 @@ def coordination_group_member_request(member_id):
         max-width: 1100px;
     ">
         <h2 style="margin: 0 0 2px 0; font-size: 15px;">
-            Tentative Round Dates
+            Tentative Dates That May Work for Everyone
         </h2>
 
         {tentative_member_block}
@@ -25914,11 +25917,11 @@ def coordination_group_member_request(member_id):
         max-width: 1100px;
     ">
         <h2 style="margin: 0 0 3px 0; font-size: 17px;">
-            Suggested Round Dates
+            Suggested Dates Based on Other Guest Responses
         </h2>
 
         <p style="margin: 0 0 5px 0; font-size: 13px; line-height: 1.25;">
-            Current best overlap options. Not confirmed bookings.
+            These dates appear to work best for the group so far. Select one of these dates if it works for you, or choose dates close to these options to improve the chance of everyone being able to visit together. These are not confirmed bookings.
         </p>
 
         {group_overlap_html}
@@ -26097,7 +26100,7 @@ def coordination_group_member_request(member_id):
                                         border-radius: 8px;
                                     ">
                                         <h3 style="margin: 0 0 4px 0;">
-                                            Preferred Dates
+                                            Your Current Preferred Dates
                                         </h3>
             
                                         <label><strong>Preferred Arrival</strong></label><br>
@@ -28538,7 +28541,7 @@ def coordination_group_send_reminders(group_id):
     return f"""
     {nav_links()}
 
-    <h1>Tentative Round Dates Emails Sent</h1>
+    <h1>Tentative Dates That May Work for Everyone Emails Sent</h1>
 
     {email_template_metadata_html("tentative_confirmation")}
 
