@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V35_2_5h"
+    "app_V36_0"
 )
 
 BASE_URL = os.environ.get(
@@ -423,6 +423,22 @@ Looking forward to seeing everyone at the shore!
 John & Mark
 302-521-5401
 """,
+    "cancellation.txt": """Hi {{ guest_name }},
+
+Your Strathmere visit has been cancelled.
+
+Cancelled Visit Details:
+- Arrival: {{ arrival_date }}
+- Departure: {{ departure_date }}
+- Nights: {{ nights }}
+- Rooms: {{ rooms_requested }}
+
+Thanks for letting us know.
+
+John & Mark
+302-521-5401
+""",
+
     "invitation.txt": """Hi {{ guest_name }},
 
 We’d love to invite you to request a visit to Strathmere.
@@ -30380,3 +30396,9 @@ if __name__ == "__main__":
 
 # Banner wording
 CAPACITY_REVIEW_TEXT="⚠ Capacity Needs Your Review"
+
+# ============================================================
+# V36.0 HARDENING RELEASE
+# Production candidate based on V35.2.5h after TC1-TC6 passed.
+# No new workflows. Stability, template consistency, and safety checks only.
+# ============================================================
