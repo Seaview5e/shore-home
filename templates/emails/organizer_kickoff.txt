@@ -19,13 +19,6 @@ After you submit your setup ideas, John and Mark will review everything. Then in
 
 The system will compare responses and try to find overlap before anything becomes a final visit request.
 
-Organizer Planning Link:
-{{ planning_link }}
-Current planning group:
-{{ group_member_text }}
-Current ideas and planning notes so far:
-{{ suggestion_text }}
-
 Thanks for helping get things moving — and for accepting the honorary title of Calendar Wrangler.
 P.S. Email us if you would rather not organize this group and we will send you a Request for Visit for yourself.
 
