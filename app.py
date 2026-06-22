@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V35_2_5e"
+    "app_V35_2_5g"
 )
 
 BASE_URL = os.environ.get(
@@ -25971,9 +25971,13 @@ def coordination_group_member_request(member_id):
             line-height: 1.3;
         ">
             <div style="font-size: 21px; font-weight: bold; color: #856404; margin-bottom: 3px;">
-                ⚠ ACTION NEEDED — Round {safe_text(row_value(member, "current_round")) or "1"}
+                ⚠ ACTION NEEDED {safe_text(row_value(member, "current_round")) or "1"}
             </div>
-            <div>Please review the tentative round dates below and choose whether they work for you.</div>
+            <div><strong>Dates:</strong><br>
+Tentative Dates Posted for Review<br><br>
+<strong>Capacity:</strong><br>
+✓ Capacity OK<br><br>
+Please review the dates below and confirm whether they work for you.</div>
         </div>
         """
 
@@ -26009,7 +26013,7 @@ def coordination_group_member_request(member_id):
             line-height: 1.35;
         ">
             <div style="font-size: 22px; font-weight: bold; color: #856404; margin-bottom: 4px;">
-                ⚠ ACTION NEEDED — Round {safe_text(row_value(member, "current_round")) or "1"}
+                ⚠ ACTION NEEDED {safe_text(row_value(member, "current_round")) or "1"}
             </div>
             <div style="font-size: 16px; font-weight: bold;">
                 Please review the current group date option.
@@ -30366,3 +30370,6 @@ if __name__ == "__main__":
 # - Organizer email cleanup
 
 # V35.2.5b capacity_review email body moved to capacity_review.txt
+
+# Banner wording
+CAPACITY_REVIEW_TEXT="⚠ Capacity Needs Your Review"
