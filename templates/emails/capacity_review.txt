@@ -17,7 +17,7 @@ What we need from you:
 - If you need all bedrooms requested, use Change Visit and request different dates.
 - If dates or bedrooms cannot be adjusted, another coordination round may be needed.
 
-Click below and check Action Needed to see if updates are still required. 
+Click below and check the last column in the "Suggested Dates Based on Other Guest Responses"  to see if updates of capacity is still required. 
 
 Change Visit:
 {{ request_link }}
