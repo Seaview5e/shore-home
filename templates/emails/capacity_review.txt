@@ -1,0 +1,25 @@
+Hi {{ guest_name }},
+
+We are reviewing the group visit request for:
+
+{{ group_name }}
+
+Right now, the group may be requesting more bedrooms than are available for the dates being discussed.
+
+Current group date / bedroom information:
+
+{{ group_summary }}
+
+What we need from you:
+- If you do not need all bedrooms requested, use Change Visit and lower bedrooms.
+- If you need all bedrooms requested, use Change Visit and request different dates.
+- If dates or bedrooms cannot be adjusted, another coordination round may be needed.
+
+Change Visit:
+{{ request_link }}
+
+Nothing is confirmed or declined yet.
+
+Thanks!
+John & Mark
+302-521-5401
