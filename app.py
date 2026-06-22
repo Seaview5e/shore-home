@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V35_2_5g"
+    "app_V35_2_5h"
 )
 
 BASE_URL = os.environ.get(
@@ -25959,25 +25959,32 @@ def coordination_group_member_request(member_id):
     follow_up_dates_work_button = ""
 
     if safe_text(member["tentative_arrival_date"]) and safe_text(member["tentative_departure_date"]) and not follow_up_mode:
+        capacity_status_text = "✓ Capacity OK"
+        action_instruction_text = "Please review the dates below and confirm whether they work for you."
+
+        if safe_text(row_value(member, "status")) == "capacity_review" or safe_text(row_value(member, "group_status")) == "capacity_review" or safe_text(row_value(member, "invitation_status")) == "capacity_review":
+            capacity_status_text = "⚠ Capacity Needs Your Review"
+            action_instruction_text = "Please review the dates and bedrooms below before responding."
+
         follow_up_notice_html = f"""
         <div style="
             border: 2px solid #fd7e14;
             background-color: #fff3cd;
-            padding: 10px 12px;
+            padding: 8px 10px;
             margin-bottom: 6px;
             border-radius: 10px;
             max-width: 1100px;
             font-size: 16px;
-            line-height: 1.3;
+            line-height: 1.2;
         ">
             <div style="font-size: 21px; font-weight: bold; color: #856404; margin-bottom: 3px;">
                 ⚠ ACTION NEEDED {safe_text(row_value(member, "current_round")) or "1"}
             </div>
-            <div><strong>Dates:</strong><br>
-Tentative Dates Posted for Review<br><br>
-<strong>Capacity:</strong><br>
-✓ Capacity OK<br><br>
-Please review the dates below and confirm whether they work for you.</div>
+            <div style="margin:0;">
+                <strong>Dates:</strong> Tentative Dates Posted for Review<br>
+                <strong>Capacity:</strong> {capacity_status_text}<br>
+                {action_instruction_text}
+            </div>
         </div>
         """
 
