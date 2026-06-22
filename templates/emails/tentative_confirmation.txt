@@ -1,6 +1,6 @@
 Hi {{ guest_name }},
 
-Good news — the group found some possible dates that may line up with everyone’s busy and highly coordinated lives:
+Good news — the group found some possible dates that may line up with everyone’s busy and highly coordinated lives: 
 
 {{ tentative_dates }}
 
