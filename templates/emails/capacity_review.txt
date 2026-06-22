@@ -4,9 +4,9 @@ We are reviewing the group visit request for:
 {{ group_name }}
 
 The group may currently be requesting more bedrooms than are available for these dates.
-This email was sent to everyone in the group. 
+This email was sent to everyone in the gro.up. 
 
-Someone may have already updated their request, so changes may no longer be needed.
+Someone may have already updated their request, so changes may no longer be needed. Check the ACTION NEEDED on the Requst Link to see if room changes are still needed
 
 Current group date / bedroom information:
 
@@ -17,7 +17,6 @@ What we need from you:
 - If you need all bedrooms requested, use Change Visit and request different dates.
 - If dates or bedrooms cannot be adjusted, another coordination round may be needed.
 
-Click below and check the last column in the "Suggested Dates Based on Other Guest Responses"  to see if updates of capacity is still required. 
 
 Change Visit:
 {{ request_link }}
