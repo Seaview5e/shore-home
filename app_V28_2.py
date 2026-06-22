@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, render_template, render_template_string
+from flask import Flask, request, redirect, render_template, render_template_string, session, send_from_directory
 from datetime import date, datetime, timedelta
 from database import get_db_connection, DATABASE_FILE
 import smtplib
@@ -8,10 +8,16 @@ import shutil
 import html as html_escape_module
 import logging
 import traceback
+import re
+import hmac
 from werkzeug.exceptions import HTTPException
 
 
 app = Flask(__name__)
+app.secret_key = os.environ.get(
+    "SECRET_KEY",
+    "shore-home-local-dev-key-change-in-production"
+)
 
 # Production hardening: basic file logging.
 os.makedirs("logs", exist_ok=True)
@@ -30,13 +36,51 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V28_2"
+    "app_V35_2_5f"
 )
 
 BASE_URL = os.environ.get(
     "BASE_URL",
     "http://127.0.0.1:5000"
 ).rstrip("/")
+
+
+def standard_new_request_url():
+
+    return BASE_URL.rstrip("/") + "/new-request"
+
+
+def invitation_request_url(invitation_id):
+
+    invitation_id_text = safe_text(invitation_id).strip()
+
+    if invitation_id_text.isdigit():
+        return BASE_URL.rstrip("/") + "/invite/" + invitation_id_text
+
+    return standard_new_request_url()
+
+
+def repeat_visit_request_url_for_row(request_row):
+
+    if not request_row:
+        return standard_new_request_url()
+
+    invitation_id = row_value(
+        request_row,
+        "invitation_id"
+    )
+
+    return invitation_request_url(invitation_id)
+
+
+def organizer_planning_url(member_id):
+
+    member_id_text = safe_text(member_id).strip()
+
+    if member_id_text.isdigit():
+        return BASE_URL.rstrip("/") + "/coordination-group-member/" + member_id_text + "/organizer-planning"
+
+    return BASE_URL.rstrip("/") + "/coordination-groups"
 
 EMAIL_ADDRESS = os.environ.get(
     "EMAIL_ADDRESS",
@@ -63,6 +107,18 @@ ADMIN_NOTIFICATIONS_ENABLED = os.environ.get(
     "1"
 ).strip().lower() not in ["0", "false", "no", "off"]
 
+ADMIN_USERNAME = os.environ.get(
+    "ADMIN_USERNAME",
+    "admin"
+)
+
+ADMIN_PASSWORD = os.environ.get(
+    "ADMIN_PASSWORD",
+    ""
+)
+
+ADMIN_AUTH_ENABLED = bool(ADMIN_PASSWORD)
+
 print("APP VERSION:", APP_VERSION)
 print("DATABASE FILE:", DATABASE_FILE)
 print("BASE URL:", BASE_URL)
@@ -70,6 +126,7 @@ print("EMAIL ADDRESS:", EMAIL_ADDRESS)
 print("EMAIL PASSWORD CONFIGURED:", bool(EMAIL_APP_PASSWORD))
 print("ADMIN NOTIFICATIONS ENABLED:", ADMIN_NOTIFICATIONS_ENABLED)
 print("ADMIN NOTIFICATION EMAIL:", ADMIN_NOTIFICATION_EMAIL)
+print("ADMIN AUTH ENABLED:", ADMIN_AUTH_ENABLED)
 
 # EMAIL TEMPLATES
 
@@ -88,7 +145,7 @@ Arrival: {arrival_date}
 Departure: {departure_date}
 Length of Stay: {nights} night(s)
 Rooms Requested: {rooms_requested}
-Additional Guests for Your Room(s): {additional_names}
+Confirmed Group Members: {additional_names}
 
 ━━━━━━━━━━━━━━━━━━
 Additional Notes:
@@ -118,20 +175,20 @@ VISIT DETAILS:
 - Rooms: {rooms_requested}
 - Assigned Room(s): {room_list}
 
-Additional Guests for Your Room(s): {additional_names}
+Confirmed Group Members: {additional_names}
 {coordinating_with_section}{optional_admin_message}If anything does not look right, just reply to this email.
 
 Looking forward to seeing everyone at the shore!
 
 Need to make a change?
 
-Change Dates:
+Change Visit:
 {{ change_link }}
 
 Cancel Visit:
 {{ cancel_link }}
 
-Start a New Request:
+Request Another Visit:
 {{ new_request_link }}
 
 John & Mark
@@ -151,7 +208,7 @@ VISIT DETAILS:
 - Assigned Room(s): {room_list}
 (this may still adjust slightly depending on final house planning)
 
-Additional Guests for Your Room(s): {additional_names}
+Confirmed Group Members: {additional_names}
 {coordinating_with_section}{optional_admin_message}If your plans change or you need anything before your visit, just reply to this email.
 
 Looking forward to having everyone down at the shore and hoping for great weather.
@@ -197,6 +254,20 @@ EMAIL_TEMPLATE_METADATA = {
         "updated_by": "John",
         "notes": "Initial guest invitation with request link."
     },
+    "organizer_kickoff": {
+        "name": "Organizer Setup Email",
+        "version": "1.0",
+        "last_updated": "2026-06-16",
+        "updated_by": "John",
+        "notes": "Organizer setup email. Stored in templates/emails/organizer_kickoff.txt."
+    },
+    "organizer_suggestions_admin": {
+        "name": "Organizer Email Sent / Returned Suggestions Admin Alert",
+        "version": "1.0",
+        "last_updated": "2026-06-16",
+        "updated_by": "John",
+        "notes": "Admin alert sent after organizer submits group setup suggestions. Stored in templates/emails/organizer_suggestions_admin.txt."
+    },
     "coordination_invitation": {
         "name": "Coordination Invitation / Update Email",
         "version": "1.0",
@@ -224,12 +295,58 @@ EMAIL_TEMPLATE_METADATA = {
         "last_updated": "2026-05-31",
         "updated_by": "John",
         "notes": "Final coordination confirmation after group dates are accepted."
+    },
+    "profile_welcome": {
+        "name": "Profile Welcome Email",
+        "version": "1.0",
+        "last_updated": "2026-06-17",
+        "updated_by": "John",
+        "notes": "Sent when a new guest profile is created before invitations are sent."
+    },
+    "coordination_unmatched_follow_up": {
+        "name": "Coordination Unmatched Follow-Up Email",
+        "version": "1.0",
+        "last_updated": "2026-06-18",
+        "updated_by": "John",
+        "notes": "Sent to guests whose dates do not overlap with a possible group option."
+    },
+    "tentative_group_dates": {
+        "name": "Tentative Dates That May Work for Everyone Email",
+        "version": "1.0",
+        "last_updated": "2026-06-18",
+        "updated_by": "John",
+        "notes": "Sent when tentative coordination dates need guest confirmation."
+    },
+    "final_group_ready": {
+        "name": "Final Group Ready Email",
+        "version": "1.0",
+        "last_updated": "2026-06-18",
+        "updated_by": "John",
+        "notes": "Sent when all group members confirm tentative dates."
+    },
+    "final_visit_confirmation": {
+        "name": "Final Visit Confirmation Email",
+        "version": "1.0",
+        "last_updated": "2026-06-18",
+        "updated_by": "John",
+        "notes": "Final guest confirmation sent from coordination close/finalize."
+    },
+    "admin_notification": {
+        "name": "Admin Notification Email",
+        "version": "1.0",
+        "last_updated": "2026-06-18",
+        "updated_by": "John",
+        "notes": "Generic admin action notification."
     }
 }
 
 
 
-EMAIL_TEMPLATE_FOLDER = os.path.join("templates", "emails")
+EMAIL_TEMPLATE_FOLDER = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "templates",
+    "emails"
+)
 
 DEFAULT_EMAIL_TEMPLATES = {
     "approval.txt": """Hi {{ guest_name }},
@@ -244,7 +361,7 @@ VISIT DETAILS:
 - Assigned Room(s): {{ room_list }}
 (this may still adjust slightly depending on final house planning)
 
-Additional Guests: {{ additional_names }}
+Confirmed Group Members: {{ additional_names }}
 {{ coordinating_with_section }}{{ optional_admin_message }}If your plans change or you need anything before your visit, just reply to this email.
 
 {{ change_links_section }}
@@ -268,7 +385,7 @@ Arrival: {{ arrival_date }}
 Departure: {{ departure_date }}
 Length of Stay: {{ nights }} night(s)
 Rooms Requested: {{ rooms_requested }}
-Additional Guests: {{ additional_names }}
+Confirmed Group Members: {{ additional_names }}
 
 ━━━━━━━━━━━━━━━━━━
 Additional Notes:
@@ -296,7 +413,7 @@ VISIT DETAILS:
 - Rooms: {{ rooms_requested }}
 - Assigned Room(s): {{ room_list }}
 
-Additional Guests: {{ additional_names }}
+Confirmed Group Members: {{ additional_names }}
 {{ coordinating_with_section }}{{ optional_admin_message }}If anything does not look right, just reply to this email.
 
 {{ change_links_section }}
@@ -308,7 +425,7 @@ John & Mark
 """,
     "invitation.txt": """Hi {{ guest_name }},
 
-{{ message }}
+We’d love to invite you to request a visit to Strathmere.
 
 Please use the request link below to submit your visit request:
 
@@ -321,19 +438,73 @@ Looking forward to hopefully seeing everyone down at the shore.
 John & Mark
 302-521-5401
 """,
+
+    "organizer_kickoff.txt": """Hi {{ guest_name }},
+
+A group visit planning process has started for:
+
+{{ group_title }}
+
+Your role: Organizer
+
+Please use the link below to help set up the group. You can suggest who should be included and one preferred date range to start the planning process.
+
+
+{{ planning_link }}
+
+After you submit this first setup information, John and Mark will review it. Then everyone in the group, including you, will receive individual requests to submit or confirm dates.
+
+Nothing is confirmed or booked yet.
+
+John & Mark
+302-521-5401
+""",
+    "organizer_suggestions_admin.txt": """Organizer email sent / organizer setup returned submitted for {{ group_title }}
+
+Organizer:
+{{ organizer_name }} <{{ organizer_email }}>
+
+Suggested group members:
+{{ suggested_guests }}
+
+Preferred dates to start planning:
+{{ preferred_dates }}
+
+Expected rooms:
+{{ rooms_requested }}
+
+Organizer notes:
+{{ date_notes }}
+
+Admin actions:
+Open Group Planning Page:
+{{ group_link }}
+
+Open Guest Profiles:
+{{ guest_profiles_link }}
+
+Next step: review the suggested people and dates, then add/confirm guest profiles before sending broader coordination invitations.
+""",
     "coordination_invitation.txt": """Hi {{ guest_name }},
 
-We are starting a group date coordination process for {{ group_title }}.
+We are starting a group date coordination process for:
 
-Your role in this group: {{ guest_role }}
+{{ group_title }}
 
-The goal is to collect preferred and alternate dates from everyone, compare overlap, and then propose tentative dates for the group to confirm. Nothing is confirmed or booked yet.
+This visit is being organized by:
+{{ organizer_name }} {{ organizer_email_display }}
+
+Your role in this group:
+{{ guest_role }}
+
+The goal is simple: collect preferred and alternate dates from everyone, compare overlap, and then propose tentative dates for the group to confirm.
+
+Nothing is confirmed or booked yet.
 
 Group members:
 {{ group_member_text }}
 
 Current dates and analysis so far:
-
 {{ suggestion_text }}
 
 Please use your personal link below to submit or update your date options:
@@ -373,13 +544,13 @@ Please use this link to let us know if these dates work for you:
 
 Need to make a change?
 
-Change / Review Dates:
+Change Visit:
 {{ request_link }}
 
 Cancel / Cannot Make These Dates:
 {{ request_link }}
 
-Start a New Request:
+Request Another Visit:
 {{ base_url }}
 
 Thanks!
@@ -397,7 +568,7 @@ VISIT DETAILS:
 - Nights: {{ nights }}
 - Room(s): {{ room_list }}
 
-Additional Guests: {{ additional_names }}
+Confirmed Group Members: {{ additional_names }}
 
 {{ change_links_section }}
 
@@ -449,7 +620,181 @@ Your response has been saved.
 
 You’re all set for now.
 """,
+    "coordination_unmatched_follow_up.txt": """Hi {{ guest_name }},
+
+We found a possible group date for {{ group_title }}:
+
+{{ suggested_dates }}
+
+Right now, your submitted dates do not overlap with this option.
+
+Please use the link below to review your dates. You can add another date option, increase your flexibility, or let us know if these dates will not work.
+
+{{ request_link }}
+
+Thanks!
+
+John & Mark
+Strathmere Visit Request System
+302-521-5401
+""",
+
+        "capacity_review.txt": """Hi {{ guest_name }},
+
+We are reviewing the group visit request for:
+
+{{ group_name }}
+
+{{ capacity_message }}
+
+Current group date / bedroom information:
+
+{{ group_summary }}
+
+Change Visit:
+{{ request_link }}
+
+Nothing is confirmed or declined yet.
+
+Thanks!
+John & Mark
+302-521-5401
+""",
+
+    "tentative_group_dates.txt": """Hi {{ guest_name }},
+
+We are trying to confirm tentative dates for {{ group_title }}.
+
+Tentative dates:
+{{ tentative_dates }}
+
+Response due date:
+{{ due_date }}
+
+Please use your link below to let us know whether these dates work, do not work, or need discussion.
+
+{{ request_link }}
+
+Nothing is fully booked yet. This helps us coordinate the group before final approvals.
+
+John & Mark
+Strathmere Visit Request System
+302-521-5401
+""",
+
+    "final_group_ready.txt": """Hi {{ guest_name }},
+
+Good news — everyone has confirmed the tentative dates for {{ group_title }}.
+
+Confirmed group dates:
+{{ tentative_dates }}
+
+The next step is final booking review and room planning. Nothing is fully booked until the normal booking requests are reviewed and approved.
+
+If anything changes before final approvals are completed, please reply as soon as possible.
+
+Thanks everyone for coordinating together.
+
+John & Mark
+Strathmere Visit Request System
+302-521-5401
+""",
+
+    "final_visit_confirmation.txt": """Hi {{ guest_name }},
+
+Your Strathmere visit is confirmed.
+
+Visit Details:
+- Arrival: {{ arrival_date }}
+- Departure: {{ departure_date }}
+- Nights: {{ nights }}
+- Room(s): {{ room_list }}
+- Rooms Requested: {{ rooms_requested }}
+
+Confirmed Group Members:
+{{ confirmed_group_members }}
+
+Food Preferences / Restrictions:
+{{ food_restrictions }}
+
+Pets:
+{{ pets }}
+
+Need to change or cancel this visit?
+Change request: {{ change_link }}
+Cancel request: {{ cancel_link }}
+Request another visit: {{ new_request_link }}
+
+If anything does not look right, just reply to this email.
+
+Looking forward to seeing everyone at the shore!
+
+John & Mark
+Strathmere Visit Request System
+302-521-5401
+""",
+
+    "admin_notification.txt": """Action needed in the Strathmere Visit Request System
+
+Action:
+{{ action_title }}
+
+Details:
+{{ details }}
+
+Review:
+{{ review_url }}
+
+John & Mark
+Strathmere Visit Request System
+""",
+    "profile_welcome.txt": """Hi {{ guest_name }},
+
+Welcome to the Strathmere Visit Request System.
+
+You’ve officially been added to this season’s highly sophisticated, mildly experimental, AI-assisted visit planning system.
+
+Translation: I’ve been having way too much fun building something to make planning visits easier… and hopefully slightly more entertaining.
+
+Like any beta, there may still be a few rough edges. If something feels confusing, awkward, or unexpectedly robotic, please let me know so I can keep improving it. Any mistakes are probably AI-generated, but customer support is still delightfully human. Email and phone calls still work too — we haven’t handed full control over to the robots… yet.
+
+You don’t need to do anything today.
+
+Soon you may receive an invitation to request a visit or to coordinate dates with others.
+
+A Request a Visit invitation is for planning a stay for yourself or for people traveling with you. That could mean your family, children, relatives, friends, or anyone you are helping organize for the same dates.
+
+A Coordination invitation is for a group trying to line up dates before anything is finalized. Everyone shares dates that work best, and we try to find overlap without creating seventeen separate text chains.
+
+A few helpful notes:
+
+• Each visit date range needs its own request.
+• You can request multiple rooms when everyone is staying the same dates.
+• Please include everyone’s names so we can plan accommodations accurately.
+• Nothing is confirmed until you receive approval.
+
+Once invitations begin, the system will walk you through the rest and send follow-up emails with confirmations and next steps.
+
+Looking forward to seeing everyone this season.
+
+John & Mark
+Strathmere Visit Request System
+302-521-5401
+""",
 }
+
+
+def ensure_room_name_updates(conn):
+
+    try:
+        conn.execute("""
+            UPDATE rooms
+            SET name = 'Twin/King Room'
+            WHERE LOWER(TRIM(name)) IN ('twin room', 'twin')
+        """)
+        conn.commit()
+    except Exception:
+        pass
 
 
 def ensure_email_template_files():
@@ -466,30 +811,98 @@ def ensure_email_template_files():
             template_name
         )
 
+        # V29E: Never auto-create invitation.txt from app.py defaults.
+        # The invitation preview/email must come from the real editable
+        # templates/emails/invitation.txt file only.
+        if template_name == "invitation.txt":
+            continue
+
         if not os.path.exists(template_path):
 
             with open(template_path, "w", encoding="utf-8") as handle:
                 handle.write(template_text)
 
 
-def load_email_template(template_name):
+def email_template_path(template_name):
 
-    ensure_email_template_files()
-
-    template_path = os.path.join(
+    return os.path.join(
         EMAIL_TEMPLATE_FOLDER,
         template_name
     )
 
+
+def load_email_template(template_name):
+
+    ensure_email_template_files()
+
+    template_path = email_template_path(template_name)
+
     if os.path.exists(template_path):
 
         with open(template_path, "r", encoding="utf-8") as handle:
-            return handle.read()
+            template_text = handle.read()
+
+        return template_text
+
+    if template_name == "invitation.txt":
+        raise RuntimeError(
+            "templates/emails/invitation.txt is missing. Invitation preview/email stopped so app.py default text cannot replace your template."
+        )
 
     return DEFAULT_EMAIL_TEMPLATES.get(template_name, "")
 
 
+def save_email_template(template_name, template_text):
+
+    os.makedirs(
+        EMAIL_TEMPLATE_FOLDER,
+        exist_ok=True
+    )
+
+    template_path = email_template_path(template_name)
+
+    with open(template_path, "w", encoding="utf-8") as handle:
+        handle.write(safe_text(template_text))
+
+
+def invitation_template_admin_box():
+
+    template_path = email_template_path("invitation.txt")
+
+    try:
+        template_text = load_email_template("invitation.txt")
+        first_lines = "\n".join(template_text.splitlines()[:10])
+        status = "READING REAL FILE"
+    except Exception as error:
+        first_lines = safe_text(error)
+        status = "ERROR"
+
+    return f"""
+    <div style="
+        border: 3px solid #dc3545;
+        background: #fff5f5;
+        padding: 12px;
+        max-width: 950px;
+        margin: 12px 0;
+        font-size: 13px;
+    ">
+        <strong>Invitation Template Source Check</strong><br>
+        Status: {safe_text(status)}<br>
+        File: <code>{safe_text(template_path)}</code><br>
+        <a href="/admin/invitation-template" style="font-weight:bold;">Open / Edit Actual invitation.txt</a>
+        <pre style="white-space: pre-wrap; background: white; padding: 8px; border: 1px solid #ddd;">{safe_text(first_lines)}</pre>
+    </div>
+    """
+
+
 ensure_email_template_files()
+
+try:
+    startup_conn = get_db_connection()
+    ensure_room_name_updates(startup_conn)
+    startup_conn.close()
+except Exception:
+    pass
 
 
 def rebuild_email_template_files():
@@ -501,6 +914,11 @@ def rebuild_email_template_files():
 
     for template_name, template_text in DEFAULT_EMAIL_TEMPLATES.items():
 
+        # V29E: do not overwrite the real invitation template with
+        # hardcoded app.py wording during rebuild.
+        if template_name == "invitation.txt":
+            continue
+
         template_path = os.path.join(
             EMAIL_TEMPLATE_FOLDER,
             template_name
@@ -510,8 +928,74 @@ def rebuild_email_template_files():
             handle.write(template_text)
 
 
-@app.route("/admin/rebuild-email-templates")
+@app.route("/admin/invitation-template", methods=["GET", "POST"])
+def admin_invitation_template_editor():
+
+    message = ""
+
+    if request.method == "POST":
+
+        template_text = request.form.get("template_text")
+
+        save_email_template(
+            "invitation.txt",
+            template_text
+        )
+
+        message = "Saved. Preview/send will now use this exact invitation.txt file."
+
+    try:
+        current_template = load_email_template("invitation.txt")
+    except Exception:
+        current_template = ""
+
+    template_path = email_template_path("invitation.txt")
+
+    return f"""
+    {nav_links()}
+
+    <h1>Edit Actual Invitation Template</h1>
+
+    <p style="font-weight:bold; color:#dc3545;">
+        This is the exact file used by invitation preview and invitation send.
+    </p>
+
+    <p>
+        File: <code>{safe_text(template_path)}</code>
+    </p>
+
+    <p style="color: green; font-weight: bold;">
+        {safe_text(message)}
+    </p>
+
+    <form method="POST">
+        <textarea name="template_text" rows="28" cols="100" style="width:100%; max-width:950px; font-family:monospace; font-size:14px; line-height:1.45;">{safe_text(current_template)}</textarea>
+        <br><br>
+        <button type="submit" style="font-weight:bold; padding:8px 14px;">
+            Save invitation.txt
+        </button>
+    </form>
+
+    <p>
+        Required variables you can use: <code>{{{{ guest_name }}}}</code>, <code>{{{{ request_link }}}}</code>, <code>{{{{ coordination_link }}}}</code>
+    </p>
+
+    <p>
+        <a href="/invitations">Back to Invitations</a>
+    </p>
+    """
+
+
+@app.route("/admin/rebuild-email-templates", methods=["GET", "POST"])
 def admin_rebuild_email_templates():
+
+    if request.method != "POST":
+        return action_confirmation_page(
+            "Rebuild Email Templates",
+            "This resets template files from app defaults and can overwrite wording. Continue only if you intentionally want to rebuild templates.",
+            "/admin/rebuild-email-templates",
+            "/production-check"
+        )
 
     rebuild_email_template_files()
 
@@ -579,7 +1063,12 @@ def email_template_metadata_html(template_key):
 def render_email_template(template_name, **context):
 
     if "base_url" not in context:
-        context["base_url"] = BASE_URL
+        # Guest-facing email templates use base_url in "Request a Visit" sections.
+        # Point it to the standard visitor request page, not the app root/dashboard-style page.
+        context["base_url"] = standard_new_request_url()
+
+    if "new_request_link" not in context:
+        context["new_request_link"] = standard_new_request_url()
 
     template_text = load_email_template(
         template_name
@@ -602,35 +1091,367 @@ def render_email_template(template_name, **context):
 def plain_text_to_html_email(subject, body):
 
     escaped_subject = html_escape_module.escape(str(subject or ""))
-    escaped_body = html_escape_module.escape(str(body or ""))
+    body_text = str(body or "")
 
-    # Keep the text-template workflow, but provide a cleaner HTML layer for email clients.
+    # V30.9: embed the header image as an inline CID attachment.
+    # This avoids email clients blocking or failing to fetch the public URL.
+    email_header_html = """
+                <div style="background:#ffffff; border-bottom:1px solid #d5e0ea; text-align:center; line-height:0;">
+                    <img src="cid:shore_home_header"
+                         alt="Shore Home"
+                         width="600"
+                         style="display:block; width:100%; max-width:600px; height:auto; max-height:220px; object-fit:cover; border:0; margin:0 auto; line-height:0;">
+                </div>
+    """
+
+    # Keep TXT templates as the source of truth.
+    # HTML email cleans up presentation by moving detail rows into one card
+    # and URL lines into buttons, so those sections do not repeat below.
+    url_pattern = re.compile(r"(https?://[^\s<]+)")
+
+    def action_label_for_url(url, nearby_text=""):
+
+        nearby_lower = safe_text(nearby_text).lower()
+        url_lower = safe_text(url).lower()
+        normalized_url = url_lower.rstrip("/")
+        normalized_base = BASE_URL.rstrip("/").lower()
+
+        # URL-specific paths win over nearby text. This prevents a previous
+        # label line from causing the next button to inherit the wrong label.
+        if "/all-reservations" in url_lower:
+            return "All Reservations"
+
+        if "/change" in url_lower:
+            return "Change Request"
+
+        if "/cancel" in url_lower:
+            return "Cancel Request"
+
+        if (
+            normalized_url == normalized_base
+            or normalized_url == normalized_base + "/new-request"
+            or "/new-request" in url_lower
+            or "/invite" in url_lower
+        ):
+            return "Request a Visit"
+
+        if "all reservations" in nearby_lower:
+            return "All Reservations"
+
+        if "guest profile" in nearby_lower or "/profiles" in url:
+            return "Open Guest Profiles"
+
+        if "group planning" in nearby_lower or "open group" in nearby_lower or "/coordination-group/" in url:
+            return "Open Group Planning Page"
+
+        if "coordination" in nearby_lower:
+            return "Open Coordination Link"
+
+        if "change" in nearby_lower:
+            return "Change Request"
+
+        if "cancel" in nearby_lower:
+            return "Cancel Request"
+
+        if "another" in nearby_lower or "new invitation" in nearby_lower or "request a visit" in nearby_lower:
+            return "Request a Visit"
+
+        if "request" in nearby_lower:
+            return "Request a Visit"
+
+        return "Open Link"
+
+    def make_inline_link(match):
+
+        url = match.group(1)
+        safe_url = html_escape_module.escape(url, quote=True)
+
+        return (
+            f'<a href="{safe_url}" '
+            f'style="color:#0f4c81; font-weight:bold; text-decoration:underline;">'
+            f'{safe_url}</a>'
+        )
+
+    detail_labels = [
+        "Arrival:",
+        "Departure:",
+        "Nights:",
+        "Length of Stay:",
+        "Rooms:",
+        "Room(s):",
+        "Rooms Requested:",
+        "Room(s) Approved:",
+        "Assigned Room(s):",
+        "Additional Guests:",
+        "Additional Guests for Your Room(s):",
+        "Confirmed Group Members:",
+        "Group members:",
+        "Current proposed dates:"
+    ]
+
+    link_label_lines = [
+        "Change Visit:",
+        "Cancel Visit:",
+        "Cancel Request:",
+        "All Reservations:",
+        "Request Another Visit:",
+        "Request Another Visit:",
+        "Request Another Visit:",
+        "Change Visit:",
+        "Cancel / Cannot Make These Dates:",
+        "Open Group:",
+        "Your link:",
+        "Review:",
+        "Visit Details",
+        "VISIT DETAILS:",
+        "Requested Stay",
+        "Additional Notes:",
+        "Cancelled Visit Details:",
+        "Canceled Visit Details:",
+        "Cancellation Details:",
+        "Current dates and analysis so far:",
+        "Need to make a change?",
+        "━━━━━━━━━━━━━━━━━━",
+        "Change Request",
+        "Cancel Visit",
+        "All Reservations",
+        "Request a Visit",
+        "Request a Visit",
+        "Request a Visit"
+    ]
+
+    detail_lines = []
+    message_lines = []
+    action_buttons = []
+
+    lines = body_text.splitlines()
+    skip_next_blank_after_link_label = False
+
+    for index, line in enumerate(lines):
+
+        stripped = line.strip()
+
+        if not stripped and skip_next_blank_after_link_label:
+            skip_next_blank_after_link_label = False
+            continue
+
+        url_match = url_pattern.search(stripped)
+
+        if url_match:
+
+            label_source = ""
+
+            if index > 0:
+                label_source += lines[index - 1] + " "
+
+            label_source += stripped
+
+            action_buttons.append({
+                "label": action_label_for_url(url_match.group(1), label_source),
+                "url": url_match.group(1)
+            })
+
+            skip_next_blank_after_link_label = True
+            continue
+
+        if any(stripped.startswith(label) for label in detail_labels):
+            detail_lines.append(stripped)
+            continue
+
+        if stripped.startswith("- "):
+            detail_lines.append(stripped[2:].strip())
+            continue
+
+        if stripped in link_label_lines or any(stripped.startswith(label) for label in link_label_lines):
+            skip_next_blank_after_link_label = True
+            continue
+
+        message_lines.append(line)
+
+    # Clean repeated blank lines in message body.
+    cleaned_message_lines = []
+    previous_blank = False
+
+    for line in message_lines:
+
+        is_blank = not line.strip()
+
+        if is_blank and previous_blank:
+            continue
+
+        cleaned_message_lines.append(line)
+        previous_blank = is_blank
+
+    message_body = "\n".join(cleaned_message_lines).strip()
+
+    # Tighten common template spacing now that details are displayed in the card.
+    message_body = message_body.replace(
+        "WE’RE EXCITED YOUR VISIT TO STRATHMERE WILL WORK OUT!\n\n",
+        "WE’RE EXCITED YOUR VISIT TO STRATHMERE WILL WORK OUT!\n"
+    )
+
+    message_body = message_body.replace(
+        "WE'RE EXCITED YOUR VISIT TO STRATHMERE WILL WORK OUT!\n\n",
+        "WE'RE EXCITED YOUR VISIT TO STRATHMERE WILL WORK OUT!\n"
+    )
+
+    escaped_message_body = html_escape_module.escape(message_body)
+    linked_message_body = url_pattern.sub(
+        make_inline_link,
+        escaped_message_body
+    )
+
+    def final_button_label_is_new_request(button):
+
+        return safe_text(button.get("label")).strip().lower() == "open new request"
+
+    # De-duplicate buttons while preserving order.
+    seen_urls = set()
+    final_buttons = []
+
+    for button in action_buttons:
+
+        button_url = button["url"]
+        normalized_button_url = button_url.rstrip("/")
+
+        # V31.10: Do not rewrite invitation links just because their label is
+        # "Request a Visit". Invitation/repeat-visit links must stay on
+        # /invite/<id> so the guest gets the prefilled invitation request flow.
+        # Only true generic root/new-request links should go to /new-request.
+        if (
+            normalized_button_url == BASE_URL.rstrip("/")
+            or normalized_button_url == (BASE_URL.rstrip("/") + "/new-request")
+            or final_button_label_is_new_request(button)
+        ):
+            if "/invite/" not in normalized_button_url:
+                button_url = standard_new_request_url()
+
+        if button_url in seen_urls:
+            continue
+
+        seen_urls.add(button_url)
+
+        final_button = dict(button)
+        final_button["url"] = button_url
+        final_buttons.append(final_button)
+
+    details_html = ""
+
+    if detail_lines:
+
+        detail_rows = []
+
+        for detail_line in detail_lines:
+
+            if ":" in detail_line:
+                label, value = detail_line.split(":", 1)
+                label_html = html_escape_module.escape(label.strip())
+                value_html = html_escape_module.escape(value.strip())
+            else:
+                label_html = ""
+                value_html = html_escape_module.escape(detail_line.strip())
+
+            if label_html:
+                detail_rows.append(f"""
+                    <tr>
+                        <td style="padding:6px 10px 6px 0; color:#64748b; font-size:13px; vertical-align:top; width:38%;">
+                            {label_html}
+                        </td>
+                        <td style="padding:6px 0; color:#1f2937; font-size:14px; font-weight:bold; vertical-align:top;">
+                            {value_html}
+                        </td>
+                    </tr>
+                """)
+            else:
+                detail_rows.append(f"""
+                    <tr>
+                        <td colspan="2" style="padding:6px 0; color:#1f2937; font-size:14px; font-weight:bold;">
+                            {value_html}
+                        </td>
+                    </tr>
+                """)
+
+        details_html = f"""
+            <div style="background:#f8fbff; border:1px solid #d8e6f3; border-radius:12px; padding:14px 16px; margin:0 0 18px 0;">
+                <div style="font-size:13px; letter-spacing:.06em; text-transform:uppercase; color:#0f4c81; font-weight:bold; margin-bottom:6px;">
+                    Details
+                </div>
+                <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="width:100%; border-collapse:collapse;">
+                    {''.join(detail_rows)}
+                </table>
+            </div>
+        """
+
+    buttons_html = ""
+
+    if final_buttons:
+
+        button_parts = []
+
+        for button in final_buttons:
+
+            safe_url = html_escape_module.escape(button["url"], quote=True)
+            safe_label = html_escape_module.escape(button["label"])
+
+            button_parts.append(f"""
+                <a href="{safe_url}" style="
+                    display:inline-block;
+                    background:#0f4c81;
+                    color:#ffffff;
+                    text-decoration:none;
+                    font-weight:bold;
+                    font-size:14px;
+                    padding:10px 14px;
+                    border-radius:8px;
+                    margin:4px 8px 4px 0;
+                ">{safe_label}</a>
+            """)
+
+        buttons_html = f"""
+            <div style="border-top:1px solid #e5e7eb; padding-top:16px; margin-top:18px;">
+                <div style="font-size:13px; letter-spacing:.06em; text-transform:uppercase; color:#0f4c81; font-weight:bold; margin-bottom:8px;">
+                    Actions
+                </div>
+                {''.join(button_parts)}
+            </div>
+        """
+
     return f"""
     <!doctype html>
     <html>
-    <body style="margin:0; padding:0; background-color:#f6f8fb; font-family: Arial, Helvetica, sans-serif; color:#1f2937;">
-        <div style="max-width:680px; margin:0 auto; padding:18px;">
-            <div style="background:#ffffff; border:1px solid #d9e2ec; border-radius:12px; overflow:hidden;">
-                <div style="background:#0f4c81; color:white; padding:14px 18px;">
-                    <div style="font-size:18px; font-weight:bold; line-height:1.3;">
-                        {escaped_subject}
+    <body style="margin:0; padding:0; background-color:#eef4f8; font-family: Arial, Helvetica, sans-serif; color:#1f2937;">
+        <div style="max-width:720px; margin:0 auto; padding:22px;">
+            <div style="background:#ffffff; border:1px solid #d5e0ea; border-radius:14px; overflow:hidden; box-shadow:0 2px 8px rgba(15,76,129,0.08);">
+
+                {email_header_html}
+
+                <div style="background:#0f4c81; color:white; padding:12px 18px;">
+                    <div style="font-size:10px; letter-spacing:.08em; text-transform:uppercase; opacity:.9; margin-bottom:3px;">
+                        Shore Home
                     </div>
-                    <div style="font-size:12px; opacity:.9; margin-top:4px;">
-                        Shore Home Visit Coordination
+                    <div style="font-size:16px; font-weight:bold; line-height:1.2;">
+                        Strathmere Visit Coordination
+                    </div>
+                    <div style="font-size:12px; opacity:.92; margin-top:5px; line-height:1.3;">
+                        {escaped_subject}
                     </div>
                 </div>
 
-                <div style="padding:18px; font-size:15px; line-height:1.55; white-space:pre-wrap;">{escaped_body}</div>
+                <div style="padding:22px;">
+                    {details_html}
+                    <div style="font-size:16px; line-height:1.6; white-space:pre-wrap;">{linked_message_body}</div>
+                    {buttons_html}
+                </div>
 
-                <div style="border-top:1px solid #e5e7eb; padding:12px 18px; font-size:12px; color:#6b7280;">
-                    This message was sent by the Shore Home App.
+                <div style="border-top:1px solid #e5e7eb; background:#f8fafc; padding:14px 22px; font-size:12px; color:#64748b; line-height:1.45;">
+                    Questions? Just reply to this email.<br>
+                    Shore Home • Strathmere Visit Coordination
                 </div>
             </div>
         </div>
     </body>
     </html>
     """
-
 
 
 def write_email_audit(to_email, subject, status, detail=""):
@@ -644,6 +1465,46 @@ def write_email_audit(to_email, subject, status, detail=""):
             )
     except Exception:
         pass
+
+
+def add_email_header_image_if_available(msg):
+
+    header_filename = "shore_home_header.jpeg"
+    header_path = os.path.join(
+        app.root_path,
+        header_filename
+    )
+
+    if not os.path.exists(header_path):
+        write_email_audit(
+            msg.get("To", ""),
+            msg.get("Subject", ""),
+            "HEADER_IMAGE_MISSING",
+            header_path
+        )
+        return
+
+    try:
+        with open(header_path, "rb") as handle:
+            header_bytes = handle.read()
+
+        # The HTML alternative is the last payload after add_alternative().
+        html_part = msg.get_payload()[-1]
+        html_part.add_related(
+            header_bytes,
+            maintype="image",
+            subtype="jpeg",
+            cid="<shore_home_header>",
+            filename=header_filename
+        )
+
+    except Exception as error:
+        write_email_audit(
+            msg.get("To", ""),
+            msg.get("Subject", ""),
+            "HEADER_IMAGE_FAILED",
+            error
+        )
 
 
 def send_email(to_email, subject, body, html_body=None):
@@ -662,16 +1523,24 @@ def send_email(to_email, subject, body, html_body=None):
 
     if HTML_EMAILS_ENABLED:
 
-        if html_body is None:
-            html_body = plain_text_to_html_email(
-                subject,
-                body
+        try:
+            if html_body is None:
+                html_body = plain_text_to_html_email(
+                    subject,
+                    body
+                )
+
+            msg.add_alternative(
+                html_body,
+                subtype="html"
             )
 
-        msg.add_alternative(
-            html_body,
-            subtype="html"
-        )
+            add_email_header_image_if_available(msg)
+
+        except Exception as error:
+            # V32.7: HTML decoration, header image, or visit-summary formatting
+            # must not prevent the plain-text confirmation email from sending.
+            write_email_audit(to_email, subject, "HTML_SKIPPED", error)
 
     try:
         with smtplib.SMTP("smtp.gmail.com", 587) as smtp:
@@ -702,24 +1571,50 @@ def notify_admin(action_title, details, review_path="/dashboard"):
     if review_path.startswith("/"):
         review_url = BASE_URL + review_path
 
-    body = f"""Action needed in Shore Home App
-
-Action: {safe_text(action_title)}
-
-{safe_text(details)}
-
-Review:
-{review_url}
-"""
+    body = render_email_template(
+        "admin_notification.txt",
+        action_title=safe_text(action_title),
+        details=safe_text(details),
+        review_url=review_url
+    )
 
     try:
         send_email(
             admin_email,
-            f"Shore Home App: {safe_text(action_title)}",
+            f"Strathmere Visit Request System: {safe_text(action_title)}",
             body
         )
     except Exception as error:
         print("ADMIN NOTIFICATION FAILED:", safe_text(error))
+
+
+def get_coordination_organizer_info(conn, group_id):
+
+    organizer = conn.execute("""
+        SELECT
+            guest_profiles.primary_name,
+            guest_profiles.primary_email
+        FROM coordination_group_members
+        JOIN guest_profiles
+            ON coordination_group_members.guest_profile_id = guest_profiles.id
+        WHERE coordination_group_members.coordination_group_id = ?
+          AND LOWER(COALESCE(coordination_group_members.role, '')) = 'organizer'
+        ORDER BY coordination_group_members.id
+        LIMIT 1
+    """, (
+        group_id,
+    )).fetchone()
+
+    if organizer:
+        return {
+            "name": safe_text(organizer["primary_name"]),
+            "email": safe_text(organizer["primary_email"])
+        }
+
+    return {
+        "name": "John and Mark",
+        "email": ""
+    }
 
 
 def notify_admin_coordination_response(conn, group_id, guest_name, action_title="Coordination dates submitted"):
@@ -812,8 +1707,17 @@ def format_datetime_display(value):
 
     return value
 
-@app.route("/test-email")
+@app.route("/test-email", methods=["GET", "POST"])
 def test_email():
+
+    if request.method != "POST":
+        return action_confirmation_page(
+            "Send Test Email",
+            "Send one test email to the configured Shore Home email address.",
+            "/test-email",
+            "/dashboard"
+        )
+
     send_email(
         EMAIL_ADDRESS,
         "Test email from Shore Home App",
@@ -824,6 +1728,31 @@ def test_email():
     <h2>Test email sent.</h2>
     <p><a href="/dashboard">Back to Dashboard</a></p>
     """
+
+
+
+@app.route("/shore_home_header.jpeg")
+def shore_home_header_image():
+
+    header_filename = "shore_home_header.jpeg"
+    header_path = os.path.join(
+        app.root_path,
+        header_filename
+    )
+
+    if not os.path.exists(header_path):
+        return (
+            "Header image not found. Confirm shore_home_header.jpeg exists in the GitHub repo root and redeploy.",
+            404
+        )
+
+    return send_from_directory(
+        app.root_path,
+        header_filename,
+        mimetype="image/jpeg",
+        max_age=3600
+    )
+
 
 @app.after_request
 def add_security_headers(response):
@@ -846,9 +1775,223 @@ def add_security_headers(response):
     return response
 
 
-def nav_links():
+PUBLIC_ENDPOINTS = {
+    "admin_login",
+    "shore_home_header_image",
+    "static",
+    "invite_request",
+    "invitation_request_alias",
+    "invitation_request",
+    "guest_invitation_request",
+    "request_form",
+    "new_request",
+    "public_request",
+    "guest_request",
+    "submit",
+    "request_submitted_review",
+    "request_submitted_complete",
+    "all_reservations",
+    "change_request",
+    "change_request_bad_link",
+    "cancel_request",
+    "coordination_group_member_request",
+    "coordination_group_member_date_options",
+    "coordination_group_member_date_options_thanks",
+    "coordination_group_member_cannot_change_dates",
+    "coordination_group_member_clear_date_options",
+    "coordination_group_member_follow_up_dates_work",
+    "coordination_group_member_tentative_response",
+    "coordination_group_member_tentative_response_thanks"
+}
+
+
+def admin_is_logged_in():
+
+    return session.get("admin_logged_in") == True
+
+
+@app.before_request
+def require_admin_login():
+
+    endpoint = request.endpoint or ""
+    path = safe_text(request.path)
+
+    guest_public_prefixes = (
+        "/invite/",
+        "/new-request",
+        "/request/",
+        "/coordination-member/",
+        "/coordination-group-member/"
+    )
+
+    if endpoint in PUBLIC_ENDPOINTS:
+        return None
+
+    if endpoint.startswith("static"):
+        return None
+
+    if any(path.startswith(prefix) for prefix in guest_public_prefixes):
+        # Guest-facing email links must stay public. Admin-only request review pages
+        # are still protected by their own non-guest routes and dashboard links.
+        if "/email-preview" not in path and "/approve" not in path and "/decline" not in path:
+            return None
+
+    if not ADMIN_AUTH_ENABLED:
+        return None
+
+    if admin_is_logged_in():
+        return None
+
+    return redirect(
+        "/admin-login?next=" + safe_text(request.path)
+    )
+
+
+@app.route("/admin-login", methods=["GET", "POST"])
+def admin_login():
+
+    error_message = ""
+
+    if request.method == "POST":
+
+        username = safe_text(request.form.get("username")).strip()
+        password = safe_text(request.form.get("password")).strip()
+
+        username_ok = hmac.compare_digest(
+            username,
+            safe_text(ADMIN_USERNAME)
+        )
+
+        password_ok = hmac.compare_digest(
+            password,
+            safe_text(ADMIN_PASSWORD)
+        )
+
+        if username_ok and password_ok:
+
+            session["admin_logged_in"] = True
+
+            next_path = safe_text(request.args.get("next")).strip()
+
+            if not next_path.startswith("/"):
+                next_path = "/dashboard"
+
+            return redirect(next_path)
+
+        error_message = "Invalid login."
+
     return f"""
-    <div style="font-size: 14px; line-height: 1.8;">
+    <h1>Shore Home Admin Login</h1>
+
+    <form method="POST">
+        <p>
+            <label>
+                Username<br>
+                <input type="text" name="username" autocomplete="username">
+            </label>
+        </p>
+
+        <p>
+            <label>
+                Password<br>
+                <input type="password" name="password" autocomplete="current-password">
+            </label>
+        </p>
+
+        <p style="color: red; font-weight: bold;">
+            {safe_text(error_message)}
+        </p>
+
+        <button type="submit">
+            Login
+        </button>
+    </form>
+    """
+
+
+@app.route("/admin-logout")
+def admin_logout():
+
+    session.clear()
+
+    return redirect("/admin-login")
+
+
+def compact_admin_table_css():
+
+    return """
+    <style>
+        /* V32.1: tighter admin tables so columns do not overflow. */
+        .shore-admin-nav + br + small + hr + table,
+        table {
+            max-width: 100%;
+            table-layout: fixed;
+        }
+
+        th, td {
+            padding: 4px 6px !important;
+            font-size: 12px;
+            line-height: 1.25;
+            vertical-align: top;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
+        th {
+            white-space: normal;
+        }
+
+        td a, th a {
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+
+        td form, td button, td input, td select {
+            max-width: 100%;
+            box-sizing: border-box;
+        }
+
+        .admin-action-cell,
+        td:last-child {
+            width: auto;
+        }
+
+        @media (max-width: 760px) {
+            th, td {
+                padding: 3px 4px !important;
+                font-size: 11px;
+            }
+        }
+    </style>
+    """
+
+
+def nav_links():
+
+    guest_path = safe_text(request.path)
+
+    guest_page_prefixes = (
+        "/new-request",
+        "/invite/",
+        "/invitation/",
+        "/request-submitted",
+        "/coordination-group-member/"
+    )
+
+    if any(guest_path.startswith(prefix) for prefix in guest_page_prefixes):
+        return ""
+
+    if guest_path.startswith("/request/") and (
+        "/submitted" in guest_path
+        or "/change" in guest_path
+        or "/cancel" in guest_path
+        or "/all-reservations" in guest_path
+    ):
+        return ""
+
+    return f"""
+    {compact_admin_table_css()}
+    <div class="shore-admin-nav" style="font-size: 14px; line-height: 1.8;">
         <strong>Workflow:</strong>
         <a href="/dashboard">Dashboard</a> |
         <a href="/invitations">Invitations</a> |
@@ -869,8 +2012,9 @@ def nav_links():
         <a href="/blocked">House Blocks</a> |
         <a href="/manual-request">Manual Request</a> |
         <a href="/admin-backup">Admin Backup</a> |
+        <a href="/admin-reset-test-data">Reset Test Data</a> |
         <a href="/production-check">Production Check</a> |
-        <a href="/system-health">System Health</a>
+        <a href="/system-health">System Health</a> |\n        <a href="/admin-logout">Logout</a>
     </div>
     <br>
     <small style="color: gray;">Version: {APP_VERSION}</small>
@@ -1080,6 +2224,19 @@ def safe_text(value):
     return str(value)
 
 
+def display_room_name(value):
+
+    value_text = safe_text(value)
+
+    if value_text.strip().lower() == "twin room":
+        return "Twin/King Room"
+
+    if value_text.strip().lower() == "twin":
+        return "Twin/King"
+
+    return value_text
+
+
 def row_value(row, *keys):
 
     for key in keys:
@@ -1093,6 +2250,96 @@ def row_value(row, *keys):
             return value
 
     return ""
+
+
+def ensure_guest_profile_welcome_column(conn):
+
+    try:
+        columns = set(
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(guest_profiles)").fetchall()
+        )
+
+        if "welcome_email_sent_at" not in columns:
+            conn.execute("""
+                ALTER TABLE guest_profiles
+                ADD COLUMN welcome_email_sent_at TEXT
+            """)
+
+    except Exception:
+        # Existing profile behavior should not fail because this optional
+        # tracking column could not be added.
+        pass
+
+
+def profile_welcome_status_text(profile):
+
+    sent_at = safe_text(row_value(profile, "welcome_email_sent_at")).strip()
+
+    if sent_at:
+        return "Sent " + sent_at[:16]
+
+    return "Not sent"
+
+
+def send_profile_welcome_email(conn, profile_id, force=False):
+
+    ensure_guest_profile_welcome_column(conn)
+
+    profile = conn.execute("""
+        SELECT *
+        FROM guest_profiles
+        WHERE id = ?
+    """, (
+        profile_id,
+    )).fetchone()
+
+    if not profile:
+        raise RuntimeError("Guest profile not found.")
+
+    if not force and safe_text(row_value(profile, "welcome_email_sent_at")).strip():
+        return "already_sent"
+
+    recipient = safe_text(profile["primary_email"]).strip()
+    guest_name = safe_text(profile["primary_name"]).strip()
+
+    body = render_email_template(
+        "profile_welcome.txt",
+        guest_name=guest_name
+    )
+
+    subject = "Welcome to the Strathmere Visit Request System"
+
+    send_email(
+        recipient,
+        subject,
+        body
+    )
+
+    conn.execute("""
+        UPDATE guest_profiles
+        SET welcome_email_sent_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+    """, (
+        profile_id,
+    ))
+
+    try:
+        conn.execute("""
+            INSERT INTO email_log
+            (request_id, email_type, recipient, subject, body)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            None,
+            "profile_welcome",
+            recipient,
+            subject,
+            body
+        ))
+    except Exception:
+        pass
+
+    return "sent"
 
 
 def coordination_member_row_id(row):
@@ -1339,36 +2586,216 @@ def display_change_requested_date(timestamp):
         return timestamp[:10]
 
 
+
+
+def build_coordination_intersection_suggestions(date_options, approved_bookings, blocked_ranges, total_rooms):
+    """Phase 3: find true shared overlap windows across one option per responding member.
+
+    This is intentionally separate from the older ranked match engine. It answers the
+    core question: is there a common window where every responding guest can attend?
+    It uses the intersection rule: latest available arrival to earliest available departure.
+    """
+
+    options_by_member = {}
+    member_names = {}
+
+    for option in date_options:
+
+        member_id = row_value(option, "member_id", "coordination_group_member_id")
+
+        if not member_id:
+            continue
+
+        try:
+            arrival = datetime.strptime(option["arrival_date"], "%Y-%m-%d").date()
+            departure = datetime.strptime(option["departure_date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+
+        if departure <= arrival:
+            continue
+
+        try:
+            flexibility_days = int(option["flexibility_days"] or 0)
+        except Exception:
+            flexibility_days = 0
+
+        if flexibility_days < 0:
+            flexibility_days = 0
+
+        available_start = arrival - timedelta(days=flexibility_days)
+        available_end = departure + timedelta(days=flexibility_days)
+
+        options_by_member.setdefault(member_id, []).append({
+            "member_id": member_id,
+            "primary_name": safe_text(option["primary_name"]),
+            "role": safe_text(row_value(option, "role")),
+            "priority": safe_text(option["priority"]),
+            "arrival": arrival,
+            "departure": departure,
+            "available_start": available_start,
+            "available_end": available_end,
+            "flexibility_days": flexibility_days,
+            "rooms_requested": normalize_rooms_requested(option["rooms_requested"], total_rooms),
+        })
+
+        member_names[member_id] = safe_text(option["primary_name"])
+
+    if not options_by_member:
+        return []
+
+    # Limit combinations defensively so a malformed test group cannot blow up the page.
+    member_ids = list(options_by_member.keys())
+    combinations = [[]]
+
+    for member_id in member_ids:
+        next_combinations = []
+        for existing in combinations:
+            for option in options_by_member[member_id][:6]:
+                next_combinations.append(existing + [option])
+                if len(next_combinations) > 500:
+                    break
+            if len(next_combinations) > 500:
+                break
+        combinations = next_combinations[:500]
+
+    blocked_dates = set()
+
+    for block in blocked_ranges:
+        try:
+            current = datetime.strptime(block["start_date"], "%Y-%m-%d").date()
+            end = datetime.strptime(block["end_date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+
+        # Existing full-house blocks still remove the date entirely. Partial-room
+        # blocks are handled by the capacity layer elsewhere and should not make
+        # the intersection invalid by themselves.
+        block_type = safe_text(row_value(block, "block_type", "type", "is_full_block")).lower()
+        blocked_rooms = safe_text(row_value(block, "blocked_rooms", "rooms_blocked")).strip()
+        is_partial = False
+        try:
+            if blocked_rooms and int(blocked_rooms) > 0 and int(blocked_rooms) < int(total_rooms):
+                is_partial = True
+        except Exception:
+            pass
+        if "partial" in block_type:
+            is_partial = True
+        if block_type in ("0", "false", "partial"):
+            is_partial = True
+
+        if is_partial:
+            continue
+
+        while current <= end:
+            blocked_dates.add(current.strftime("%Y-%m-%d"))
+            current += timedelta(days=1)
+
+    approved_by_date = {}
+
+    for booking in approved_bookings:
+        try:
+            current = datetime.strptime(booking["arrival_date"], "%Y-%m-%d").date()
+            end = datetime.strptime(booking["departure_date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+
+        rooms_to_count = 1
+        try:
+            rooms_to_count = int(row_value(booking, "rooms_held", "rooms_requested") or 1)
+        except Exception:
+            rooms_to_count = 1
+
+        while current < end:
+            date_string = current.strftime("%Y-%m-%d")
+            approved_by_date[date_string] = approved_by_date.get(date_string, 0) + rooms_to_count
+            current += timedelta(days=1)
+
+    suggestions = []
+    seen = set()
+
+    for combination in combinations:
+
+        if len(combination) != len(member_ids):
+            continue
+
+        overlap_start = max(item["available_start"] for item in combination)
+        overlap_end = min(item["available_end"] for item in combination)
+
+        if overlap_end <= overlap_start:
+            continue
+
+        key = (overlap_start.strftime("%Y-%m-%d"), overlap_end.strftime("%Y-%m-%d"))
+        if key in seen:
+            continue
+        seen.add(key)
+
+        rooms_needed = sum(item["rooms_requested"] for item in combination)
+        min_rooms_open = total_rooms
+        capacity_ok = True
+        capacity_notes = []
+        current = overlap_start
+
+        while current < overlap_end:
+            date_string = current.strftime("%Y-%m-%d")
+
+            if date_string in blocked_dates:
+                capacity_ok = False
+                capacity_notes.append(f"{format_date(date_string)} is fully blocked")
+
+            rooms_open = total_rooms - approved_by_date.get(date_string, 0)
+            if rooms_open < min_rooms_open:
+                min_rooms_open = rooms_open
+
+            if rooms_open < rooms_needed:
+                capacity_ok = False
+                capacity_notes.append(f"{format_date(date_string)} has only {rooms_open} room(s) open")
+
+            current += timedelta(days=1)
+
+        preferred_count = sum(1 for item in combination if item["priority"] == "preferred")
+        alternate_count = sum(1 for item in combination if item["priority"] == "alternate")
+        flexibility_used = []
+        changed_range_names = []
+
+        for item in combination:
+            if overlap_start != item["arrival"] or overlap_end != item["departure"]:
+                changed_range_names.append(item["primary_name"])
+            if overlap_start < item["arrival"] or overlap_end > item["departure"]:
+                flexibility_used.append(item["primary_name"])
+
+        suggestions.append({
+            "arrival_date": overlap_start.strftime("%Y-%m-%d"),
+            "departure_date": overlap_end.strftime("%Y-%m-%d"),
+            "nights": (overlap_end - overlap_start).days,
+            "matched_count": len(combination),
+            "total_member_count": len(member_ids),
+            "rooms_needed": rooms_needed,
+            "rooms_available": total_rooms,
+            "min_rooms_open": min_rooms_open,
+            "capacity_ok": capacity_ok,
+            "capacity_notes": capacity_notes,
+            "preferred_count": preferred_count,
+            "alternate_count": alternate_count,
+            "guest_names": sorted(item["primary_name"] for item in combination),
+            "changed_range_names": sorted(set(changed_range_names)),
+            "flexibility_used_names": sorted(set(flexibility_used)),
+            "score": (100000 if capacity_ok else 0) + (overlap_end - overlap_start).days * 100 + preferred_count * 10 - rooms_needed,
+        })
+
+    return sorted(suggestions, key=lambda item: item["score"], reverse=True)[:5]
+
 def build_coordination_match_suggestions(date_options, approved_bookings, blocked_ranges, total_rooms):
 
     if not date_options:
         return []
 
-    blocked_dates = set()
-
-    for block in blocked_ranges:
-
-        try:
-            current = datetime.strptime(
-                block["start_date"],
-                "%Y-%m-%d"
-            ).date()
-
-            end = datetime.strptime(
-                block["end_date"],
-                "%Y-%m-%d"
-            ).date()
-
-        except:
-            continue
-
-        while current <= end:
-
-            blocked_dates.add(
-                current.strftime("%Y-%m-%d")
-            )
-
-            current += timedelta(days=1)
+    # V31.8: House blocks may be full blocks or partial room-capacity limits.
+    # Full blocks make dates unavailable; partial blocks only reduce room capacity.
+    blocked_dates, room_limit_by_date = build_blocked_date_capacity(
+        blocked_ranges,
+        total_rooms
+    )
 
     approved_by_date = {}
 
@@ -1573,7 +3000,13 @@ def build_coordination_match_suggestions(date_options, approved_bookings, blocke
                         f"{format_date(date_string)} is blocked"
                     )
 
-                rooms_open = total_rooms - approved_by_date.get(date_string, 0)
+                capacity_limit = room_capacity_limit_for_date(
+                    room_limit_by_date,
+                    date_string,
+                    total_rooms
+                )
+
+                rooms_open = capacity_limit - approved_by_date.get(date_string, 0)
 
                 if rooms_open < min_rooms_open:
                     min_rooms_open = rooms_open
@@ -1767,6 +3200,55 @@ def tentative_response_color(status):
     return "#f8f9fa"
 
 
+def coordination_role_display(role):
+
+    role = safe_text(role).strip().lower()
+
+    if role == "organizer":
+        return "Organizer"
+
+    if role in ("participant", "guest", "member", ""):
+        return "Participant"
+
+    if role == "admin":
+        return "Admin"
+
+    return safe_text(role).title()
+
+
+def coordination_role_badge(role):
+
+    label = coordination_role_display(role)
+    role_key = safe_text(role).strip().lower()
+
+    if role_key == "organizer":
+        background = "#e7f1ff"
+        border = "#0d6efd"
+        color = "#084298"
+    elif role_key == "admin":
+        background = "#fff3cd"
+        border = "#ffc107"
+        color = "#664d03"
+    else:
+        background = "#f8f9fa"
+        border = "#ced4da"
+        color = "#495057"
+
+    return f"""
+    <span style="
+        display:inline-block;
+        background:{background};
+        border:1px solid {border};
+        color:{color};
+        border-radius:999px;
+        padding:2px 8px;
+        font-size:12px;
+        font-weight:bold;
+        white-space:nowrap;
+    ">{safe_text(label)}</span>
+    """
+
+
 def date_range_nights(arrival_date, departure_date):
 
     try:
@@ -1865,6 +3347,50 @@ def coordination_group_is_overdue(group):
         ).date()
     except:
         return False
+
+
+def default_coordination_due_date():
+
+    return (date.today() + timedelta(days=3)).strftime("%Y-%m-%d")
+
+
+def ensure_coordination_due_date(conn, group_id, group):
+
+    current_due_date = safe_text(row_value(group, "tentative_response_due_date")).strip()
+
+    if current_due_date and current_due_date.lower() not in ["no due date set", "none", "null"]:
+        return current_due_date, group
+
+    due_date_value = default_coordination_due_date()
+
+    try:
+        conn.execute("""
+            UPDATE coordination_groups
+            SET tentative_response_due_date = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (
+            due_date_value,
+            group_id
+        ))
+
+        conn.commit()
+
+        refreshed_group = conn.execute("""
+            SELECT *
+            FROM coordination_groups
+            WHERE id = ?
+        """, (
+            group_id,
+        )).fetchone()
+
+        if refreshed_group:
+            group = refreshed_group
+
+    except Exception:
+        pass
+
+    return due_date_value, group
 
 
 def add_follow_up_acceptance_date_option(conn, member_id, arrival_date, departure_date):
@@ -2034,6 +3560,268 @@ def coordination_round_number(group):
 
 
 
+
+
+def ensure_house_block_columns(conn):
+
+    try:
+        conn.execute("ALTER TABLE blocked_dates ADD COLUMN is_full_block INTEGER DEFAULT 1")
+    except Exception:
+        pass
+
+    try:
+        conn.execute("ALTER TABLE blocked_dates ADD COLUMN rooms_available INTEGER")
+    except Exception:
+        pass
+
+    try:
+        conn.commit()
+    except Exception:
+        pass
+
+
+def block_is_full(block):
+
+    value = row_value(block, "is_full_block")
+
+    if safe_text(value).strip() == "0":
+        return False
+
+    return True
+
+
+def block_rooms_available(block, total_rooms):
+
+    if block_is_full(block):
+        return 0
+
+    try:
+        rooms_available = int(row_value(block, "rooms_available") or total_rooms)
+    except Exception:
+        rooms_available = total_rooms
+
+    if rooms_available < 0:
+        rooms_available = 0
+
+    if rooms_available > total_rooms:
+        rooms_available = total_rooms
+
+    return rooms_available
+
+
+def build_blocked_date_capacity(blocked_rows, total_rooms):
+
+    blocked_dates = set()
+    room_limit_by_date = {}
+
+    for block in blocked_rows:
+
+        try:
+            start = datetime.strptime(block["start_date"], "%Y-%m-%d").date()
+            end = datetime.strptime(block["end_date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+
+        full_block = block_is_full(block)
+        rooms_available = block_rooms_available(block, total_rooms)
+        current = start
+
+        while current <= end:
+            date_key = current.strftime("%Y-%m-%d")
+
+            if full_block or rooms_available <= 0:
+                blocked_dates.add(date_key)
+                room_limit_by_date[date_key] = 0
+            else:
+                existing_limit = room_limit_by_date.get(date_key, total_rooms)
+                room_limit_by_date[date_key] = min(existing_limit, rooms_available)
+
+            current += timedelta(days=1)
+
+    return blocked_dates, room_limit_by_date
+
+
+def room_capacity_limit_for_date(room_limit_by_date, date_key, total_rooms):
+
+    try:
+        return int(room_limit_by_date.get(date_key, total_rooms))
+    except Exception:
+        return total_rooms
+
+
+def coordination_group_rooms_needed_for_window(conn, group_id, arrival_date, departure_date, total_rooms=4):
+
+    members = conn.execute("""
+        SELECT id
+        FROM coordination_group_members
+        WHERE coordination_group_id = ?
+    """, (
+        group_id,
+    )).fetchall()
+
+    rooms_needed = 0
+
+    for member in members:
+        rooms_needed += coordination_member_rooms_for_tentative(
+            conn,
+            member["id"],
+            arrival_date,
+            departure_date,
+            total_rooms
+        )
+
+    if rooms_needed < 1 and members:
+        rooms_needed = len(members)
+
+    if rooms_needed < 1:
+        rooms_needed = 1
+
+    return rooms_needed
+
+
+def coordination_capacity_check_for_window(conn, group_id, arrival_date, departure_date):
+
+    total_rooms_row = conn.execute("""
+        SELECT COUNT(*) AS count
+        FROM rooms
+    """).fetchone()
+
+    total_rooms = 4
+    if total_rooms_row and total_rooms_row["count"]:
+        total_rooms = total_rooms_row["count"]
+
+    rooms_needed = coordination_group_rooms_needed_for_window(
+        conn,
+        group_id,
+        arrival_date,
+        departure_date,
+        total_rooms
+    )
+
+    blocked_ranges = conn.execute("""
+        SELECT *
+        FROM blocked_dates
+        ORDER BY start_date
+    """).fetchall()
+
+    blocked_dates, room_limit_by_date = build_blocked_date_capacity(
+        blocked_ranges,
+        total_rooms
+    )
+
+    approved_by_date = {}
+
+    approved_bookings = conn.execute("""
+        SELECT arrival_date, departure_date, 1 AS rooms_held
+        FROM bookings
+        WHERE status = 'approved'
+    """).fetchall()
+
+    tentative_holds = get_coordination_tentative_holds(
+        conn,
+        exclude_group_id=group_id,
+        expand_rooms=True
+    )
+
+    for booking in list(approved_bookings) + list(tentative_holds):
+        try:
+            current = datetime.strptime(booking["arrival_date"], "%Y-%m-%d").date()
+            end = datetime.strptime(booking["departure_date"], "%Y-%m-%d").date()
+        except Exception:
+            continue
+
+        rooms_to_count = 1
+        try:
+            rooms_to_count = int(row_value(booking, "rooms_held", "rooms_requested") or 1)
+        except Exception:
+            rooms_to_count = 1
+
+        while current < end:
+            date_key = current.strftime("%Y-%m-%d")
+            approved_by_date[date_key] = approved_by_date.get(date_key, 0) + rooms_to_count
+            current += timedelta(days=1)
+
+    notes = []
+    capacity_ok = True
+    min_rooms_open = total_rooms
+
+    try:
+        current = datetime.strptime(arrival_date, "%Y-%m-%d").date()
+        end = datetime.strptime(departure_date, "%Y-%m-%d").date()
+    except Exception:
+        return {"capacity_ok": False, "rooms_needed": rooms_needed, "rooms_available": total_rooms, "min_rooms_open": 0, "notes": ["Invalid date range."]}
+
+    while current < end:
+        date_key = current.strftime("%Y-%m-%d")
+        if date_key in blocked_dates:
+            capacity_ok = False
+            notes.append(f"{format_date(date_key)} is fully blocked")
+
+        daily_capacity = room_capacity_limit_for_date(room_limit_by_date, date_key, total_rooms)
+        rooms_open = daily_capacity - approved_by_date.get(date_key, 0)
+
+        if rooms_open < min_rooms_open:
+            min_rooms_open = rooms_open
+
+        if rooms_open < rooms_needed:
+            capacity_ok = False
+            notes.append(f"{format_date(date_key)} has only {rooms_open} room(s) open for {rooms_needed} room(s) needed")
+
+        current += timedelta(days=1)
+
+    return {"capacity_ok": capacity_ok, "rooms_needed": rooms_needed, "rooms_available": total_rooms, "min_rooms_open": min_rooms_open, "notes": notes}
+
+
+def latest_coordination_system_overlap(conn, group_id):
+
+    group_date_options = conn.execute("""
+        SELECT
+            coordination_date_options.*,
+            coordination_group_members.id AS member_id,
+            coordination_group_members.role,
+            guest_profiles.primary_name,
+            guest_profiles.primary_email
+        FROM coordination_date_options
+        JOIN coordination_group_members
+            ON coordination_date_options.coordination_group_member_id = coordination_group_members.id
+        JOIN guest_profiles
+            ON coordination_group_members.guest_profile_id = guest_profiles.id
+        WHERE coordination_group_members.coordination_group_id = ?
+        ORDER BY coordination_date_options.arrival_date
+    """, (group_id,)).fetchall()
+
+    approved_bookings_for_matching = conn.execute("""
+        SELECT arrival_date, departure_date
+        FROM bookings
+        WHERE status = 'approved'
+    """).fetchall()
+
+    blocked_ranges_for_matching = conn.execute("""
+        SELECT *
+        FROM blocked_dates
+        ORDER BY start_date
+    """).fetchall()
+
+    total_rooms_for_matching = conn.execute("""
+        SELECT COUNT(*) AS count
+        FROM rooms
+    """).fetchone()["count"]
+
+    tentative_holds_for_matching = get_coordination_tentative_holds(conn, exclude_group_id=group_id, expand_rooms=True)
+
+    suggestions = build_coordination_intersection_suggestions(
+        group_date_options,
+        list(approved_bookings_for_matching) + tentative_holds_for_matching,
+        blocked_ranges_for_matching,
+        total_rooms_for_matching
+    )
+
+    if suggestions:
+        return suggestions[0]
+
+    return None
+
+
 def get_coordination_tentative_holds(conn, exclude_group_id=None, expand_rooms=False):
 
     ensure_coordination_tables(conn)
@@ -2127,16 +3915,21 @@ def get_coordination_tentative_holds(conn, exclude_group_id=None, expand_rooms=F
 
     return holds
 
-def request_change_links(request_id):
+def request_change_links(request_id, repeat_visit_url=None):
 
     request_id_text = safe_text(request_id).strip()
 
     if request_id_text.isdigit():
         change_url = f"{BASE_URL}/request/{request_id_text}/change"
         cancel_url = f"{BASE_URL}/request/{request_id_text}/cancel"
+        all_reservations_url = f"{BASE_URL}/request/{request_id_text}/all-reservations"
     else:
         change_url = BASE_URL
         cancel_url = ""
+        all_reservations_url = standard_new_request_url()
+
+    if not repeat_visit_url:
+        repeat_visit_url = standard_new_request_url()
 
     cancel_block = ""
 
@@ -2152,24 +3945,305 @@ Cancel Visit:
 
 Need to make a change?
 
-Change Dates:
+Change Visit:
 {change_url}
 {cancel_block}
-Start a New Request:
-{BASE_URL}
+Request Another Visit:
+{repeat_visit_url}
+
+All Reservations:
+{all_reservations_url}
 
 ━━━━━━━━━━━━━━━━━━
 """
 
 
-def ensure_guest_change_links(body, request_id):
+def ensure_guest_change_links(body, request_id, repeat_visit_url=None):
 
     body = safe_text(body)
 
     if "Need to make a change?" in body:
         return body
 
-    return body + request_change_links(request_id)
+    return body + request_change_links(request_id, repeat_visit_url)
+
+
+def guest_visit_history_summary(conn, request_row, current_request_id=None):
+
+    if not request_row:
+        return ""
+
+    guest_profile_id = row_value(request_row, "guest_profile_id")
+    guest_email = clean_text(row_value(request_row, "email")).lower()
+
+    rows = []
+
+    if guest_profile_id:
+        rows = conn.execute("""
+            SELECT
+                booking_requests.id,
+                booking_requests.arrival_date,
+                booking_requests.departure_date,
+                booking_requests.rooms_requested,
+                booking_requests.status
+            FROM booking_requests
+            WHERE guest_profile_id = ?
+              AND status IN ('pending', 'approved', 'change_requested', 'cancel_requested')
+            ORDER BY arrival_date DESC, id DESC
+            LIMIT 6
+        """, (
+            guest_profile_id,
+        )).fetchall()
+
+    elif guest_email:
+        rows = conn.execute("""
+            SELECT
+                id,
+                arrival_date,
+                departure_date,
+                rooms_requested,
+                status
+            FROM booking_requests
+            WHERE LOWER(email) = ?
+              AND status IN ('pending', 'approved', 'change_requested', 'cancel_requested')
+            ORDER BY arrival_date DESC, id DESC
+            LIMIT 6
+        """, (
+            guest_email,
+        )).fetchall()
+
+    if not rows:
+        return ""
+
+    lines = [
+        "",
+        "━━━━━━━━━━━━━━━━━━",
+        "Visit Summary",
+        ""
+    ]
+
+    for row in rows:
+        marker = "Current" if safe_text(row["id"]) == safe_text(current_request_id) else "Previous/Other"
+        lines.append(
+            f"- {marker}: {format_date(row['arrival_date'])} to {format_date(row['departure_date'])} | Rooms: {row['rooms_requested'] or 1} | Status: {safe_text(row['status']).replace('_', ' ').title()}"
+        )
+
+    lines.extend([
+        "━━━━━━━━━━━━━━━━━━",
+        ""
+    ])
+
+    return "\n".join(lines)
+
+
+def append_guest_visit_history_summary(body, conn, request_row, current_request_id=None):
+
+    # V32.7: visit history is helpful, but it must never block confirmation emails.
+    # If the DB row shape or history query is not available, return the original body.
+    try:
+        summary = guest_visit_history_summary(
+            conn,
+            request_row,
+            current_request_id
+        )
+
+        if not summary:
+            return body
+
+        if "Visit Summary" in safe_text(body):
+            return body
+
+        return safe_text(body).rstrip() + "\n" + summary
+
+    except Exception as error:
+        try:
+            write_email_audit(
+                row_value(request_row, "email", "primary_email"),
+                "Visit Summary",
+                "SUMMARY_SKIPPED",
+                error
+            )
+        except Exception:
+            pass
+
+        return body
+
+
+def guest_reservations_html(conn, request_row):
+
+    if not request_row:
+        return ""
+
+    guest_profile_id = row_value(request_row, "guest_profile_id")
+    guest_email = clean_text(row_value(request_row, "email", "primary_email")).lower()
+
+    params = []
+    where_clause = ""
+
+    if guest_profile_id:
+        where_clause = "guest_profile_id = ?"
+        params.append(guest_profile_id)
+    elif guest_email:
+        where_clause = "LOWER(email) = ?"
+        params.append(guest_email)
+    else:
+        return "<p>No reservation history is available for this request.</p>"
+
+    rows = conn.execute(f"""
+        SELECT
+            id,
+            arrival_date,
+            departure_date,
+            rooms_requested,
+            status,
+            created_at
+        FROM booking_requests
+        WHERE {where_clause}
+          AND status IN ('pending', 'approved', 'change_requested', 'cancel_requested', 'declined')
+        ORDER BY arrival_date DESC, id DESC
+    """, params).fetchall()
+
+    if not rows:
+        return "<p>No confirmed or pending visits found.</p>"
+
+    row_html = ""
+
+    for visit in rows:
+
+        status_text = safe_text(visit["status"]).replace("_", " ").title()
+
+        if safe_text(visit["status"]) == "approved":
+            badge_bg = "#e8f7ea"
+            badge_color = "#198754"
+        elif safe_text(visit["status"]) == "pending":
+            badge_bg = "#fff3cd"
+            badge_color = "#856404"
+        elif safe_text(visit["status"]) in ("change_requested", "cancel_requested"):
+            badge_bg = "#e7f1ff"
+            badge_color = "#0d6efd"
+        else:
+            badge_bg = "#f8d7da"
+            badge_color = "#842029"
+
+        row_html += f"""
+        <tr>
+            <td style="padding:6px 8px; border-bottom:1px solid #eee; white-space:nowrap;">
+                {format_date(visit['arrival_date'])}
+            </td>
+            <td style="padding:6px 8px; border-bottom:1px solid #eee; white-space:nowrap;">
+                {format_date(visit['departure_date'])}
+            </td>
+            <td style="padding:6px 8px; border-bottom:1px solid #eee; text-align:center;">
+                {safe_text(visit['rooms_requested'] or 1)}
+            </td>
+            <td style="padding:6px 8px; border-bottom:1px solid #eee;">
+                <span style="background:{badge_bg}; color:{badge_color}; padding:3px 7px; border-radius:999px; font-size:12px; font-weight:bold;">
+                    {safe_text(status_text)}
+                </span>
+            </td>
+            <td style="padding:6px 8px; border-bottom:1px solid #eee; white-space:nowrap;">
+                <a href="/request/{visit['id']}/change" style="
+                    display:inline-block;
+                    background:#0f4c81;
+                    color:#ffffff;
+                    padding:6px 9px;
+                    border-radius:7px;
+                    text-decoration:none;
+                    font-size:12px;
+                    font-weight:bold;
+                    margin:2px 4px 2px 0;
+                ">Change Request</a>
+                <a href="/request/{visit['id']}/cancel" style="
+                    display:inline-block;
+                    background:#842029;
+                    color:#ffffff;
+                    padding:6px 9px;
+                    border-radius:7px;
+                    text-decoration:none;
+                    font-size:12px;
+                    font-weight:bold;
+                    margin:2px 0;
+                ">Cancel Request</a>
+            </td>
+        </tr>
+        """
+
+    return f"""
+    <table border="0" cellpadding="0" cellspacing="0" style="border-collapse:collapse; width:100%; max-width:850px; font-size:14px;">
+        <tr style="background:#f5f7fa;">
+            <th align="left" style="padding:7px 8px; border-bottom:1px solid #ddd;">Arrival</th>
+            <th align="left" style="padding:7px 8px; border-bottom:1px solid #ddd;">Departure</th>
+            <th align="center" style="padding:7px 8px; border-bottom:1px solid #ddd;">Rooms</th>
+            <th align="left" style="padding:7px 8px; border-bottom:1px solid #ddd;">Status</th>
+            <th align="left" style="padding:7px 8px; border-bottom:1px solid #ddd;">Actions</th>
+        </tr>
+        {row_html}
+    </table>
+    """
+
+
+@app.route("/request/<int:request_id>/all-reservations")
+def all_reservations(request_id):
+
+    conn = get_db_connection()
+
+    request_row = conn.execute("""
+        SELECT *
+        FROM booking_requests
+        WHERE id = ?
+    """, (
+        request_id,
+    )).fetchone()
+
+    if not request_row:
+        conn.close()
+        return f"""
+        {nav_links()}
+        <h1>Reservations Not Found</h1>
+        <p>We could not find the visit request for this link.</p>
+        """
+
+    guest_name = safe_text(row_value(request_row, "name", "primary_name"))
+    invitation_id = row_value(request_row, "invitation_id")
+
+    if invitation_id:
+        request_visit_link = f"/invite/{safe_text(invitation_id)}"
+    else:
+        request_visit_link = "/new-request"
+
+    reservations_html = guest_reservations_html(
+        conn,
+        request_row
+    )
+
+    conn.close()
+
+    return f"""
+    {nav_links()}
+
+    <h1>All Reservations</h1>
+
+    <p style="max-width:850px; line-height:1.4;">
+        This is a guest summary of confirmed and pending Shore Home visits for {safe_text(guest_name)}. Use Change Request or Cancel Request next to a visit if you need to update plans.
+    </p>
+
+    {reservations_html}
+
+    <p style="margin-top:16px;">
+        <a href="{request_visit_link}" style="
+            display:inline-block;
+            background:#0f4c81;
+            color:white;
+            padding:10px 14px;
+            border-radius:8px;
+            text-decoration:none;
+            font-weight:bold;
+        ">
+            Request a Visit
+        </a>
+    </p>
+    """
+
 
 def short_date(date_string):
 
@@ -2233,7 +4307,7 @@ def ensure_coordination_tables(conn):
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             coordination_group_id INTEGER NOT NULL,
             guest_profile_id INTEGER NOT NULL,
-            role TEXT NOT NULL DEFAULT 'guest',
+            role TEXT NOT NULL DEFAULT 'participant',
             invitation_status TEXT NOT NULL DEFAULT 'draft',
             last_response_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -2250,6 +4324,21 @@ def ensure_coordination_tables(conn):
             flexibility_days INTEGER DEFAULT 0,
             rooms_requested INTEGER DEFAULT 1,
             notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS coordination_tentative_adjustments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            coordination_group_id INTEGER NOT NULL,
+            system_arrival_date TEXT,
+            system_departure_date TEXT,
+            admin_arrival_date TEXT NOT NULL,
+            admin_departure_date TEXT NOT NULL,
+            adjustment_reason TEXT,
+            rooms_needed INTEGER DEFAULT 0,
+            capacity_status TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -2289,7 +4378,11 @@ def ensure_coordination_tables(conn):
         "follow_up_sent_at TIMESTAMP",
         "follow_up_response_at TIMESTAMP",
         "follow_up_suggested_arrival TEXT",
-        "follow_up_suggested_departure TEXT"
+        "follow_up_suggested_departure TEXT",
+        "organizer_suggested_guests TEXT",
+        "organizer_suggested_dates_notes TEXT",
+        "organizer_suggestions_at TIMESTAMP",
+        "organizer_kickoff_sent_at TIMESTAMP"
     ]
 
     for column_definition in coordination_member_columns:
@@ -2297,6 +4390,21 @@ def ensure_coordination_tables(conn):
         try:
             conn.execute(
                 f"ALTER TABLE coordination_group_members ADD COLUMN {column_definition}"
+            )
+        except:
+            pass
+
+    coordination_date_option_columns = [
+        "rooms_requested INTEGER DEFAULT 1",
+        "notes TEXT",
+        "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+    ]
+
+    for column_definition in coordination_date_option_columns:
+
+        try:
+            conn.execute(
+                f"ALTER TABLE coordination_date_options ADD COLUMN {column_definition}"
             )
         except:
             pass
@@ -2416,6 +4524,54 @@ def normalize_rooms_requested(value, total_rooms=4):
         value = total_rooms
 
     return value
+
+
+def combined_confirmed_group_members(conn, request_row):
+
+    names = []
+
+    def add_names(raw_value):
+        raw_text = safe_text(raw_value).strip()
+
+        if not raw_text or raw_text.lower() in ["none", "none listed", "n/a", "na"]:
+            return
+
+        # Keep casual text usable, but split common separators.
+        parts = re.split(r"[,;\n]+", raw_text)
+
+        for part in parts:
+            clean_part = safe_text(part).strip()
+
+            if clean_part and clean_part.lower() not in [safe_text(existing).strip().lower() for existing in names]:
+                names.append(clean_part)
+
+    add_names(row_value(request_row, "name"))
+
+    try:
+        guest_profile_id = row_value(request_row, "guest_profile_id")
+
+        if guest_profile_id:
+            profile_row = conn.execute("""
+                SELECT primary_name, additional_names
+                FROM guest_profiles
+                WHERE id = ?
+            """, (
+                guest_profile_id,
+            )).fetchone()
+
+            if profile_row:
+                add_names(row_value(profile_row, "primary_name"))
+                add_names(row_value(profile_row, "additional_names"))
+
+    except Exception:
+        pass
+
+    add_names(row_value(request_row, "additional_names"))
+
+    if not names:
+        return "None listed"
+
+    return ", ".join(names)
 
 
 def resolve_request_recipient_email(conn, request_row):
@@ -2813,6 +4969,8 @@ def dashboard():
         WHERE status = 'archived'
     """).fetchone()["count"]
 
+    ensure_house_block_columns(conn)
+
     blocked_ranges = conn.execute("""
         SELECT *
         FROM blocked_dates
@@ -2889,7 +5047,7 @@ def dashboard():
     coordination_groups = conn.execute("""
         SELECT *
         FROM coordination_groups
-        WHERE status != 'archived'
+        WHERE COALESCE(status, '') != 'archived'
         ORDER BY
             updated_at DESC,
             created_at DESC
@@ -3094,20 +5252,31 @@ def dashboard():
 
         needs_attention = False
 
-        if member_count == 0:
-            needs_attention = True
+        coordination_status = safe_text(coordination_group["status"]).strip()
 
-        if responded_count < member_count:
-            needs_attention = True
+        if coordination_status in ["finalized", "closed", "archived"]:
+            needs_attention = False
+            booking_handoff_status = "Closed / finalized"
+            confirmation_status = "Complete"
+            tentative_status = "Closed / finalized"
+            capacity_status = "OK"
 
-        if unmatched_count > 0:
-            needs_attention = True
+        else:
 
-        if capacity_status in ["Issue", "No Match"]:
-            needs_attention = True
+            if member_count == 0:
+                needs_attention = True
 
-        if converted_requests_needing_review > 0:
-            needs_attention = True
+            if responded_count < member_count:
+                needs_attention = True
+
+            if unmatched_count > 0:
+                needs_attention = True
+
+            if capacity_status in ["Issue", "No Match"]:
+                needs_attention = True
+
+            if converted_requests_needing_review > 0:
+                needs_attention = True
 
         coordination_dashboard_rows.append({
             "group_id": coordination_group["id"],
@@ -3200,10 +5369,16 @@ def dashboard():
             )
         ).days
 
-    blocked_dates = set()
+    blocked_dates, room_limit_by_date = build_blocked_date_capacity(
+        blocked_ranges,
+        total_rooms
+    )
     blocked_reasons_by_date = {}
 
     for block in blocked_ranges:
+
+        if not block_is_full(block):
+            continue
 
         start = parse_iso_date_safe(block["start_date"])
         end = parse_iso_date_safe(block["end_date"])
@@ -3222,7 +5397,6 @@ def dashboard():
         while current <= end:
 
             current_date_key = current.strftime("%Y-%m-%d")
-            blocked_dates.add(current_date_key)
 
             if block_reason:
                 blocked_reasons_by_date[current_date_key] = block_reason
@@ -3464,7 +5638,13 @@ def dashboard():
                 </div>
                 """
 
-        rooms_open = total_rooms - rooms_used - tentative_hold_rooms
+        capacity_limit = room_capacity_limit_for_date(
+            room_limit_by_date,
+            current_date_str,
+            total_rooms
+        )
+
+        rooms_open = capacity_limit - rooms_used - tentative_hold_rooms
 
         blocked_reason_html = ""
 
@@ -3756,7 +5936,7 @@ def dashboard():
     action_needed_rows += dashboard_action_row(
         "Pending Requests",
         len(pending_requests),
-        "New requests waiting for review, room assignment, approval, or decline.",
+        "Request another visits waiting for review, room assignment, approval, or decline.",
         "/requests",
         "Review Requests",
         "warning" if len(pending_requests) > 0 else "normal"
@@ -4255,6 +6435,425 @@ def audit_routes_and_links():
         "routes": route_rules
     }
 
+
+
+def calendar_diagnostics_summary():
+
+    diagnostics = []
+
+    try:
+
+        conn = get_db_connection()
+
+        invitation_count = conn.execute("""
+            SELECT COUNT(*) AS count
+            FROM invitations
+        """).fetchone()["count"]
+
+        active_invitation_count = conn.execute("""
+            SELECT COUNT(*) AS count
+            FROM invitations
+            WHERE COALESCE(status, '') NOT IN ('cancelled', 'archived', 'closed')
+        """).fetchone()["count"]
+
+        approved_booking_count = conn.execute("""
+            SELECT COUNT(*) AS count
+            FROM bookings
+            WHERE status = 'approved'
+        """).fetchone()["count"]
+
+        blocked_date_count = conn.execute("""
+            SELECT COUNT(*) AS count
+            FROM blocked_dates
+        """).fetchone()["count"]
+
+        pending_request_count = conn.execute("""
+            SELECT COUNT(*) AS count
+            FROM booking_requests
+            WHERE COALESCE(status, '') IN ('pending', 'submitted', 'change_requested')
+        """).fetchone()["count"]
+
+        conn.close()
+
+        diagnostics.append(
+            "Invitations: "
+            + str(invitation_count)
+            + " total / "
+            + str(active_invitation_count)
+            + " active"
+        )
+
+        diagnostics.append(
+            "Approved bookings used by calendar capacity: "
+            + str(approved_booking_count)
+        )
+
+        diagnostics.append(
+            "Blocked date records: "
+            + str(blocked_date_count)
+        )
+
+        diagnostics.append(
+            "Pending/change requests: "
+            + str(pending_request_count)
+        )
+
+        diagnostics.append(
+            "Guest calendar JS expected fields: arrival_date, departure_date, rooms_requested"
+        )
+
+        diagnostics.append(
+            "Diagnostic note: this does not change guest behavior; it only confirms calendar data sources."
+        )
+
+        return True, "<br>".join(diagnostics)
+
+    except Exception as error:
+
+        return False, "Calendar diagnostics failed: " + safe_text(error)
+
+
+
+
+def email_template_files_diagnostics_summary():
+
+    try:
+
+        expected_templates = sorted(DEFAULT_EMAIL_TEMPLATES.keys())
+
+        # V30.2: keep template protection read-only, but only enforce
+        # placeholders that are truly required for the current stable workflow.
+        # Optional sections like change_links_section, base_url, and guest_role
+        # should not make Production Check fail just because the wording changed.
+        required_placeholders = {
+            "invitation.txt": [
+                "{{ guest_name }}",
+                "{{ request_link }}"
+            ]
+        }
+
+        existing_templates = []
+
+        if os.path.isdir(EMAIL_TEMPLATE_FOLDER):
+
+            existing_templates = sorted(
+                [
+                    filename
+                    for filename in os.listdir(EMAIL_TEMPLATE_FOLDER)
+                    if filename.endswith(".txt")
+                ]
+            )
+
+        missing_templates = [
+            template_name
+            for template_name in expected_templates
+            if template_name not in existing_templates
+        ]
+
+        placeholder_warnings = []
+
+        for template_name, placeholders in required_placeholders.items():
+
+            if template_name in missing_templates:
+                continue
+
+            template_path = os.path.join(
+                EMAIL_TEMPLATE_FOLDER,
+                template_name
+            )
+
+            if not os.path.exists(template_path):
+                continue
+
+            with open(template_path, "r", encoding="utf-8") as handle:
+                template_text = handle.read()
+
+            missing_placeholders = [
+                placeholder
+                for placeholder in placeholders
+                if placeholder not in template_text
+            ]
+
+            if missing_placeholders:
+                placeholder_warnings.append(
+                    template_name
+                    + " missing "
+                    + ", ".join(missing_placeholders)
+                )
+
+        detail_lines = []
+
+        detail_lines.append(
+            "Email template folder: "
+            + safe_text(EMAIL_TEMPLATE_FOLDER)
+        )
+
+        detail_lines.append(
+            "Template files found: "
+            + str(len(existing_templates))
+            + " / "
+            + str(len(expected_templates))
+        )
+
+        if missing_templates:
+            detail_lines.append(
+                "Missing files: "
+                + ", ".join(missing_templates)
+            )
+
+        if placeholder_warnings:
+            detail_lines.append(
+                "Missing required placeholders: "
+                + " | ".join(placeholder_warnings)
+            )
+
+        if missing_templates or placeholder_warnings:
+            detail_lines.append(
+                "Template protection is read-only. Fix template files in GitHub, commit, deploy, then recheck."
+            )
+
+            return False, "<br>".join(detail_lines)
+
+        detail_lines.append(
+            "Email TXT templates are available. Essential invitation placeholders are present."
+        )
+
+        return True, "<br>".join(detail_lines)
+
+    except Exception as error:
+
+        return False, "Email template diagnostics failed: " + safe_text(error)
+
+
+def route_safety_diagnostics_summary():
+
+    sensitive_routes = [
+        "/test-email",
+        "/admin/rebuild-email-templates",
+        "/admin-backup",
+        "/admin-reset-test-data",
+        "/approve-cancel/<int:request_id>",
+        "/invitation/<int:invitation_id>/status/<new_status>"
+    ]
+
+    try:
+        route_methods = {}
+
+        for rule in app.url_map.iter_rules():
+            route_methods[rule.rule] = set(rule.methods or [])
+
+        missing_post = []
+
+        for route in sensitive_routes:
+            methods = route_methods.get(route, set())
+
+            if "POST" not in methods:
+                missing_post.append(route)
+
+        if missing_post:
+            return False, "Sensitive route(s) missing POST confirmation: " + ", ".join(missing_post)
+
+        return True, "Sensitive admin actions require POST confirmation before side effects."
+
+    except Exception as error:
+        return False, "Route safety diagnostics failed: " + safe_text(error)
+
+
+
+def database_schema_diagnostics_summary():
+
+    required_columns = {
+        "guest_profiles": ["id", "primary_name", "primary_email", "status", "welcome_email_sent_at"],
+        "rooms": ["id", "name"],
+        "blocked_dates": ["id", "start_date", "end_date", "is_full_block", "rooms_available"],
+        "invitations": ["id", "guest_profile_id"],
+        "booking_requests": ["id", "name", "email", "arrival_date", "departure_date", "status", "rooms_requested", "invitation_id"],
+        "bookings": ["id", "request_id", "room_id", "arrival_date", "departure_date", "status"],
+        "coordination_groups": ["id", "title", "status", "tentative_arrival_date", "tentative_departure_date"],
+        "coordination_group_members": ["id", "coordination_group_id", "guest_profile_id", "invitation_status"],
+        "coordination_date_options": ["id", "coordination_group_member_id", "arrival_date", "departure_date", "rooms_requested"],
+        "activity_log": ["id", "action_type", "created_at"],
+        "email_log": ["id"]
+    }
+
+    conn = None
+
+    try:
+        conn = get_db_connection()
+        existing_tables = set(
+            row["name"]
+            for row in conn.execute("""
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'table'
+            """).fetchall()
+        )
+
+        problems = []
+
+        for table_name, columns in required_columns.items():
+
+            if table_name not in existing_tables:
+                problems.append(f"missing table {table_name}")
+                continue
+
+            table_columns = set(
+                row["name"]
+                for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+            )
+
+            for column_name in columns:
+                if column_name not in table_columns:
+                    problems.append(f"{table_name}.{column_name}")
+
+        if problems:
+            return False, "Schema issue(s): " + ", ".join(problems)
+
+        return True, "Critical database tables and columns are present, including partial house-block capacity fields."
+
+    except Exception as error:
+        return False, "Database schema diagnostics failed: " + safe_text(error)
+
+    finally:
+        if conn:
+            conn.close()
+
+
+def critical_guest_route_diagnostics_summary():
+
+    required_routes = [
+        "/invite/<int:invitation_id>",
+        "/invitation/<int:invitation_id>/request",
+        "/new-request",
+        "/submit",
+        "/request/<request_id>/change",
+        "/request/<int:request_id>/cancel",
+        "/coordination-group-member/<int:member_id>/request",
+        "/coordination-group-member/<int:member_id>/tentative-response"
+    ]
+
+    try:
+        routes = set(rule.rule for rule in app.url_map.iter_rules())
+        missing = [route for route in required_routes if route not in routes]
+
+        if missing:
+            return False, "Missing guest route(s): " + ", ".join(missing)
+
+        return True, "Critical guest-facing invitation, request, change, cancel, and coordination routes are registered."
+
+    except Exception as error:
+        return False, "Guest route diagnostics failed: " + safe_text(error)
+
+
+def email_header_asset_diagnostics_summary():
+
+    try:
+        header_path = os.path.join(
+            app.root_path,
+            "shore_home_header.jpeg"
+        )
+
+        routes = set(rule.rule for rule in app.url_map.iter_rules())
+
+        problems = []
+
+        if "/shore_home_header.jpeg" not in routes:
+            problems.append("missing /shore_home_header.jpeg route")
+
+        if not os.path.exists(header_path):
+            problems.append("missing shore_home_header.jpeg in app root")
+
+        if problems:
+            return False, "; ".join(problems)
+
+        return True, "Email header image exists and the public image route is registered."
+
+    except Exception as error:
+        return False, "Email header asset diagnostics failed: " + safe_text(error)
+
+
+def booking_consistency_diagnostics_summary():
+
+    conn = None
+
+    try:
+        conn = get_db_connection()
+
+        mismatches = conn.execute("""
+            SELECT
+                booking_requests.id,
+                booking_requests.name,
+                COALESCE(booking_requests.rooms_requested, 1) AS rooms_requested,
+                COUNT(bookings.id) AS approved_booking_rows
+            FROM booking_requests
+            LEFT JOIN bookings
+                ON booking_requests.id = bookings.request_id
+               AND bookings.status = 'approved'
+            WHERE booking_requests.status = 'approved'
+            GROUP BY booking_requests.id
+            HAVING approved_booking_rows != rooms_requested
+            ORDER BY booking_requests.id
+        """).fetchall()
+
+        if mismatches:
+            details = []
+
+            for row in mismatches[:8]:
+                details.append(
+                    f"Request {row['id']} {safe_text(row['name'])}: approved rooms {row['rooms_requested']} / booking rows {row['approved_booking_rows']}"
+                )
+
+            return False, "Booking mismatch detected: " + " | ".join(details)
+
+        return True, "Approved booking requests match approved booking rows."
+
+    except Exception as error:
+        return False, "Booking consistency diagnostics failed: " + safe_text(error)
+
+    finally:
+        if conn:
+            conn.close()
+
+
+def reset_tool_contract_diagnostics_summary():
+
+    try:
+        preserved_tables = [
+            "guest_profiles",
+            "rooms",
+            "blocked_dates"
+        ]
+
+        operational_tables = [
+            "activity_log",
+            "email_log",
+            "invitations",
+            "booking_requests",
+            "bookings",
+            "coordination_date_options",
+            "coordination_group_members",
+            "coordination_groups"
+        ]
+
+        route_methods = {}
+        for rule in app.url_map.iter_rules():
+            route_methods[rule.rule] = set(rule.methods or [])
+
+        if "POST" not in route_methods.get("/admin-reset-test-data", set()):
+            return False, "Reset Test Data route does not require POST."
+
+        return True, (
+            "Reset Test Data contract loaded: backup outward only; preserve "
+            + ", ".join(preserved_tables)
+            + "; clear operational tables "
+            + ", ".join(operational_tables)
+            + "."
+        )
+
+    except Exception as error:
+        return False, "Reset tool diagnostics failed: " + safe_text(error)
+
+
 @app.route("/production-check")
 def production_check():
 
@@ -4313,8 +6912,74 @@ def production_check():
 
     checks.append((
         "Public access protection",
-        False,
-        "This app has no login layer. Do not expose it publicly until access protection is added."
+        ADMIN_AUTH_ENABLED,
+        "Admin login protection configured." if ADMIN_AUTH_ENABLED else "ADMIN_PASSWORD is missing; admin pages are not protected."
+    ))
+
+    route_safety_ok, route_safety_detail = route_safety_diagnostics_summary()
+
+    checks.append((
+        "Route Safety",
+        route_safety_ok,
+        route_safety_detail
+    ))
+
+    schema_diag_ok, schema_diag_detail = database_schema_diagnostics_summary()
+
+    checks.append((
+        "Database Schema",
+        schema_diag_ok,
+        schema_diag_detail
+    ))
+
+    guest_route_diag_ok, guest_route_diag_detail = critical_guest_route_diagnostics_summary()
+
+    checks.append((
+        "Guest Route Coverage",
+        guest_route_diag_ok,
+        guest_route_diag_detail
+    ))
+
+    header_diag_ok, header_diag_detail = email_header_asset_diagnostics_summary()
+
+    checks.append((
+        "Email Header Asset",
+        header_diag_ok,
+        header_diag_detail
+    ))
+
+    booking_diag_ok, booking_diag_detail = booking_consistency_diagnostics_summary()
+
+    checks.append((
+        "Booking Consistency",
+        booking_diag_ok,
+        booking_diag_detail
+    ))
+
+    reset_diag_ok, reset_diag_detail = reset_tool_contract_diagnostics_summary()
+
+    checks.append((
+        "Reset Tool Contract",
+        reset_diag_ok,
+        reset_diag_detail
+    ))
+
+
+    calendar_diag_ok, calendar_diag_detail = calendar_diagnostics_summary()
+
+    checks.append((
+        "Calendar Diagnostics",
+        calendar_diag_ok,
+        calendar_diag_detail
+    ))
+
+
+    email_template_diag_ok, email_template_diag_detail = email_template_files_diagnostics_summary()
+
+    checks.append((
+        "Email Template Files",
+        email_template_diag_ok,
+        email_template_diag_detail
     ))
 
     rows = ""
@@ -4401,8 +7066,16 @@ def production_checklist():
     """
 
 
-@app.route("/admin-backup")
+@app.route("/admin-backup", methods=["GET", "POST"])
 def admin_backup():
+
+    if request.method != "POST":
+        return action_confirmation_page(
+            "Create Admin Backup",
+            "Create a timestamped copy of the current database in the backups folder.",
+            "/admin-backup",
+            "/dashboard"
+        )
 
     import shutil
 
@@ -4461,8 +7134,343 @@ def admin_backup():
     </p>
     """
 
+
     return html
 
+
+def admin_reset_test_data_counts(conn):
+
+    table_names = [
+        "guest_profiles",
+        "rooms",
+        "blocked_dates",
+        "invitations",
+        "booking_requests",
+        "bookings",
+        "coordination_groups",
+        "coordination_group_members",
+        "coordination_date_options",
+        "activity_log",
+        "email_log"
+    ]
+
+    counts = []
+
+    for table_name in table_names:
+
+        try:
+            row = conn.execute(
+                f"SELECT COUNT(*) AS count, MAX(id) AS max_id FROM {table_name}"
+            ).fetchone()
+            count = row["count"]
+            max_id = row["max_id"]
+        except Exception:
+            count = "missing"
+            max_id = "missing"
+
+        counts.append({
+            "table_name": table_name,
+            "count": count,
+            "max_id": max_id
+        })
+
+    return counts
+
+
+def admin_reset_test_data_snapshot(counts):
+
+    snapshot = {}
+
+    for row in counts:
+
+        snapshot[row["table_name"]] = (
+            safe_text(row["count"]),
+            safe_text(row["max_id"])
+        )
+
+    return snapshot
+
+
+def admin_reset_preserved_rows_snapshot(conn):
+
+    preserved_tables = [
+        "guest_profiles",
+        "rooms",
+        "blocked_dates"
+    ]
+
+    snapshot = {}
+
+    for table_name in preserved_tables:
+
+        columns = [
+            row["name"]
+            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        ]
+
+        rows = [
+            dict(row)
+            for row in conn.execute(f"SELECT * FROM {table_name} ORDER BY id").fetchall()
+        ]
+
+        snapshot[table_name] = {
+            "columns": columns,
+            "rows": rows
+        }
+
+    return snapshot
+
+
+def admin_reset_restore_preserved_rows(conn, snapshot):
+
+    # Preserve current master data even if reset logic or future seed/init logic
+    # accidentally changes one of these tables. This intentionally restores the
+    # rows that existed immediately before the reset began.
+    for table_name, table_snapshot in snapshot.items():
+
+        columns = table_snapshot["columns"]
+        rows = table_snapshot["rows"]
+
+        conn.execute(f"DELETE FROM {table_name}")
+
+        if not rows:
+            continue
+
+        column_sql = ", ".join(columns)
+        placeholder_sql = ", ".join(["?"] * len(columns))
+
+        for row in rows:
+            conn.execute(
+                f"INSERT INTO {table_name} ({column_sql}) VALUES ({placeholder_sql})",
+                [row.get(column) for column in columns]
+            )
+
+
+def admin_reset_test_data_preserved_ok(before_counts, after_counts):
+
+    preserved_tables = [
+        "guest_profiles",
+        "rooms",
+        "blocked_dates"
+    ]
+
+    before_snapshot = admin_reset_test_data_snapshot(before_counts)
+    after_snapshot = admin_reset_test_data_snapshot(after_counts)
+    problems = []
+
+    for table_name in preserved_tables:
+
+        if before_snapshot.get(table_name) != after_snapshot.get(table_name):
+            problems.append(
+                f"{table_name} changed from {before_snapshot.get(table_name)} to {after_snapshot.get(table_name)}"
+            )
+
+    return (
+        len(problems) == 0,
+        problems
+    )
+
+
+def admin_reset_test_data_counts_html(counts):
+
+    rows = ""
+
+    preserved_tables = {
+        "guest_profiles",
+        "rooms",
+        "blocked_dates"
+    }
+
+    for row in counts:
+
+        table_name = row["table_name"]
+        count = row["count"]
+        max_id = row["max_id"]
+        role = "Preserved" if table_name in preserved_tables else "Cleared"
+
+        rows += f"""
+        <tr>
+            <td>{safe_text(table_name)}</td>
+            <td>{safe_text(role)}</td>
+            <td>{safe_text(count)}</td>
+            <td>{safe_text(max_id)}</td>
+        </tr>
+        """
+
+    return f"""
+    <table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; max-width: 760px; width: 100%;">
+        <tr style="background-color: #f5f5f5;">
+            <th align="left">Table</th>
+            <th align="left">Reset Role</th>
+            <th align="left">Rows</th>
+            <th align="left">Max ID</th>
+        </tr>
+        {rows}
+    </table>
+    """
+
+
+@app.route("/admin-reset-test-data", methods=["GET", "POST"])
+def admin_reset_test_data():
+
+    conn = get_db_connection()
+    before_counts = admin_reset_test_data_counts(conn)
+
+    if request.method != "POST":
+
+        counts_html = admin_reset_test_data_counts_html(before_counts)
+        conn.close()
+
+        return f"""
+        {nav_links()}
+
+        <h1>Reset Test Data</h1>
+
+        <div style="
+            background-color: #fff3cd;
+            border: 2px solid #fd7e14;
+            padding: 14px;
+            border-radius: 8px;
+            max-width: 820px;
+            margin-bottom: 14px;
+        ">
+            <p style="font-weight: bold; margin-top: 0; color: #856404;">
+                This clears operational test data but keeps guest profiles, rooms, and blocked dates.
+            </p>
+
+            <p>
+                A database backup will be created automatically before the reset runs.
+                The backup is copied outward only; this tool never restores or copies an older database back over the current one.
+            </p>
+
+            <p><strong>Preserved and verified before/after:</strong> guest_profiles, rooms, blocked_dates</p>
+            <p><strong>Cleared:</strong> invitations, booking_requests, bookings, coordination tables, activity_log, email_log</p>
+        </div>
+
+        <h2>Current Counts</h2>
+        {counts_html}
+
+        <form method="POST" action="/admin-reset-test-data" style="margin-top: 16px;">
+            <input type="hidden" name="confirm_action" value="yes">
+            <button type="submit" style="
+                background-color: #dc3545;
+                color: white;
+                border: none;
+                padding: 9px 14px;
+                border-radius: 5px;
+                font-weight: bold;
+            ">
+                Create Backup and Reset Test Data
+            </button>
+            &nbsp;
+            <a href="/dashboard">Cancel / Go Back</a>
+        </form>
+        """
+
+    try:
+
+        if request.form.get("confirm_action") != "yes":
+            conn.close()
+            return redirect("/admin-reset-test-data")
+
+        os.makedirs("backups", exist_ok=True)
+
+        timestamp = datetime.now().strftime(
+            "%Y_%m_%d__%H_%M_%S"
+        )
+
+        backup_filename = f"shore_backup_pre_test_reset_{timestamp}.db"
+        backup_path = os.path.join(
+            "backups",
+            backup_filename
+        )
+
+        # Backup is copy-out only. This reset tool must never copy or restore
+        # a database file back over DATABASE_FILE.
+        shutil.copy2(
+            DATABASE_FILE,
+            backup_path
+        )
+
+        preserved_rows_snapshot = admin_reset_preserved_rows_snapshot(conn)
+
+        conn.execute("BEGIN")
+
+        # Clear child/detail tables before parent tables.
+        conn.execute("DELETE FROM activity_log")
+        conn.execute("DELETE FROM email_log")
+        conn.execute("DELETE FROM bookings")
+        conn.execute("DELETE FROM coordination_date_options")
+        conn.execute("DELETE FROM coordination_group_members")
+        conn.execute("DELETE FROM coordination_groups")
+        conn.execute("DELETE FROM booking_requests")
+        conn.execute("DELETE FROM invitations")
+
+        # Guardrail: actively restore preserved master tables from the snapshot
+        # taken immediately before reset. This prevents any reset/seed behavior
+        # from rolling guest profiles, rooms, or blocked dates back to older data.
+        admin_reset_restore_preserved_rows(
+            conn,
+            preserved_rows_snapshot
+        )
+
+        conn.commit()
+
+        after_counts = admin_reset_test_data_counts(conn)
+        preserved_ok, preserved_problems = admin_reset_test_data_preserved_ok(
+            before_counts,
+            after_counts
+        )
+        conn.close()
+
+        before_html = admin_reset_test_data_counts_html(before_counts)
+        after_html = admin_reset_test_data_counts_html(after_counts)
+
+        if preserved_ok:
+            preserved_message = "Operational test data was cleared. Guest profiles, rooms, and blocked dates were preserved."
+            preserved_color = "green"
+        else:
+            preserved_message = "RESET WARNING: Preserved table counts changed. Review before continuing: " + " | ".join(preserved_problems)
+            preserved_color = "red"
+
+        return f"""
+        {nav_links()}
+
+        <h1>Reset Test Data Complete</h1>
+
+        <p style="color: {preserved_color}; font-weight: bold;">
+            {safe_text(preserved_message)}
+        </p>
+
+        <p>
+            <strong>Automatic backup created before reset:</strong><br>
+            {safe_text(backup_filename)}<br>
+            <span style="color: #666;">{safe_text(backup_path)}</span>
+        </p>
+
+        <h2>Before Reset</h2>
+        {before_html}
+
+        <h2>After Reset</h2>
+        {after_html}
+
+        <p>
+            <a href="/dashboard">Back to Dashboard</a> |
+            <a href="/production-check">Open Production Check</a>
+        </p>
+        """
+
+    except Exception as error:
+
+        rollback_and_close(conn)
+
+        return transaction_error_page(
+            error,
+            "/admin-reset-test-data"
+        )
+
+
+@app.route("/new-request")
 @app.route("/")
 def home():
     conn = get_db_connection()
@@ -4497,6 +7505,8 @@ def home():
         selected_year += 1
 
 
+    ensure_house_block_columns(conn)
+
     blocked = conn.execute("""
         SELECT * FROM blocked_dates
         ORDER BY start_date
@@ -4516,17 +7526,10 @@ def home():
 
     conn.close()
 
-    blocked_dates = set()
-
-    for b in blocked:
-        start = datetime.strptime(b["start_date"], "%Y-%m-%d")
-        end = datetime.strptime(b["end_date"], "%Y-%m-%d")
-
-        current = start
-
-        while current <= end:
-            blocked_dates.add(current.strftime("%Y-%m-%d"))
-            current += timedelta(days=1)
+    blocked_dates, room_limit_by_date = build_blocked_date_capacity(
+        blocked,
+        total_rooms
+    )
 
     blocked_list = sorted(blocked_dates)
 
@@ -4594,9 +7597,16 @@ def home():
             if hold_start <= current < hold_end:
                 tentative_rooms_held += int(tentative_hold.get("rooms_held", 1) or 1)
 
-        room_capacity[current.strftime("%Y-%m-%d")] = max(
+        current_date_key = current.strftime("%Y-%m-%d")
+        capacity_limit = room_capacity_limit_for_date(
+            room_limit_by_date,
+            current_date_key,
+            total_rooms
+        )
+
+        room_capacity[current_date_key] = max(
             0,
-            total_rooms - rooms_used - tentative_rooms_held
+            capacity_limit - rooms_used - tentative_rooms_held
         )
 
         current += timedelta(days=1)
@@ -4637,22 +7647,24 @@ def home():
     </div>
     """
 
+    calendar_base_path = "/new-request" if request.path == "/new-request" else "/"
+
     calendar_html = f"""
     <h2>Capacity Calendar - {month_title}</h2>
 
     <p>
-        <a href="/?year={previous_year}&month={previous_month}">
+        <a data-calendar-nav="1" href="{calendar_base_path}?year={previous_year}&month={previous_month}">
             Previous Month
         </a>
         |
         <strong>{month_title}</strong>
         |
-        <a href="/?year={next_year}&month={next_month}">
+        <a data-calendar-nav="1" href="{calendar_base_path}?year={next_year}&month={next_month}">
             Next Month
         </a>
     </p>
 
-    <table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse;">
+    <table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse;">
         <tr>
             <th>Sun</th>
             <th>Mon</th>
@@ -4724,7 +7736,7 @@ def home():
             cursor = "not-allowed"
 
         elif has_tentative_hold:
-            background = "#ffe8a1"
+            background = "#cfe8ff"
             status = "Coordination Hold"
             display_line_1 = f"{rooms_open} open"
             display_line_2 = "Coordination Hold"
@@ -4755,14 +7767,17 @@ def home():
             style="
                 background-color: {background};
                 vertical-align: top;
-                width: 42px;
-                height: 32px;
-                font-size: 11px;
+                width: 56px;
+                height: 44px;
+                font-size: 12px;
                 text-align: center;
                 cursor: {cursor};
                 padding: 2px;
             " title="{display_line_1} {display_line_2}">
             <strong>{day}</strong><br>
+            <span style="font-size: 9px; font-weight: normal; line-height: 1.05;">
+                {str(rooms_open) + " ROOM" + ("" if rooms_open == 1 else "S") + " OPEN" if (not past_date and current_date_str not in blocked_dates and rooms_open > 0) else ("FULL" if (not past_date and current_date_str not in blocked_dates and rooms_open <= 0) else "")}
+            </span><br>
             <span style="font-size: 9px;">{display_line_2 if has_tentative_hold else ''}</span>
         </td>
         """
@@ -4784,18 +7799,53 @@ def home():
         <strong>Legend:</strong>
         <span style="background-color: #d4edda; padding: 4px;">Open</span>
         <span style="background-color: #fff3cd; padding: 4px;">Almost Full</span>
-        <span style="background-color: #ffe8a1; padding: 4px;">Coordination Hold</span>
+        <span style="background-color: #cfe8ff; padding: 4px;">Coordination Hold</span>
         <span style="background-color: #f8d7da; padding: 4px;">Full / Blocked</span>
         <span style="background-color: #e9ecef; padding: 4px;">Past</span>
+    
+        <span style="border: 2px dotted #dc3545; padding: 3px;">Tentative Group Dates</span>
     </p>
     """
 
-    html = nav_links()
+    html = ""
 
-    html += alert_box
+    if request.path != "/new-request":
+        html = nav_links()
+        html += alert_box
 
     html += """
-    <h1 style="margin-bottom: 6px;">Request a Shore Visit</h1>
+    
+    <style>
+        .guest-request-page label,
+        .guest-request-page input,
+        .guest-request-page select,
+        .guest-request-page textarea,
+        .guest-request-page button {
+            font-size: 20px;
+        }
+
+        .guest-request-page select,
+        .guest-request-page input,
+        .guest-request-page textarea {
+            line-height: 1.35;
+        }
+
+        .guest-request-page .guest-bedroom-instruction {
+            font-size: 28px;
+            font-weight: 800;
+            line-height: 1.15;
+            margin-bottom: 4px;
+        }
+
+        .guest-request-page .guest-bedroom-subtext {
+            font-size: 22px;
+            font-weight: 700;
+            line-height: 1.2;
+        }
+    </style>
+
+    <div class="guest-request-page">
+    <h1 style="margin-bottom: 6px;">Standard Visit Request</h1>
 
     <div style="
         background-color: #f8fbff;
@@ -4810,6 +7860,38 @@ def home():
         This is just a request for now — no one is packing a beach bag until it is approved.
     </div>
 
+    <div style="
+        display: flex;
+        gap: 36px;
+        align-items: flex-start;
+        flex-wrap: wrap;
+        max-width: 1180px;
+    ">
+
+        <div style="
+            flex: 0 0 330px;
+            max-width: 360px;
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 12px 14px;
+            line-height: 1.35;
+        ">
+            <h2 style="margin-top: 0; margin-bottom: 8px;">Standard Visitor Request Page</h2>
+            <p style="margin-top: 0; margin-bottom: 8px;">
+                Use this form to start a new shore visit request.
+            </p>
+            <p style="margin-top: 0; margin-bottom: 0;">
+                Choose bedrooms first, then select arrival and departure dates from the calendar.
+            </p>
+        </div>
+
+        <div style="
+            flex: 1;
+            min-width: 340px;
+            max-width: 720px;
+        ">
+
     <h2 style="margin-bottom: 6px;">Visit Details</h2>
 
     <form method="POST"
@@ -4821,7 +7903,7 @@ def home():
         <input type="hidden" name="children" value="0">
 
         <label style="font-size: 18px; font-weight: bold;">
-            <strong>How many bedrooms do you need?</strong>
+            <strong class="guest-bedroom-instruction">Choose the number of bedrooms you need first then the dates.</strong>
         </label><br>
 
         <div style="font-size: 15px; font-weight: bold; margin-bottom: 4px;">
@@ -4842,10 +7924,11 @@ def home():
     html += calendar_html
 
     html += """
-        <h3>Selected Stay</h3>
+        <h3 style="font-size: 28px; margin-bottom: 8px;">Selected Stay</h3>
 
         <p id="date_selection_message"
            style="
+               font-size: 24px;
                font-weight: bold;
                color: #0d6efd;
            ">
@@ -4854,6 +7937,7 @@ def home():
 
         <p id="nights_message"
            style="
+               font-size: 24px;
                font-weight: bold;
                color: #198754;
            ">
@@ -4915,7 +7999,7 @@ def home():
         <br>
 
         <label>
-            <strong>Bringing a pet?</strong>
+            <strong style="font-size: 24px;">Bringing a pet?</strong>
         </label><br>
 
         <select name="pets">
@@ -4926,41 +8010,42 @@ def home():
         <br>
 
         <label>
-            <strong>Food Restrictions or Preferences</strong>
+            <strong style="font-size: 24px;">Food Restrictions or Preferences</strong>
         </label><br>
 
-        <small>
+        <small style="font-size: 18px;">
             Optional — dietary restrictions, allergies, etc.
         </small><br>
 
         <textarea name="food_restrictions"
                   rows="3"
-                  style="width: 420px;"></textarea>
+                  style="width: 420px; font-size: 22px; padding: 8px; line-height: 1.35;"></textarea>
 
         <br>
 
         <label>
-            <strong>Comments or Notes</strong>
+            <strong style="font-size: 24px;">Comments or Notes</strong>
         </label><br>
 
         <textarea name="comments"
                   rows="2"
-                  style="width: 420px;"></textarea>
+                  style="width: 420px; font-size: 22px; padding: 8px; line-height: 1.35;"></textarea>
 
         <br>
 
         <label>
-            <strong>
+            <strong style="font-size: 24px;">
                 Who else are you hoping to visit with at the same time?
             </strong>
         </label><br>
 
-        <small>
+        <small style="font-size: 18px;">
             Optional — example: Jack Smith and family, Florida group etc.
         </small><br>
 
         <textarea name="coordination_notes"
-                  rows="3"></textarea>
+                  rows="3"
+                  style="width: 420px; font-size: 22px; padding: 8px; line-height: 1.35;"></textarea>
 
         <br>
 
@@ -4980,7 +8065,7 @@ def home():
 
         <input type="submit"
                value="Submit Visit Request"
-               style="padding: 8px 12px; font-weight: bold;">
+               style="padding: 12px 18px; font-size: 22px; font-weight: bold;">
 
     </form>
     """
@@ -4998,6 +8083,55 @@ def home():
         let nextDateField = "arrival";
         let selectedArrivalCell = null;
         let selectedDepartureCell = null;
+
+
+        const dateSelectionStorageKey = "shore_home_date_selection_" + window.location.pathname;
+
+        function saveDateSelectionState() {{
+            try {{
+                localStorage.setItem(
+                    dateSelectionStorageKey,
+                    JSON.stringify({{
+                        arrival: document.getElementById("arrival_date").value,
+                        departure: document.getElementById("departure_date").value,
+                        next: nextDateField
+                    }})
+                );
+            }} catch (error) {{}}
+        }}
+
+        function restoreDateSelectionState() {{
+            try {{
+                const queryState = new URLSearchParams(window.location.search);
+                const queryArrival = queryState.get("arrival_date") || "";
+                const queryDeparture = queryState.get("departure_date") || "";
+                const queryNext = queryState.get("next_date_field") || "";
+
+                // V35.2.2: request pages must open with no stale selected stay.
+                // Only explicit query params from calendar navigation are allowed.
+                if (queryArrival) {{
+                    document.getElementById("arrival_date").value = queryArrival;
+                    nextDateField = queryNext || "departure";
+                }}
+
+                if (queryDeparture) {{
+                    document.getElementById("departure_date").value = queryDeparture;
+                    nextDateField = queryNext || "arrival";
+                }}
+
+                if (!queryArrival && !queryDeparture) {{
+                    document.getElementById("arrival_date").value = "";
+                    document.getElementById("departure_date").value = "";
+                    document.getElementById("date_selection_message").innerText = "No dates selected yet.";
+                    document.getElementById("nights_message").innerText = "";
+                    nextDateField = "arrival";
+
+                    try {{
+                        localStorage.removeItem(dateSelectionStorageKey);
+                    }} catch (storageError) {{}}
+                }}
+            }} catch (error) {{}}
+        }}
 
         function getRequestedRooms() {{
             return parseInt(document.getElementById("rooms_requested").value);
@@ -5031,6 +8165,39 @@ def home():
             selectedDepartureCell = null;
         }}
 
+        function highlightSelectedDates() {{
+            const arrivalValue = document.getElementById("arrival_date").value;
+            const departureValue = document.getElementById("departure_date").value;
+
+            if (arrivalValue) {{
+                const arrivalCell = document.querySelector('[data-date="' + arrivalValue + '"]');
+
+                if (arrivalCell) {{
+                    if (!arrivalCell.dataset.originalColor) {{
+                        arrivalCell.dataset.originalColor = arrivalCell.style.backgroundColor;
+                    }}
+
+                    selectedArrivalCell = arrivalCell;
+                    arrivalCell.style.backgroundColor = "#9ec5fe";
+                    arrivalCell.style.outline = "3px solid #0d6efd";
+                }}
+            }}
+
+            if (departureValue) {{
+                const departureCell = document.querySelector('[data-date="' + departureValue + '"]');
+
+                if (departureCell) {{
+                    if (!departureCell.dataset.originalColor) {{
+                        departureCell.dataset.originalColor = departureCell.style.backgroundColor;
+                    }}
+
+                    selectedDepartureCell = departureCell;
+                    departureCell.style.backgroundColor = "#b6d7a8";
+                    departureCell.style.outline = "3px solid #198754";
+                }}
+            }}
+        }}
+
         function resetDateSelection() {{
             document.getElementById("arrival_date").value = "";
             document.getElementById("departure_date").value = "";
@@ -5043,6 +8210,10 @@ def home():
             clearSelectedCellColors();
 
             nextDateField = "arrival";
+
+            try {{
+                localStorage.removeItem(dateSelectionStorageKey);
+            }} catch (error) {{}}
         }}
 
         function updateNightsMessage() {{
@@ -5105,6 +8276,10 @@ def home():
             const departureField = document.getElementById("departure_date");
             const message = document.getElementById("date_selection_message");
 
+            if (nextDateField === "arrival" && arrivalField.value && !departureField.value && dateString > arrivalField.value) {{
+                nextDateField = "departure";
+            }}
+
             if (nextDateField === "arrival") {{
                 clearSelectedCellColors();
 
@@ -5124,12 +8299,19 @@ def home():
                     + ". Now click a departure date.";
 
                 updateNightsMessage();
+                saveDateSelectionState();
 
             }} else {{
 
                 if (dateString <= arrivalField.value) {{
                     alert("Departure date must be after arrival date.");
                     return;
+                }}
+
+                if (selectedDepartureCell) {{
+                    selectedDepartureCell.style.outline = "";
+                    selectedDepartureCell.style.backgroundColor = selectedDepartureCell.dataset.originalColor;
+                    selectedDepartureCell = null;
                 }}
 
                 departureField.value = dateString;
@@ -5149,14 +8331,41 @@ def home():
                     + ".";
 
                 updateNightsMessage();
+                saveDateSelectionState();
             }}
         }}
+
+        restoreDateSelectionState();
+        highlightSelectedDates();
+        updateNightsMessage();
+        preserveCalendarNavigationSelection();
 
         document.getElementById("rooms_requested")
             .addEventListener("change", function () {{
                 resetDateSelection();
                 updateNightsMessage();
             }});
+
+        function preserveCalendarNavigationSelection() {{
+            document.querySelectorAll('[data-calendar-nav="1"]').forEach(function (link) {{
+                link.addEventListener("click", function () {{
+                    const arrival = document.getElementById("arrival_date").value;
+                    const departure = document.getElementById("departure_date").value;
+                    const url = new URL(link.href, window.location.origin);
+
+                    if (arrival) {{
+                        url.searchParams.set("arrival_date", arrival);
+                    }}
+
+                    if (departure) {{
+                        url.searchParams.set("departure_date", departure);
+                    }}
+
+                    url.searchParams.set("next_date_field", nextDateField || "arrival");
+                    link.href = url.toString();
+                }});
+            }});
+        }}
 
         function checkUnavailableDates() {{
             const arrival = document.getElementById("arrival_date").value;
@@ -5208,8 +8417,12 @@ def home():
             return true;
         }}
 
-        resetDateSelection();
+        // Do not reset here: preserve arrival/departure when navigating calendar months.
     </script>
+    """
+
+    html += """
+    </div>
     """
 
     return html
@@ -5273,6 +8486,8 @@ def invite_request(invitation_id):
         selected_month = 1
         selected_year += 1
 
+    ensure_house_block_columns(conn)
+
     blocked = conn.execute("""
         SELECT * FROM blocked_dates
         ORDER BY start_date
@@ -5331,17 +8546,10 @@ def invite_request(invitation_id):
 
     conn.close()
 
-    blocked_dates = set()
-
-    for b in blocked:
-        start = datetime.strptime(b["start_date"], "%Y-%m-%d")
-        end = datetime.strptime(b["end_date"], "%Y-%m-%d")
-
-        current = start
-
-        while current <= end:
-            blocked_dates.add(current.strftime("%Y-%m-%d"))
-            current += timedelta(days=1)
+    blocked_dates, room_limit_by_date = build_blocked_date_capacity(
+        blocked,
+        total_rooms
+    )
 
     blocked_list = sorted(blocked_dates)
 
@@ -5409,9 +8617,16 @@ def invite_request(invitation_id):
             if hold_start <= current < hold_end:
                 tentative_rooms_held += int(tentative_hold.get("rooms_held", 1) or 1)
 
-        room_capacity[current.strftime("%Y-%m-%d")] = max(
+        current_date_key = current.strftime("%Y-%m-%d")
+        capacity_limit = room_capacity_limit_for_date(
+            room_limit_by_date,
+            current_date_key,
+            total_rooms
+        )
+
+        room_capacity[current_date_key] = max(
             0,
-            total_rooms - rooms_used - tentative_rooms_held
+            capacity_limit - rooms_used - tentative_rooms_held
         )
 
         current += timedelta(days=1)
@@ -5420,18 +8635,18 @@ def invite_request(invitation_id):
     <h2 id="calendar-section">Capacity Calendar - {month_title}</h2>
 
     <p>
-        <a href="/invite/{invitation_id}?year={previous_year}&month={previous_month}#calendar-section">
+        <a data-calendar-nav="1" href="/invite/{invitation_id}?year={previous_year}&month={previous_month}#calendar-section">
             Previous Month
         </a>
         |
         <strong>{month_title}</strong>
         |
-        <a href="/invite/{invitation_id}?year={next_year}&month={next_month}#calendar-section">
+        <a data-calendar-nav="1" href="/invite/{invitation_id}?year={next_year}&month={next_month}#calendar-section">
             Next Month
         </a>
     </p>
 
-    <table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse; width: 100%; max-width: 760px;">
+    <table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; max-width: 760px;">
         <tr>
             <th>Sun</th>
             <th>Mon</th>
@@ -5503,7 +8718,7 @@ def invite_request(invitation_id):
             cursor = "not-allowed"
 
         elif has_tentative_hold:
-            background = "#ffe8a1"
+            background = "#cfe8ff"
             status = "Coordination Hold"
             display_line_1 = f"{rooms_open} open"
             display_line_2 = "Coordination Hold"
@@ -5534,14 +8749,17 @@ def invite_request(invitation_id):
             style="
                 background-color: {background};
                 vertical-align: top;
-                width: 42px;
-                height: 32px;
-                font-size: 11px;
+                width: 56px;
+                height: 44px;
+                font-size: 12px;
                 text-align: center;
                 cursor: {cursor};
                 padding: 2px;
             " title="{display_line_1} {display_line_2}">
             <strong>{day}</strong><br>
+            <span style="font-size: 9px; font-weight: normal; line-height: 1.05;">
+                {str(rooms_open) + " ROOM" + ("" if rooms_open == 1 else "S") + " OPEN" if (not past_date and current_date_str not in blocked_dates and rooms_open > 0) else ("FULL" if (not past_date and current_date_str not in blocked_dates and rooms_open <= 0) else "")}
+            </span><br>
             <span style="font-size: 9px;">{display_line_2 if has_tentative_hold else ''}</span>
         </td>
         """
@@ -5563,9 +8781,11 @@ def invite_request(invitation_id):
         <strong>Legend:</strong>
         <span style="background-color: #d4edda; padding: 3px;">Open</span>
         <span style="background-color: #fff3cd; padding: 3px;">Almost Full</span>
-        <span style="background-color: #ffe8a1; padding: 3px;">Coordination Hold</span>
+        <span style="background-color: #cfe8ff; padding: 3px;">Coordination Hold</span>
         <span style="background-color: #f8d7da; padding: 3px;">Full / Blocked</span>
         <span style="background-color: #e9ecef; padding: 3px;">Past</span>
+    
+        <span style="border: 2px dotted #dc3545; padding: 3px;">Tentative Group Dates</span>
     </p>
     """
 
@@ -5602,7 +8822,7 @@ def invite_request(invitation_id):
                     to {format_date(booking['departure_date'])}
                 </td>
                 <td>{booking['rooms_requested'] or 1}</td>
-                <td>{safe_text(booking['room_name'])}</td>
+                <td>{display_room_name(booking['room_name'])}</td>
                 <td>
                     <a href="/request/{booking['request_id']}">
                         View
@@ -5695,7 +8915,7 @@ def invite_request(invitation_id):
     return f"""
     {nav_links()}
 
-    <h1>Standard Visit Request</h1>
+    <h1>Request Another Visit</h1>
 
     <div style="
         display: flex;
@@ -5728,7 +8948,6 @@ def invite_request(invitation_id):
                 <p style="
                     margin-bottom: 0;
                 ">
-                    You are responding to:
                     <strong>{invitation_title}</strong>
                 </p>
 
@@ -5769,15 +8988,12 @@ def invite_request(invitation_id):
                 <input type="hidden" name="children" value="0">
 
                 <label style="font-size: 18px; font-weight: bold;">
-                    <strong>How many bedrooms do you need?</strong>
+                    <strong style="font-size: 22px; font-weight: bold;">Choose the number of bedrooms you need first then the dates.</strong>
                 </label><br>
 
-                <div style="font-size: 15px; font-weight: bold; margin-bottom: 4px;">
-                    Each bedroom sleeps up to 2 guests.
-                </div>
+                <div style="font-size: 18px; font-weight: bold; margin-bottom: 4px;">Each bedroom sleeps up to 2 guests.</div>
 
-                <select name="rooms_requested"
-                        id="rooms_requested">
+                <select name="rooms_requested" id="rooms_requested" style="font-size: 18px; padding: 7px; min-height: 40px;">
                     <option value="1">1 Bedroom</option>
                     <option value="2">2 Bedrooms</option>
                     <option value="3">3 Bedrooms</option>
@@ -5788,22 +9004,14 @@ def invite_request(invitation_id):
 
                 {calendar_html}
 
-                <h3>Selected Stay</h3>
+                <h3 style="font-size: 22px; font-weight: bold;">Selected Stay</h3>
 
-                <p id="date_selection_message"
-                   style="
-                       font-weight: bold;
-                       color: #0d6efd;
-                   ">
-                   No dates selected yet.
+                <p id="date_selection_message" style="font-size: 18px; font-weight: bold; color: #0d6efd;">
+           No dates selected yet.
                 </p>
 
-                <p id="nights_message"
-                   style="
-                       font-weight: bold;
-                       color: #198754;
-                   ">
-                </p>
+                <p id="nights_message" style="font-size: 18px; font-weight: bold; color: #198754;">
+        </p>
 
                 <input type="hidden"
                        id="arrival_date"
@@ -5815,32 +9023,25 @@ def invite_request(invitation_id):
                        name="departure_date"
                        value="">
 
-                <button type="button"
-                        onclick="resetDateSelection();">
-                    Clear Selected Dates and Start Over
-                </button>
+                <button type="button" onclick="resetDateSelection();" style="padding: 8px 12px; font-size: 16px; font-weight: bold; background-color: #0d6efd; color: white; border: none; border-radius: 8px;">Clear Selected Dates and Start Over</button>
 
                 <br>
 
                 <label>
-                    <strong>Additional Guest Name(s) for Your Room(s)</strong>
+<strong style="font-size: 22px; font-weight: bold;">Additional Guest Name(s) for Your Room(s)</strong>
                 </label><br>
 
-                <small>
-                    Please include everyone expected to stay.
-                </small><br>
+                <small style="font-size: 18px; font-weight: bold;">Please include everyone expected to stay.</small><br>
 
-                <textarea name="additional_names"
-                          rows="2"
-                          style="width: 100%;">{profile_additional_names}</textarea>
+                <textarea name="additional_names" rows="2" style="width: 100%; max-width: 980px; font-size: 18px; padding: 9px; line-height: 1.35;">{profile_additional_names}</textarea>
 
                 <br>
 
                 <label>
-                    <strong>Bringing a pet?</strong>
+                    <strong style="font-size: 22px; font-weight: bold;">Bringing a pet?</strong>
                 </label><br>
 
-                <select name="pets">
+                <select name="pets" style="font-size: 18px; padding: 7px; min-height: 40px;">
                     <option value="No" {pet_no_selected}>No</option>
                     <option value="Yes" {pet_yes_selected}>Yes</option>
                 </select>
@@ -5848,31 +9049,24 @@ def invite_request(invitation_id):
                 <br>
 
                 <label>
-                    <strong>Food Restrictions or Preferences</strong>
+                    <strong style="font-size: 22px; font-weight: bold;">Food Restrictions or Preferences</strong>
                 </label><br>
 
-                <small>
-                    Optional — dietary restrictions, allergies, etc.
-                </small><br>
+                <small style="font-size: 18px; font-weight: bold;">Optional — dietary restrictions, allergies, etc.</small><br>
 
-                <textarea name="food_restrictions"
-                          rows="3"
-                          style="width: 100%;">{profile_food_notes}</textarea>
+                <textarea name="food_restrictions" rows="3" style="width: 100%; max-width: 980px; font-size: 18px; padding: 9px; line-height: 1.35;">{profile_food_notes}</textarea>
 
                 <br>
 
                 <label>
-                    <strong>Comments or Notes</strong>
+                    <strong style="font-size: 22px; font-weight: bold;">Comments or Notes</strong>
                 </label><br>
 
-                <textarea name="comments"
-                          rows="2"
-                          style="width: 100%;"></textarea>
+                <textarea name="comments" rows="2" style="width: 100%; max-width: 980px; font-size: 18px; padding: 9px; line-height: 1.35;"></textarea>
 
                 <br>
 
-                <input type="submit"
-                       value="Submit Visit Request">
+                <input type="submit" value="Submit Visit Request" style="padding: 8px 12px; font-size: 16px; font-weight: bold; background-color: #0d6efd; color: white; border: none; border-radius: 8px;">
 
             </form>
 
@@ -5888,6 +9082,55 @@ def invite_request(invitation_id):
         let nextDateField = "arrival";
         let selectedArrivalCell = null;
         let selectedDepartureCell = null;
+
+
+        const dateSelectionStorageKey = "shore_home_date_selection_" + window.location.pathname;
+
+        function saveDateSelectionState() {{
+            try {{
+                localStorage.setItem(
+                    dateSelectionStorageKey,
+                    JSON.stringify({{
+                        arrival: document.getElementById("arrival_date").value,
+                        departure: document.getElementById("departure_date").value,
+                        next: nextDateField
+                    }})
+                );
+            }} catch (error) {{}}
+        }}
+
+        function restoreDateSelectionState() {{
+            try {{
+                const queryState = new URLSearchParams(window.location.search);
+                const queryArrival = queryState.get("arrival_date") || "";
+                const queryDeparture = queryState.get("departure_date") || "";
+                const queryNext = queryState.get("next_date_field") || "";
+
+                // V35.2.2: request pages must open with no stale selected stay.
+                // Only explicit query params from calendar navigation are allowed.
+                if (queryArrival) {{
+                    document.getElementById("arrival_date").value = queryArrival;
+                    nextDateField = queryNext || "departure";
+                }}
+
+                if (queryDeparture) {{
+                    document.getElementById("departure_date").value = queryDeparture;
+                    nextDateField = queryNext || "arrival";
+                }}
+
+                if (!queryArrival && !queryDeparture) {{
+                    document.getElementById("arrival_date").value = "";
+                    document.getElementById("departure_date").value = "";
+                    document.getElementById("date_selection_message").innerText = "No dates selected yet.";
+                    document.getElementById("nights_message").innerText = "";
+                    nextDateField = "arrival";
+
+                    try {{
+                        localStorage.removeItem(dateSelectionStorageKey);
+                    }} catch (storageError) {{}}
+                }}
+            }} catch (error) {{}}
+        }}
 
         function getRequestedRooms() {{
             return parseInt(document.getElementById("rooms_requested").value);
@@ -5933,6 +9176,10 @@ def invite_request(invitation_id):
             clearSelectedCellColors();
 
             nextDateField = "arrival";
+
+            try {{
+                localStorage.removeItem(dateSelectionStorageKey);
+            }} catch (error) {{}}
         }}
 
         function updateNightsMessage() {{
@@ -5995,6 +9242,10 @@ def invite_request(invitation_id):
             const departureField = document.getElementById("departure_date");
             const message = document.getElementById("date_selection_message");
 
+            if (nextDateField === "arrival" && arrivalField.value && !departureField.value && dateString > arrivalField.value) {{
+                nextDateField = "departure";
+            }}
+
             if (nextDateField === "arrival") {{
                 clearSelectedCellColors();
 
@@ -6014,6 +9265,7 @@ def invite_request(invitation_id):
                     + ". Now click a departure date.";
 
                 updateNightsMessage();
+                saveDateSelectionState();
 
             }} else {{
 
@@ -6039,14 +9291,40 @@ def invite_request(invitation_id):
                     + ".";
 
                 updateNightsMessage();
+                saveDateSelectionState();
             }}
         }}
+
+        restoreDateSelectionState();
+        updateNightsMessage();
+        preserveCalendarNavigationSelection();
 
         document.getElementById("rooms_requested")
             .addEventListener("change", function () {{
                 resetDateSelection();
                 updateNightsMessage();
             }});
+
+        function preserveCalendarNavigationSelection() {{
+            document.querySelectorAll('[data-calendar-nav="1"]').forEach(function (link) {{
+                link.addEventListener("click", function () {{
+                    const arrival = document.getElementById("arrival_date").value;
+                    const departure = document.getElementById("departure_date").value;
+                    const url = new URL(link.href, window.location.origin);
+
+                    if (arrival) {{
+                        url.searchParams.set("arrival_date", arrival);
+                    }}
+
+                    if (departure) {{
+                        url.searchParams.set("departure_date", departure);
+                    }}
+
+                    url.searchParams.set("next_date_field", nextDateField || "arrival");
+                    link.href = url.toString();
+                }});
+            }});
+        }}
 
         function checkUnavailableDates() {{
             const arrival = document.getElementById("arrival_date").value;
@@ -6098,7 +9376,7 @@ def invite_request(invitation_id):
             return true;
         }}
 
-        resetDateSelection();
+        // Do not reset here: preserve arrival/departure when navigating calendar months.
     </script>
     """
 
@@ -6172,7 +9450,7 @@ def render_request_submitted_page(request_id):
     if invitation_id:
         another_link = f"/invite/{invitation_id}"
     else:
-        another_link = "/"
+        another_link = "/new-request"
 
     nights = date_range_nights(
         request_row["arrival_date"],
@@ -6192,12 +9470,11 @@ def render_request_submitted_page(request_id):
         line-height: 1.4;
     ">
         <p style="font-weight: bold; margin-top: 0;">
-            Your request is in. The beach planning machine is officially warming up.
+            Your request has been submitted.
         </p>
         <p style="margin-bottom: 0;">
             <strong>What happens next?</strong><br>
-            I’ll review the dates and room space. If everything works, you’ll get a confirmation.
-            If not, I’ll follow up and we’ll figure it out.
+            Please wait for confirmation. I’ll review the dates and room space and follow up if anything needs to change.
         </p>
     </div>
 
@@ -6216,15 +9493,21 @@ def render_request_submitted_page(request_id):
 
     <p>
         <a href="{another_link}">
-            Submit an Additional Request
+            Request a Visit
         </a>
     </p>
 
-    <p>
-        <a href="/request/{request_id}/edit?return_to=submitted">
-            Review or Edit This Request
-        </a>
-    </p>
+    <div style="
+        background-color: #f8f9fa;
+        border: 1px solid #ddd;
+        padding: 10px 12px;
+        border-radius: 8px;
+        max-width: 780px;
+        margin: 10px 0;
+    ">
+        <strong>Your request is now pending review.</strong><br>
+        Please wait for confirmation before making changes. If something urgent changes, just reply to the email or contact John & Mark directly.
+    </div>
 
     <p>
         <a href="/request-submitted/complete">
@@ -6278,7 +9561,6 @@ def render_request_submitted_page(request_id):
                 {format_date(pending_request['departure_date'])}
                 ({pending_nights} night{"s" if pending_nights != 1 else ""})
                 — {request_status_display(pending_request['status'])}
-                — <a href="/request/{pending_request['id']}/edit?return_to=submitted">Edit</a>
             </li>
             """
 
@@ -6390,22 +9672,17 @@ def submit():
             "javascript:history.back()"
         )
 
+    ensure_house_block_columns(conn)
+
     blocked = conn.execute("""
         SELECT * FROM blocked_dates
         ORDER BY start_date
     """).fetchall()
 
-    blocked_dates = set()
-
-    for b in blocked:
-        start = datetime.strptime(b["start_date"], "%Y-%m-%d")
-        end = datetime.strptime(b["end_date"], "%Y-%m-%d")
-
-        current = start
-
-        while current <= end:
-            blocked_dates.add(current.strftime("%Y-%m-%d"))
-            current += timedelta(days=1)
+    blocked_dates, room_limit_by_date = build_blocked_date_capacity(
+        blocked,
+        int(conn.execute("SELECT COUNT(*) AS count FROM rooms").fetchone()["count"] or 4)
+    )
 
     bookings = conn.execute("""
         SELECT arrival_date, departure_date
@@ -6444,7 +9721,7 @@ def submit():
             return f"""
             <h2>Request Not Submitted</h2>
             <p>{format_date(date_str)} is blocked and unavailable.</p>
-            <p><a href="javascript:history.back()">Go Back and Change Dates</a></p>
+            <p><a href="javascript:history.back()">Go Back and Change Request</a></p>
             """
 
         rooms_used = 0
@@ -6463,7 +9740,13 @@ def submit():
             if booking_start <= current < booking_end:
                 rooms_used += 1
 
-        rooms_open = total_rooms - rooms_used
+        capacity_limit = room_capacity_limit_for_date(
+            room_limit_by_date,
+            date_str,
+            total_rooms
+        )
+
+        rooms_open = capacity_limit - rooms_used
 
         if rooms_open < rooms_requested:
             conn.close()
@@ -6473,7 +9756,7 @@ def submit():
                 Only {rooms_open} room(s) are available on {format_date(date_str)}.
                 You requested {rooms_requested} room(s).
             </p>
-            <p><a href="javascript:history.back()">Go Back and Change Dates</a></p>
+            <p><a href="javascript:history.back()">Go Back and Change Request</a></p>
             """
 
         current += timedelta(days=1)
@@ -6565,7 +9848,7 @@ def submit():
     conn.close()
 
     notify_admin(
-        "New request submitted",
+        "Request another visit submitted",
         f"Guest: {safe_text(name)}\nArrival: {format_date(arrival)}\nDeparture: {format_date(departure)}\nRooms: {rooms_requested}",
         f"/request/{new_request_id}"
     )
@@ -6878,14 +10161,125 @@ def approve_request(request_id):
         </p>
         """
 
+    # V31.1: tentative coordination holds reserve capacity before final booking.
+    # For coordination handoff approvals, ignore that request's own group hold.
+    exclude_coordination_group_id = None
+
+    try:
+        exclude_coordination_group_id = request_row["coordination_group_id"]
+    except Exception:
+        exclude_coordination_group_id = None
+
+    tentative_holds = get_coordination_tentative_holds(
+        conn,
+        exclude_group_id=exclude_coordination_group_id
+    )
+
+    total_rooms_row = conn.execute("""
+        SELECT COUNT(*) AS count
+        FROM rooms
+    """).fetchone()
+
+    total_rooms = int(total_rooms_row["count"] or 4)
+
+    ensure_house_block_columns(conn)
+    blocked_for_capacity = conn.execute("""
+        SELECT *
+        FROM blocked_dates
+        ORDER BY start_date
+    """).fetchall()
+    blocked_dates_for_capacity, room_limit_by_date = build_blocked_date_capacity(
+        blocked_for_capacity,
+        total_rooms
+    )
+
+    try:
+        check_start = datetime.strptime(effective_arrival_date, "%Y-%m-%d").date()
+        check_end = datetime.strptime(effective_departure_date, "%Y-%m-%d").date()
+    except Exception:
+        check_start = None
+        check_end = None
+
+    if check_start and check_end:
+
+        current_check_date = check_start
+
+        while current_check_date < check_end:
+
+            current_date_string = current_check_date.strftime("%Y-%m-%d")
+
+            approved_rooms_used_row = conn.execute("""
+                SELECT COUNT(*) AS count
+                FROM bookings
+                WHERE status = 'approved'
+                  AND request_id != ?
+                  AND arrival_date <= ?
+                  AND departure_date > ?
+            """, (
+                request_id,
+                current_date_string,
+                current_date_string
+            )).fetchone()
+
+            approved_rooms_used = int(approved_rooms_used_row["count"] or 0)
+            tentative_rooms_held = 0
+
+            for tentative_hold in tentative_holds:
+                try:
+                    hold_start = datetime.strptime(tentative_hold["arrival_date"], "%Y-%m-%d").date()
+                    hold_end = datetime.strptime(tentative_hold["departure_date"], "%Y-%m-%d").date()
+                    hold_rooms = int(tentative_hold.get("rooms_held", 1) or 1)
+                except Exception:
+                    continue
+
+                if hold_start <= current_check_date < hold_end:
+                    tentative_rooms_held += hold_rooms
+
+            capacity_limit = room_capacity_limit_for_date(
+                room_limit_by_date,
+                current_date_string,
+                total_rooms
+            )
+
+            rooms_open_after_holds = capacity_limit - approved_rooms_used - tentative_rooms_held
+
+            if rooms_open_after_holds < rooms_requested:
+
+                conn.close()
+
+                return f"""
+                <h2>Not enough room capacity for those dates.</h2>
+
+                <p>
+                    {format_date(current_date_string)} has only
+                    {rooms_open_after_holds} room(s) open after approved bookings
+                    and tentative coordination holds are counted.
+                </p>
+
+                <p>
+                    This protects coordination dates before final booking is complete.
+                </p>
+
+                <p>
+                    <a href='/requests'>
+                        Back to requests
+                    </a>
+                </p>
+                """
+
+            current_check_date += timedelta(days=1)
+
+    ensure_house_block_columns(conn)
+
     blocked_conflict = conn.execute("""
         SELECT *
         FROM blocked_dates
         WHERE start_date < ?
           AND end_date > ?
+          AND COALESCE(is_full_block, 1) = 1
     """, (
-        request_row["departure_date"],
-        request_row["arrival_date"]
+        effective_departure_date,
+        effective_arrival_date
     )).fetchone()
 
     if blocked_conflict:
@@ -6922,8 +10316,8 @@ def approve_request(request_id):
         """, (
             room_id,
             request_id,
-            request_row["departure_date"],
-            request_row["arrival_date"]
+            effective_departure_date,
+            effective_arrival_date
         )).fetchone()
 
         if conflict:
@@ -6976,12 +10370,18 @@ def approve_request(request_id):
         conn.execute("""
             UPDATE booking_requests
             SET status = ?,
+                arrival_date = ?,
+                departure_date = ?,
+                rooms_requested = ?,
                 response_message = ?,
                 email_status = ?,
                 email_needed_type = ?
             WHERE id = ?
         """, (
             "approved",
+            effective_arrival_date,
+            effective_departure_date,
+            rooms_requested,
             response_message,
             approval_email_status,
             approval_email_needed_type,
@@ -7002,8 +10402,8 @@ def approve_request(request_id):
             """, (
                 request_id,
                 room_id,
-                request_row["arrival_date"],
-                request_row["departure_date"],
+                effective_arrival_date,
+                effective_departure_date,
                 "approved"
             ))
 
@@ -7084,9 +10484,7 @@ def approve_request(request_id):
                 Back to Booking Handoff
             </a>
             |
-            <a href="/request/{request_id}">
-                View Request
-            </a>
+            <strong style="color: #198754;">Done</strong>
             |
             <a href="/room-assignments">
                 Room Assignments
@@ -7096,12 +10494,12 @@ def approve_request(request_id):
 
     nights = (
         datetime.strptime(
-            request_row["departure_date"],
+            effective_departure_date,
             "%Y-%m-%d"
         )
         -
         datetime.strptime(
-            request_row["arrival_date"],
+            effective_arrival_date,
             "%Y-%m-%d"
         )
     ).days
@@ -7118,12 +10516,10 @@ def approve_request(request_id):
     if response_message:
         optional_admin_message = response_message.strip() + "\n"
 
-    additional_names = safe_text(
-        request_row["additional_names"]
-    ).strip()
-
-    if not additional_names:
-        additional_names = "None listed"
+    additional_names = combined_confirmed_group_members(
+        conn,
+        request_row
+    )
 
     coordinating_with = safe_text(
         request_row["coordination_notes"]
@@ -7148,14 +10544,16 @@ def approve_request(request_id):
         f"{BASE_URL}/request/{request_id}/cancel"
     )
 
+    repeat_visit_url = repeat_visit_request_url_for_row(request_row)
+
     approval_email_body = render_email_template(
         "approval.txt",
         guest_name=safe_text(request_row["name"]),
         arrival_date=format_date(
-            request_row["arrival_date"]
+            effective_arrival_date
         ),
         departure_date=format_date(
-            request_row["departure_date"]
+            effective_departure_date
         ),
         nights=nights,
         rooms_requested=rooms_requested,
@@ -7165,26 +10563,26 @@ def approve_request(request_id):
         optional_admin_message=optional_admin_message
     )
 
-    approval_email_body += (
-        "\n\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        "Need to Change or Cancel?\n\n"
-        "If your plans change, please use one of the links below.\n\n"
-        f"Request a change:\n"
-        f"{BASE_URL}/request/{request_id}/change\n\n"
-        f"Cancel this visit:\n"
-        f"{BASE_URL}/request/{request_id}/cancel\n\n"
-        "Changes are not automatic. "
-        "We will review any requested changes "
-        "and follow up by email.\n\n"
-        "━━━━━━━━━━━━━━━━━━\n"
+    approval_email_body = approval_email_body.replace(
+        "Additional Guests for Your Room(s):",
+        "Confirmed Group Members:"
+    ).replace(
+        "Additional Guests:",
+        "Confirmed Group Members:"
     )
 
-    while "\n\n\n" in approval_email_body:
-        approval_email_body = approval_email_body.replace(
-            "\n\n\n",
-            "\n\n"
-        )
+    approval_email_body = append_guest_visit_history_summary(
+        approval_email_body,
+        conn,
+        request_row,
+        request_id
+    )
+
+    approval_email_body = ensure_guest_change_links(
+        approval_email_body,
+        request_id,
+        repeat_visit_url
+    )
 
     html = nav_links() + f"""
     <h1>Request Approved</h1>
@@ -7302,9 +10700,7 @@ def approve_request(request_id):
             Back to Request Review
         </a>
         |
-        <a href="/request/{request_id}">
-            View Request
-        </a>
+        <strong style="color: #198754;">Done</strong>
     </p>
     """
 
@@ -7427,7 +10823,7 @@ def booking_audit():
         <tr>
             <td>{booking['id']}</td>
             <td>{safe_text(booking['guest_name'])}</td>
-            <td>{safe_text(booking['room_name'])}</td>
+            <td>{display_room_name(booking['room_name'])}</td>
             <td>{format_date(booking['arrival_date'])}</td>
             <td>{format_date(booking['departure_date'])}</td>
             <td>{safe_text(booking['status'])}</td>
@@ -7875,8 +11271,29 @@ def bookings_page():
     else:
 
         html += """
-        <table border="1"
-               cellpadding="4"
+        <style>
+            .confirmed-stays-table {
+                border-collapse: collapse;
+                width: auto;
+                max-width: 100%;
+                table-layout: auto;
+                font-size: 12px;
+            }
+            .confirmed-stays-table th,
+            .confirmed-stays-table td {
+                padding: 3px 5px;
+                white-space: nowrap;
+                vertical-align: top;
+            }
+            .confirmed-stays-table td.notes,
+            .confirmed-stays-table td.guests {
+                white-space: normal;
+                max-width: 220px;
+            }
+        </style>
+        <table class="confirmed-stays-table"
+               border="1"
+               cellpadding="3"
                cellspacing="0"
                style="
                    border-collapse: collapse;
@@ -7898,6 +11315,7 @@ def bookings_page():
                 <th style="min-width: 140px;">Request Status</th>
                 <th style="min-width: 110px;">Email Status</th>
                 <th style="min-width: 70px;">View</th>
+                <th style="min-width: 110px;">Admin Cancel</th>
             </tr>
         """
 
@@ -7928,7 +11346,7 @@ def bookings_page():
 
                 html += f"""
                 <tr>
-                    <td colspan="12"
+                    <td colspan="13"
                         style="
                             background-color: #eee;
                             font-weight: bold;
@@ -8067,6 +11485,13 @@ def bookings_page():
                 </a>
                 """
 
+                admin_cancel_html = f"""
+                <a href="/request/{booking['request_id']}/admin-cancel-confirmed"
+                   style="color:#dc3545; font-weight:bold;">
+                    Cancel Visit
+                </a>
+                """
+
             else:
 
                 guest_name_html = ""
@@ -8080,6 +11505,8 @@ def bookings_page():
                 email_status_html = ""
 
                 view_html = ""
+
+                admin_cancel_html = ""
 
             html += f"""
             <tr>
@@ -8149,6 +11576,10 @@ def bookings_page():
 
                 <td style="vertical-align: top;">
                     {view_html}
+                </td>
+
+                <td style="vertical-align: top;">
+                    {admin_cancel_html}
                 </td>
 
             </tr>
@@ -8801,6 +12232,7 @@ def requests_page():
 @app.route("/profiles", methods=["GET", "POST"])
 def profiles_page():
     conn = get_db_connection()
+    ensure_guest_profile_welcome_column(conn)
     filter_status = request.args.get("filter")
 
     if request.method == "POST":
@@ -8828,8 +12260,10 @@ def profiles_page():
                 "/profiles"
             )
 
+        welcome_message = ""
+
         try:
-            conn.execute("""
+            cursor = conn.execute("""
                 INSERT INTO guest_profiles
                 (
                     primary_name,
@@ -8855,7 +12289,25 @@ def profiles_page():
                 status
             ))
 
+            new_profile_id = cursor.lastrowid
+
             conn.commit()
+
+            if request.form.get("send_welcome_email", "yes") == "yes":
+
+                try:
+                    send_profile_welcome_email(
+                        conn,
+                        new_profile_id,
+                        force=False
+                    )
+                    conn.commit()
+                    welcome_message = "Guest profile saved and welcome email sent."
+                except Exception as email_error:
+                    welcome_message = "Guest profile saved, but welcome email failed: " + safe_text(email_error)
+
+            else:
+                welcome_message = "Guest profile saved. Welcome email was not sent."
 
         except Exception as e:
 
@@ -8910,8 +12362,24 @@ def profiles_page():
 
     conn.close()
 
+    try:
+        welcome_message
+    except NameError:
+        welcome_message = ""
+
+    welcome_message_html = ""
+
+    if welcome_message:
+        welcome_message_html = f"""
+        <p style="color: green; font-weight: bold;">
+            {safe_text(welcome_message)}
+        </p>
+        """
+
     html = nav_links() + f"""
     <h1>Guest Profiles</h1>
+
+    {welcome_message_html}
 
     <p>
         <a href="/profiles">All</a> |
@@ -8956,7 +12424,15 @@ def profiles_page():
             <option value="active">Active</option>
             <option value="needs_review">Needs Review</option>
             <option value="archived">Archived</option>
-        </select><br>
+        </select><br><br>
+
+        <label>
+            <input type="checkbox" name="send_welcome_email" value="yes" checked>
+            Send Welcome Email
+        </label><br>
+        <small style="color: #555;">
+            Uses templates/emails/profile_welcome.txt. No invitation is sent yet.
+        </small><br><br>
 
         <button type="submit">Add Profile</button>
     </form>
@@ -8979,6 +12455,7 @@ def profiles_page():
                 <th>Email</th>
                 <th>Additional Names</th>
                 <th>Status</th>
+                <th>Welcome Email</th>
                 <th>Profile</th>
                 <th>Actions</th>
             </tr>
@@ -9035,19 +12512,119 @@ def profiles_page():
                 <td>{profile['primary_email']}</td>
                 <td>{safe_text(profile['additional_names'])}</td>
                 <td>{status_display}</td>
+                <td>{safe_text(profile_welcome_status_text(profile))}</td>
 
                 <td>
                     <a href="/profile/{profile['id']}">View</a> |
                     <a href="/profile/{profile['id']}/edit">Edit</a>
                 </td>
 
-                <td>{action_links}</td>
+                <td>
+                    {action_links}
+                    <br>
+                    <a href="/profile/{profile['id']}/send-welcome">Send Welcome Email</a>
+                </td>
             </tr>
             """
 
         html += "</table>"
 
     return html
+
+@app.route("/profile/<int:profile_id>/send-welcome", methods=["GET", "POST"])
+def send_profile_welcome_again(profile_id):
+
+    conn = get_db_connection()
+    ensure_guest_profile_welcome_column(conn)
+
+    profile = conn.execute("""
+        SELECT *
+        FROM guest_profiles
+        WHERE id = ?
+    """, (
+        profile_id,
+    )).fetchone()
+
+    if not profile:
+        conn.close()
+        return profile_error_page(
+            "Guest profile not found.",
+            "/profiles"
+        )
+
+    if request.method != "POST":
+
+        sent_at = safe_text(row_value(profile, "welcome_email_sent_at")).strip()
+        already_sent_note = ""
+
+        if sent_at:
+            already_sent_note = f"""
+            <p style="color: #856404; font-weight: bold;">
+                A welcome email was already sent on {safe_text(sent_at)}.
+                Continue only if you want to send it again.
+            </p>
+            """
+
+        conn.close()
+
+        return f"""
+        {nav_links()}
+
+        <h1>Send Welcome Email</h1>
+
+        <p>
+            Send the profile welcome email to:
+            <strong>{safe_text(profile['primary_name'])}</strong>
+            &lt;{safe_text(profile['primary_email'])}&gt;
+        </p>
+
+        {already_sent_note}
+
+        <form method="POST" action="/profile/{profile_id}/send-welcome">
+            <input type="hidden" name="confirm_action" value="yes">
+            <button type="submit">
+                Send Welcome Email
+            </button>
+            &nbsp;
+            <a href="/profiles">Cancel</a>
+        </form>
+        """
+
+    try:
+        if request.form.get("confirm_action") != "yes":
+            conn.close()
+            return redirect("/profiles")
+
+        send_profile_welcome_email(
+            conn,
+            profile_id,
+            force=True
+        )
+
+        conn.commit()
+        conn.close()
+
+        return f"""
+        {nav_links()}
+
+        <h1>Welcome Email Sent</h1>
+
+        <p>
+            Welcome email sent to {safe_text(profile['primary_email'])}.
+        </p>
+
+        <p>
+            <a href="/profiles">Back to Guest Profiles</a>
+        </p>
+        """
+
+    except Exception as error:
+        rollback_and_close(conn)
+        return transaction_error_page(
+            error,
+            "/profiles"
+        )
+
 
 @app.route("/profile/<int:profile_id>/archive", methods=["GET", "POST"])
 def archive_profile(profile_id):
@@ -10077,8 +13654,16 @@ def edit_invitation(invitation_id):
     return html
 
 
-@app.route("/invitation/<int:invitation_id>/status/<new_status>")
+@app.route("/invitation/<int:invitation_id>/status/<new_status>", methods=["GET", "POST"])
 def update_invitation_status(invitation_id, new_status):
+
+    if request.method != "POST":
+        return action_confirmation_page(
+            "Change Invitation Status",
+            f"Change invitation {invitation_id} status to {safe_text(new_status)}.",
+            f"/invitation/{invitation_id}/status/{safe_text(new_status)}",
+            "/invitations"
+        )
 
     allowed_statuses = [
         "draft",
@@ -10176,6 +13761,7 @@ value=""><br>
 @app.route("/profile/<int:profile_id>/edit", methods=["GET", "POST"])
 def edit_profile(profile_id):
     conn = get_db_connection()
+    ensure_guest_profile_welcome_column(conn)
 
     profile = conn.execute(
         "SELECT * FROM guest_profiles WHERE id = ?",
@@ -10314,6 +13900,7 @@ def edit_profile(profile_id):
 def profile_detail(profile_id):
 
     conn = get_db_connection()
+    ensure_guest_profile_welcome_column(conn)
 
     profile = conn.execute("""
         SELECT *
@@ -10396,6 +13983,11 @@ def profile_detail(profile_id):
             <p>
                 <strong>Status:</strong>
                 {safe_text(profile['status'])}
+            </p>
+
+            <p>
+                <strong>Welcome Email:</strong>
+                {safe_text(profile_welcome_status_text(profile))}
             </p>
 
         </div>
@@ -10528,7 +14120,7 @@ def decline_request(request_id):
         if request_row["invitation_id"]:
             request_link = f"{BASE_URL}/invite/{request_row['invitation_id']}"
         else:
-            request_link = f"{BASE_URL}/"
+            request_link = standard_new_request_url()
 
         decline_email_subject = "Your Strathmere Visit Request"
 
@@ -10545,7 +14137,8 @@ def decline_request(request_id):
         )
 
         decline_email_body += request_change_links(
-            request_id
+            request_id,
+            repeat_visit_request_url_for_row(request_row)
         )
 
         html = nav_links() + f"""
@@ -10604,7 +14197,7 @@ def decline_request(request_id):
 
         <p>
             <a href="/requests">Back to Request Review</a> |
-            <a href="/request/{request_id}">View Request</a>
+            <strong style="color: #198754;">Done</strong>
         </p>
         """
 
@@ -11262,9 +14855,7 @@ def approve_change(request_id):
         </p>
 
         <p>
-            <a href="/request/{request_id}">
-                Back to Request
-            </a>
+            <strong style="color: #198754;">Done</strong>
         </p>
         """
 
@@ -11332,9 +14923,7 @@ def approve_change(request_id):
         </p>
 
         <p>
-            <a href="/request/{request_id}">
-                Back to Request
-            </a>
+            <strong style="color: #198754;">Done</strong>
         </p>
         """
 
@@ -11364,9 +14953,7 @@ def approve_change(request_id):
         </p>
 
         <p>
-            <a href='/request/{request_id}'>
-                Back to request
-            </a>
+            <a href='/request/{request_id}'>Done</a>
         </p>
         """
 
@@ -11383,17 +14970,106 @@ def approve_change(request_id):
         </p>
 
         <p>
-            <a href='/request/{request_id}'>
-                Back to request
-            </a>
+            <a href='/request/{request_id}'>Done</a>
         </p>
         """
+
+    ensure_house_block_columns(conn)
+
+    total_rooms_row = conn.execute("""
+        SELECT COUNT(*) AS count
+        FROM rooms
+    """).fetchone()
+    total_rooms = int(total_rooms_row["count"] or 4)
+
+    blocked_for_capacity = conn.execute("""
+        SELECT *
+        FROM blocked_dates
+        ORDER BY start_date
+    """).fetchall()
+    blocked_dates_for_capacity, room_limit_by_date = build_blocked_date_capacity(
+        blocked_for_capacity,
+        total_rooms
+    )
+
+    tentative_holds = get_coordination_tentative_holds(conn)
+
+    try:
+        check_start = datetime.strptime(effective_arrival_date, "%Y-%m-%d").date()
+        check_end = datetime.strptime(effective_departure_date, "%Y-%m-%d").date()
+    except Exception:
+        check_start = None
+        check_end = None
+
+    if check_start and check_end:
+
+        current_check_date = check_start
+
+        while current_check_date < check_end:
+
+            current_date_string = current_check_date.strftime("%Y-%m-%d")
+
+            approved_rooms_used_row = conn.execute("""
+                SELECT COUNT(*) AS count
+                FROM bookings
+                WHERE status = 'approved'
+                  AND request_id != ?
+                  AND arrival_date <= ?
+                  AND departure_date > ?
+            """, (
+                request_id,
+                current_date_string,
+                current_date_string
+            )).fetchone()
+
+            approved_rooms_used = int(approved_rooms_used_row["count"] or 0)
+            tentative_rooms_held = 0
+
+            for tentative_hold in tentative_holds:
+                try:
+                    hold_start = datetime.strptime(tentative_hold["arrival_date"], "%Y-%m-%d").date()
+                    hold_end = datetime.strptime(tentative_hold["departure_date"], "%Y-%m-%d").date()
+                    hold_rooms = int(tentative_hold.get("rooms_held", 1) or 1)
+                except Exception:
+                    continue
+
+                if hold_start <= current_check_date < hold_end:
+                    tentative_rooms_held += hold_rooms
+
+            capacity_limit = room_capacity_limit_for_date(
+                room_limit_by_date,
+                current_date_string,
+                total_rooms
+            )
+
+            rooms_open_after_holds = capacity_limit - approved_rooms_used - tentative_rooms_held
+
+            if rooms_open_after_holds < rooms_requested:
+
+                conn.close()
+
+                return f"""
+                <h2>Not enough room capacity for those changed dates.</h2>
+
+                <p>
+                    {format_date(current_date_string)} has only
+                    {rooms_open_after_holds} room(s) open after house blocks,
+                    approved bookings, and tentative coordination holds are counted.
+                </p>
+
+                <p>
+                    <a href='/request/{request_id}'>Done</a>
+                </p>
+                """
+
+            current_check_date += timedelta(days=1)
 
     blocked_conflict = conn.execute("""
         SELECT *
         FROM blocked_dates
         WHERE start_date < ?
           AND end_date > ?
+          AND COALESCE(is_full_block, 1) = 1
     """, (
         effective_departure_date,
         effective_arrival_date
@@ -11412,9 +15088,7 @@ def approve_change(request_id):
         </p>
 
         <p>
-            <a href='/request/{request_id}'>
-                Back to request
-            </a>
+            <a href='/request/{request_id}'>Done</a>
         </p>
         """
 
@@ -11454,9 +15128,7 @@ def approve_change(request_id):
             </p>
 
             <p>
-                <a href='/request/{request_id}'>
-                    Back to request
-                </a>
+                <a href='/request/{request_id}'>Done</a>
             </p>
             """
 
@@ -11584,18 +15256,7 @@ def approve_change(request_id):
             Preview Update Email
         </a>
 
-        <a href="/request/{request_id}"
-           style="
-               background-color: #0d6efd;
-               color: white;
-               padding: 10px 14px;
-               text-decoration: none;
-               border-radius: 6px;
-               font-weight: bold;
-               margin-left: 8px;
-           ">
-            View Request
-        </a>
+        <strong style="color: #198754;">Done</strong>
 
         <a href="/requests"
            style="
@@ -11615,8 +15276,237 @@ def approve_change(request_id):
 
     return html
 
-@app.route("/approve-cancel/<int:request_id>")
+@app.route("/request/<int:request_id>/admin-cancel-confirmed", methods=["GET", "POST"])
+def admin_cancel_confirmed_visit(request_id):
+
+    if request.method != "POST":
+        return action_confirmation_page(
+            "Cancel Confirmed Visit",
+            f"Cancel confirmed visit for request {request_id}, release assigned rooms, and send the cancellation email.",
+            f"/request/{request_id}/admin-cancel-confirmed",
+            "/bookings"
+        )
+
+    conn = get_db_connection()
+
+    req = conn.execute("""
+        SELECT
+            booking_requests.*,
+            guest_profiles.primary_name,
+            guest_profiles.primary_email
+        FROM booking_requests
+        LEFT JOIN guest_profiles
+            ON booking_requests.guest_profile_id = guest_profiles.id
+        WHERE booking_requests.id = ?
+    """, (
+        request_id,
+    )).fetchone()
+
+    if not req:
+        conn.close()
+        return profile_error_page(
+            "Request not found.",
+            "/bookings"
+        )
+
+    if safe_text(req["status"]) != "approved":
+        conn.close()
+        return transaction_error_page(
+            "Only approved confirmed visits can be cancelled from Confirmed Stays.",
+            "/bookings"
+        )
+
+    recipient_email = resolve_request_recipient_email(
+        conn,
+        req
+    )
+
+    if not is_valid_email_address(recipient_email):
+        conn.close()
+        return profile_error_page(
+            "Cancellation email was not sent because this guest does not have a valid email address.",
+            f"/request/{request_id}"
+        )
+
+    guest_name = safe_text(req["name"]).strip()
+
+    if not guest_name:
+        guest_name = safe_text(row_value(req, "primary_name")).strip()
+
+    rooms_requested = normalize_rooms_requested(
+        row_value(req, "rooms_requested") or 1
+    )
+
+    nights = date_range_nights(
+        req["arrival_date"],
+        req["departure_date"]
+    )
+
+    subject = "Your Strathmere Visit Cancellation"
+
+    body = render_email_template(
+        "cancellation.txt",
+        guest_name=guest_name,
+        arrival_date=format_date(req["arrival_date"]),
+        departure_date=format_date(req["departure_date"]),
+        nights=safe_text(nights),
+        rooms_requested=safe_text(rooms_requested),
+        additional_names=safe_text(row_value(req, "additional_names")) or "None listed",
+        request_link=standard_new_request_url(),
+        new_request_link=standard_new_request_url()
+    )
+
+    backup_path = create_database_backup(
+        "before_admin_cancel_confirmed"
+    )
+
+    old_status = safe_text(req["status"])
+
+    try:
+        conn.execute("BEGIN")
+
+        conn.execute("""
+            UPDATE booking_requests
+            SET status = ?,
+                email_status = ?,
+                email_needed_type = ?
+            WHERE id = ?
+        """, (
+            "cancelled",
+            "needs_email",
+            "cancellation",
+            request_id
+        ))
+
+        conn.execute("""
+            DELETE FROM bookings
+            WHERE request_id = ?
+        """, (
+            request_id,
+        ))
+
+        write_activity_log(
+            conn,
+            request_id,
+            "admin_cancel_confirmed_started",
+            old_status,
+            "cancelled",
+            f"Confirmed visit cancelled from Confirmed Stays. Backup: {backup_path}"
+        )
+
+        conn.commit()
+
+    except Exception as error:
+        rollback_and_close(conn)
+        return transaction_error_page(
+            error,
+            "/bookings"
+        )
+
+    try:
+        send_email(
+            recipient_email,
+            subject,
+            body
+        )
+
+        conn.execute("BEGIN")
+
+        conn.execute("""
+            INSERT INTO email_log
+            (request_id, email_type, recipient, subject, body)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            request_id,
+            "cancellation",
+            recipient_email,
+            subject,
+            body
+        ))
+
+        conn.execute("""
+            UPDATE booking_requests
+            SET email_status = ?,
+                email_needed_type = ?
+            WHERE id = ?
+        """, (
+            "sent",
+            "",
+            request_id
+        ))
+
+        write_activity_log(
+            conn,
+            request_id,
+            "admin_cancel_confirmed_email_sent",
+            "cancelled",
+            "cancelled",
+            "Cancellation email sent from Confirmed Stays."
+        )
+
+        conn.commit()
+
+    except Exception as error:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+        conn.close()
+
+        return f"""
+        {nav_links()}
+
+        <h1>Visit Cancelled, Email Needs Attention</h1>
+
+        <p style="color: red; font-weight: bold;">
+            The confirmed visit was cancelled and rooms were released, but the cancellation email did not send.
+        </p>
+
+        <p>
+            Error: {safe_text(error)}
+        </p>
+
+        <p>
+            <a href="/request/{request_id}/email-preview">Preview / Send Cancellation Email</a> |
+            <a href="/bookings">Back to Confirmed Stays</a>
+        </p>
+        """
+
+    conn.close()
+
+    return f"""
+    {nav_links()}
+
+    <h1>Confirmed Visit Cancelled</h1>
+
+    <p style="color: green; font-weight: bold;">
+        The visit was cancelled, assigned rooms were released, and the cancellation email was sent.
+    </p>
+
+    <p>
+        <strong>Guest:</strong> {safe_text(guest_name)}<br>
+        <strong>Email:</strong> {safe_text(recipient_email)}<br>
+        <strong>Subject:</strong> {safe_text(subject)}
+    </p>
+
+    <p>
+        <a href="/bookings">Back to Confirmed Stays</a> |
+        <a href="/request/{request_id}">Open Request</a>
+    </p>
+    """
+
+
+@app.route("/approve-cancel/<int:request_id>", methods=["GET", "POST"])
 def approve_cancel(request_id):
+
+    if request.method != "POST":
+        return action_confirmation_page(
+            "Approve Cancellation",
+            f"Approve cancellation for request {request_id}, release assigned bookings, and mark cancellation email as needed.",
+            f"/approve-cancel/{request_id}",
+            f"/request/{request_id}"
+        )
 
     conn = get_db_connection()
 
@@ -11723,18 +15613,7 @@ def approve_cancel(request_id):
             Preview Cancellation Email
         </a>
 
-        <a href="/request/{request_id}"
-           style="
-               background-color: #0d6efd;
-               color: white;
-               padding: 10px 14px;
-               text-decoration: none;
-               border-radius: 6px;
-               font-weight: bold;
-               margin-left: 8px;
-           ">
-            View Request
-        </a>
+        <strong style="color: #198754;">Done</strong>
 
         <a href="/requests"
            style="
@@ -11799,7 +15678,7 @@ def request_email_preview(request_id):
     if not recipient_email:
         recipient_email = safe_text(req["primary_email"]).strip()
 
-    conn.close()
+    repeat_visit_url = repeat_visit_request_url_for_row(req)
 
     rooms_requested = int(req["rooms_requested"] or 1)
 
@@ -11808,10 +15687,10 @@ def request_email_preview(request_id):
         - datetime.strptime(req["arrival_date"], "%Y-%m-%d")
     ).days
 
-    additional_names = safe_text(req["additional_names"]).strip()
-
-    if not additional_names:
-        additional_names = "None listed"
+    additional_names = combined_confirmed_group_members(
+        conn,
+        req
+    )
 
     room_names = []
 
@@ -11864,6 +15743,21 @@ John & Mark
 302-521-5401
 """
 
+        body = body.replace(
+            "Additional Guests for Your Room(s):",
+            "Confirmed Group Members:"
+        ).replace(
+            "Additional Guests:",
+            "Confirmed Group Members:"
+        )
+
+        body = append_guest_visit_history_summary(
+            body,
+            conn,
+            req,
+            request_id
+        )
+
         email_type_label = "Cancellation Email"
 
     elif email_type == "date_change":
@@ -11880,12 +15774,28 @@ John & Mark
             room_list=room_list,
             optional_admin_message=optional_admin_message,
             coordinating_with_section=coordinating_with_section,
-            change_links_section=request_change_links(request_id)
+            change_links_section=request_change_links(request_id, repeat_visit_url)
+        )
+
+        body = body.replace(
+            "Additional Guests for Your Room(s):",
+            "Confirmed Group Members:"
+        ).replace(
+            "Additional Guests:",
+            "Confirmed Group Members:"
+        )
+
+        body = append_guest_visit_history_summary(
+            body,
+            conn,
+            req,
+            request_id
         )
 
         body = ensure_guest_change_links(
             body,
-            request_id
+            request_id,
+            repeat_visit_url
         )
 
         email_type_label = "Update Email"
@@ -11901,7 +15811,7 @@ John & Mark
         if req["invitation_id"]:
             request_link = f"{BASE_URL}/invite/{req['invitation_id']}"
         else:
-            request_link = f"{BASE_URL}/"
+            request_link = standard_new_request_url()
 
         body = render_email_template(
             "decline.txt",
@@ -11916,7 +15826,8 @@ John & Mark
         )
 
         body += request_change_links(
-            request_id
+            request_id,
+            repeat_visit_url
         )
 
         email_type_label = "Decline Email"
@@ -11936,12 +15847,28 @@ John & Mark
             room_list=room_list,
             coordinating_with_section=coordinating_with_section,
             optional_admin_message=optional_admin_message,
-            change_links_section=request_change_links(request_id)
+            change_links_section=request_change_links(request_id, repeat_visit_url)
+        )
+
+        body = body.replace(
+            "Additional Guests for Your Room(s):",
+            "Confirmed Group Members:"
+        ).replace(
+            "Additional Guests:",
+            "Confirmed Group Members:"
+        )
+
+        body = append_guest_visit_history_summary(
+            body,
+            conn,
+            req,
+            request_id
         )
 
         body = ensure_guest_change_links(
             body,
-            request_id
+            request_id,
+            repeat_visit_url
         )
 
         email_type_label = "Approval Email"
@@ -12093,10 +16020,15 @@ John & Mark
     <br>
 
     <p>
-        <a href="/request/{request_id}">Back to Request</a> |
+        <strong style="color: #198754;">Done</strong> |
         <a href="/requests">Request Review</a>
     </p>
     """
+
+    try:
+        conn.close()
+    except Exception:
+        pass
 
     return html
 
@@ -12144,6 +16076,12 @@ def edit_request(request_id):
         or request.form.get("return_to")
         or ""
     )
+
+    # V32.8: guest-submitted pending requests are read-only.
+    # Admin edit pages do not use return_to=submitted, so this blocks only the guest-facing edit path.
+    if return_to == "submitted" and safe_text(req["status"]) == "pending":
+        conn.close()
+        return redirect(f"/request/{request_id}/submitted")
 
     if request.method == "POST":
 
@@ -12243,11 +16181,14 @@ def edit_request(request_id):
             </p>
             """
 
+        ensure_house_block_columns(conn)
+
         blocked_conflict = conn.execute("""
             SELECT *
             FROM blocked_dates
             WHERE start_date < ?
               AND end_date > ?
+              AND COALESCE(is_full_block, 1) = 1
         """, (
             departure_date,
             arrival_date
@@ -12573,11 +16514,7 @@ def edit_request(request_id):
 {req['additional_names']}
 </textarea><br>
 
-        <label>Children:</label><br>
-
-        <input type="number"
-               name="children"
-               value="{req['children']}"><br>
+        <input type="hidden" name="children" value="{req['children'] or 0}">
 
         <label>Pets:</label><br>
 
@@ -12637,9 +16574,16 @@ def edit_request(request_id):
         </button>
 
     </form>
+    """
 
+    cancel_target = f"/request/{request_id}"
+
+    if return_to == "submitted":
+        cancel_target = f"/request/{request_id}/submitted"
+
+    html += f"""
     <p>
-        <a href="/request/{request_id}">
+        <a href="{cancel_target}">
             Cancel
         </a>
     </p>
@@ -12930,24 +16874,47 @@ def room_assignments_page():
 @app.route("/blocked", methods=["GET", "POST"])
 def blocked_page():
     conn = get_db_connection()
+    ensure_house_block_columns(conn)
     error_message = ""
 
     if request.method == "POST":
         start_date = clean_text(request.form.get("start_date"))
         end_date = clean_text(request.form.get("end_date"))
         reason = clean_text(request.form.get("reason"))
+        block_type = clean_text(request.form.get("block_type") or "full")
+        rooms_available_text = clean_text(request.form.get("rooms_available"))
 
-        if not valid_date_range(start_date, end_date):
+        is_full_block = 1
+        rooms_available = 0
+
+        if block_type == "partial":
+            is_full_block = 0
+            try:
+                rooms_available = int(rooms_available_text)
+            except Exception:
+                rooms_available = 0
+
+            total_rooms_row = conn.execute("SELECT COUNT(*) AS count FROM rooms").fetchone()
+            total_rooms_for_block = int(total_rooms_row["count"] or 4)
+
+            if rooms_available < 1 or rooms_available >= total_rooms_for_block:
+                error_message = "Partial house block must leave at least 1 room available and fewer than the full house room count."
+
+        if error_message:
+            pass
+        elif not valid_date_range(start_date, end_date):
             error_message = "Start date and end date are required, and end date cannot be before start date."
         else:
             conn.execute("""
                 INSERT INTO blocked_dates
-                (start_date, end_date, reason)
-                VALUES (?, ?, ?)
+                (start_date, end_date, reason, is_full_block, rooms_available)
+                VALUES (?, ?, ?, ?, ?)
             """, (
                 start_date,
                 end_date,
-                reason
+                reason,
+                is_full_block,
+                rooms_available
             ))
 
             conn.commit()
@@ -12971,6 +16938,8 @@ def blocked_page():
         </div>
         """
 
+    today_value = date.today().strftime("%Y-%m-%d")
+
     html = nav_links() + f"""
     <h1>House Blocks</h1>
 
@@ -12980,10 +16949,19 @@ def blocked_page():
 
     <form method="POST" action="/blocked">
         <label>Start Date:</label><br>
-        <input type="date" name="start_date" required><br>
+        <input type="date" name="start_date" value="{today_value}" min="{today_value}" autocomplete="off" required><br>
 
         <label>End Date:</label><br>
-        <input type="date" name="end_date" required><br>
+        <input type="date" name="end_date" value="{today_value}" min="{today_value}" autocomplete="off" required><br>
+
+        <label>Block Type:</label><br>
+        <select name="block_type">
+            <option value="full">Full house block (calendar pink / unavailable)</option>
+            <option value="partial">Partial capacity limit (calendar not pink)</option>
+        </select><br>
+
+        <label>Rooms Available During Block (partial only):</label><br>
+        <input type="number" name="rooms_available" min="1" max="4"><br>
 
         <label>Reason:</label><br>
         <input type="text" name="reason"><br>
@@ -12992,6 +16970,25 @@ def blocked_page():
     </form>
 
     <h2>Current House Blocks</h2>
+    
+    <script>
+        // V32.7: force add-block date pickers to start on the current date/month,
+        // including browser back/forward cache and autofill restoration.
+        function forceHouseBlockDatesToToday() {{
+            const today = "{today_value}";
+            document.querySelectorAll('form[action="/blocked"] input[type="date"]').forEach(function (input) {{
+                input.min = today;
+                input.defaultValue = today;
+                input.setAttribute("value", today);
+                input.value = today;
+            }});
+        }}
+
+        document.addEventListener("DOMContentLoaded", forceHouseBlockDatesToToday);
+        window.addEventListener("pageshow", forceHouseBlockDatesToToday);
+        setTimeout(forceHouseBlockDatesToToday, 50);
+    </script>
+
     """
 
     if not blocked:
@@ -13006,6 +17003,8 @@ def blocked_page():
             <tr style="background-color: #f2f2f2;">
                 <th>Start</th>
                 <th>End</th>
+                <th>Type</th>
+                <th>Rooms Available</th>
                 <th>Reason</th>
                 <th>Action</th>
             </tr>
@@ -13028,6 +17027,9 @@ def blocked_page():
             else:
                 end_short = "Invalid / blank"
 
+            block_type_label = "Full Block" if block_is_full(block) else "Partial Capacity"
+            rooms_available_label = "0" if block_is_full(block) else safe_text(block_rooms_available(block, 4))
+
             invalid_note = ""
 
             if not parsed_start or not parsed_end:
@@ -13037,6 +17039,8 @@ def blocked_page():
             <tr>
                 <td>{safe_text(start_short)}</td>
                 <td>{safe_text(end_short)}</td>
+                <td>{safe_text(block_type_label)}</td>
+                <td>{safe_text(rooms_available_label)}</td>
                 <td>{safe_text(block['reason'])}{invalid_note}</td>
                 <td>
                     <a href="/blocked/{block['id']}/edit">Edit</a>
@@ -13071,6 +17075,7 @@ def delete_blocked(block_id):
 @app.route("/blocked/<int:block_id>/edit", methods=["GET", "POST"])
 def edit_blocked(block_id):
     conn = get_db_connection()
+    ensure_house_block_columns(conn)
 
     block = conn.execute(
         "SELECT * FROM blocked_dates WHERE id = ?",
@@ -13090,20 +17095,44 @@ def edit_blocked(block_id):
         start_date = clean_text(request.form.get("start_date"))
         end_date = clean_text(request.form.get("end_date"))
         reason = clean_text(request.form.get("reason"))
+        block_type = clean_text(request.form.get("block_type") or "full")
+        rooms_available_text = clean_text(request.form.get("rooms_available"))
 
-        if not valid_date_range(start_date, end_date):
+        is_full_block = 1
+        rooms_available = 0
+
+        if block_type == "partial":
+            is_full_block = 0
+            try:
+                rooms_available = int(rooms_available_text)
+            except Exception:
+                rooms_available = 0
+
+            total_rooms_row = conn.execute("SELECT COUNT(*) AS count FROM rooms").fetchone()
+            total_rooms_for_block = int(total_rooms_row["count"] or 4)
+
+            if rooms_available < 1 or rooms_available >= total_rooms_for_block:
+                error_message = "Partial house block must leave at least 1 room available and fewer than the full house room count."
+
+        if error_message:
+            pass
+        elif not valid_date_range(start_date, end_date):
             error_message = "Start date and end date are required, and end date cannot be before start date."
         else:
             conn.execute("""
                 UPDATE blocked_dates
                 SET start_date = ?,
                     end_date = ?,
-                    reason = ?
+                    reason = ?,
+                    is_full_block = ?,
+                    rooms_available = ?
                 WHERE id = ?
             """, (
                 start_date,
                 end_date,
                 reason,
+                is_full_block,
+                rooms_available,
                 block_id
             ))
 
@@ -13115,6 +17144,9 @@ def edit_blocked(block_id):
     start_value = safe_text(block["start_date"]).strip()
     end_value = safe_text(block["end_date"]).strip()
     reason_value = safe_text(block["reason"]).strip()
+    full_selected = "selected" if block_is_full(block) else ""
+    partial_selected = "selected" if not block_is_full(block) else ""
+    rooms_available_value = "" if block_is_full(block) else safe_text(block_rooms_available(block, 4))
 
     error_html = ""
 
@@ -13136,6 +17168,15 @@ def edit_blocked(block_id):
 
         <label>End Date:</label><br>
         <input type="date" name="end_date" value="{safe_text(end_value)}" required><br>
+
+        <label>Block Type:</label><br>
+        <select name="block_type">
+            <option value="full" {full_selected}>Full house block (calendar pink / unavailable)</option>
+            <option value="partial" {partial_selected}>Partial capacity limit (calendar not pink)</option>
+        </select><br>
+
+        <label>Rooms Available During Block (partial only):</label><br>
+        <input type="number" name="rooms_available" min="1" max="4" value="{safe_text(rooms_available_value)}"><br>
 
         <label>Reason:</label><br>
         <input type="text" name="reason" value="{safe_text(reason_value)}"><br>
@@ -13500,15 +17541,21 @@ def preview_invitation_email(invitation_id):
 
         photo_email_html = ""
 
+    # V30.0:
+    # Invitation wording is controlled by templates/emails/invitation.txt.
+    # The optional saved invitation message is available ONLY if the template
+    # explicitly includes {{ message }}. This prevents hidden/automatic leakage
+    # while restoring your ability to add a custom invite note.
     body = render_email_template(
         "invitation.txt",
         guest_name=safe_text(invite["primary_name"]),
-        message=safe_text(message),
+        message=safe_text(row_value(invite, "message")),
         request_link=request_link,
         coordination_link=coordination_link
     )
 
     template_metadata = email_template_metadata_html("invitation")
+    template_admin_box = invitation_template_admin_box()
 
     html = nav_links() + f"""
     <h1>
@@ -13516,6 +17563,7 @@ def preview_invitation_email(invitation_id):
     </h1>
 
     {template_metadata}
+    {template_admin_box}
 
     <div style="
         border: 1px solid #ccc;
@@ -13582,7 +17630,7 @@ def preview_invitation_email(invitation_id):
             </strong>
         </label><br>
 
-        <textarea name="body"
+        <textarea readonly
                   rows="30"
                   cols="90"
                   style="
@@ -13624,7 +17672,6 @@ def send_invitation_email():
     invitation_id = request.form.get("invitation_id")
     to_email = clean_text(request.form.get("to_email")).lower()
     subject = request.form.get("subject")
-    body = request.form.get("body")
 
     conn = get_db_connection()
 
@@ -13661,6 +17708,22 @@ def send_invitation_email():
             "Invitation email was not sent because this guest profile does not have a valid email address.",
             f"/profile/{invite['guest_profile_id']}/edit"
         )
+
+    request_link = f"{BASE_URL}/invite/{invitation_id}"
+    coordination_link = f"{BASE_URL}/coordinate/{invitation_id}"
+
+    # V30.0:
+    # Never send a posted preview textarea body.
+    # Rebuild the final email from the current invitation.txt template at send time.
+    # The optional saved invitation message is available only where the template
+    # explicitly includes {{ message }}.
+    body = render_email_template(
+        "invitation.txt",
+        guest_name=safe_text(invite["primary_name"]),
+        message=safe_text(row_value(invite, "message")),
+        request_link=request_link,
+        coordination_link=coordination_link
+    )
 
     send_email(to_email, subject, body)
 
@@ -13743,6 +17806,8 @@ def coordinate_request(invitation_id):
 
         selected_month = 1
         selected_year += 1
+
+    ensure_house_block_columns(conn)
 
     blocked_rows = conn.execute("""
         SELECT
@@ -14027,7 +18092,7 @@ Coordinating With:
     </p>
 
     <table border="1"
-           cellpadding="3"
+           cellpadding="5"
            cellspacing="0"
            style="
                border-collapse: collapse;
@@ -15059,7 +19124,7 @@ def change_request_bad_link(request_id):
 
     <p>Use the new request link from the email, or reply to the email and I’ll help fix it.</p>
 
-    <p><a href="/">Start a New Request</a></p>
+    <p><a href="/">Request Another Visit</a></p>
     """
 
 
@@ -15334,9 +19399,7 @@ Change Notes:
         </div>
 
         <p>
-            <a href="/request/{request_id}">
-                View Request
-            </a>
+            <strong style="color: #198754;">Done</strong>
         </p>
         """
 
@@ -15350,6 +19413,8 @@ Change Notes:
     if selected_month > 12:
         selected_month = 1
         selected_year += 1
+
+    ensure_house_block_columns(conn)
 
     blocked = conn.execute("""
         SELECT * FROM blocked_dates
@@ -15373,17 +19438,10 @@ Change Notes:
 
     conn.close()
 
-    blocked_dates = set()
-
-    for b in blocked:
-        start = datetime.strptime(b["start_date"], "%Y-%m-%d")
-        end = datetime.strptime(b["end_date"], "%Y-%m-%d")
-
-        current = start
-
-        while current <= end:
-            blocked_dates.add(current.strftime("%Y-%m-%d"))
-            current += timedelta(days=1)
+    blocked_dates, room_limit_by_date = build_blocked_date_capacity(
+        blocked,
+        total_rooms
+    )
 
     blocked_list = sorted(blocked_dates)
 
@@ -15451,9 +19509,16 @@ Change Notes:
             if hold_start <= current < hold_end:
                 tentative_rooms_held += int(tentative_hold.get("rooms_held", 1) or 1)
 
-        room_capacity[current.strftime("%Y-%m-%d")] = max(
+        current_date_key = current.strftime("%Y-%m-%d")
+        capacity_limit = room_capacity_limit_for_date(
+            room_limit_by_date,
+            current_date_key,
+            total_rooms
+        )
+
+        room_capacity[current_date_key] = max(
             0,
-            total_rooms - rooms_used - tentative_rooms_held
+            capacity_limit - rooms_used - tentative_rooms_held
         )
 
         current += timedelta(days=1)
@@ -15478,7 +19543,7 @@ Change Notes:
         The calendar checks blocked days, approved bookings, and coordination holds.
     </p>
 
-    <table border="1" cellpadding="3" cellspacing="0" style="border-collapse: collapse; width: 100%; max-width: 920px; font-size: 12px;">
+    <table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; width: 100%; max-width: 920px; font-size: 12px;">
         <tr style="background-color: #f5f5f5;">
             <th>Sun</th>
             <th>Mon</th>
@@ -15536,7 +19601,7 @@ Change Notes:
             click_handler = ""
             cursor = "not-allowed"
         elif has_tentative_hold:
-            background = "#ffe8a1"
+            background = "#cfe8ff"
             display_line_1 = f"{rooms_open} open"
             display_line_2 = "Hold"
             click_handler = f"onclick=\"selectCalendarDate('{current_date_str}')\""
@@ -15560,7 +19625,9 @@ Change Notes:
             data-rooms-open="{rooms_open}"
             style="background-color: {background}; cursor: {cursor}; vertical-align: top; height: 62px; min-width: 90px; padding: 4px;">
             <strong>{day}</strong><br>
-            <span style="font-size: 11px;">{display_line_1}</span><br>
+            <span style="font-size: 10px; font-weight: normal;">
+                {str(rooms_open) + " ROOM" + ("" if rooms_open == 1 else "S") + " OPEN" if (not past_date and current_date_str not in blocked_dates and rooms_open > 0) else ("FULL" if (not past_date and current_date_str not in blocked_dates and rooms_open <= 0) else "")}
+            </span><br>
             <span style="font-size: 10px;">{display_line_2}</span>
         </td>
         """
@@ -15603,62 +19670,63 @@ Change Notes:
 
     <hr>
 
-    <h3>
-        Current Approved Details
-    </h3>
+    <div style="display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; max-width: 1180px;">
 
-    <p>
-        <strong>
-            Guest:
-        </strong>
+        <div style="flex: 0 0 285px; background-color: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 10px 12px; line-height: 1.25; font-size: 13px;">
+            <h3 style="margin: 0 0 8px 0; font-size: 16px;">
+                Current Approved Details
+            </h3>
+            <div><strong>Guest:</strong> {request_row['name']}</div>
+            <div><strong>Email:</strong> {request_row['email']}</div>
+            <div><strong>Arrival:</strong> {format_date(request_row['arrival_date'])}</div>
+            <div><strong>Departure:</strong> {format_date(request_row['departure_date'])}</div>
+            <div><strong>Rooms:</strong> {current_rooms}</div>
+        </div>
 
-        {request_row['name']}
-    </p>
+        <div style="flex: 1 1 650px; min-width: 320px;">
 
-    <p>
-        <strong>
-            Email:
-        </strong>
-
-        {request_row['email']}
-    </p>
-
-    <p>
-        <strong>
-            Current Arrival:
-        </strong>
-
-        {format_date(request_row['arrival_date'])}
-    </p>
-
-    <p>
-        <strong>
-            Current Departure:
-        </strong>
-
-        {format_date(request_row['departure_date'])}
-    </p>
-
-    <p>
-        <strong>
-            Current Rooms Requested:
-        </strong>
-
-        {current_rooms}
-    </p>
-
-    <hr>
-
-    <form method="POST">
+    <form method="POST" onsubmit="return checkUnavailableDates();">
 
         <h3>
             Requested Change
         </h3>
 
         <div style="background-color: #f8f9fa; border: 1px solid #dee2e6; padding: 10px 12px; border-radius: 8px; max-width: 760px; margin-bottom: 12px;">
-            <strong>Use the calendar before submitting.</strong><br>
+            <strong>Select the number of bedrooms first, then choose dates on the calendar.<br>Each bedroom sleeps up to 2 guests.</strong><br>
             This shows blocked dates, full dates, and coordination holds so you are not guessing.
         </div>
+
+        <label>
+            Rooms Requested
+        </label><br>
+
+        <select id="rooms_requested"
+                name="rooms_requested"
+                style="
+                    width: 160px;
+                    padding: 8px;
+                    margin-bottom: 12px;
+                ">
+    """
+
+    for room_count in range(1, 5):
+
+        selected = ""
+
+        if int(current_rooms) == room_count:
+            selected = "selected"
+
+        html += f"""
+            <option value="{room_count}" {selected}>
+                {room_count} Room{"s" if room_count != 1 else ""}
+            </option>
+        """
+
+    html += f"""
+
+        </select>
+
+        <br>
 
         {calendar_html}
 
@@ -15698,37 +19766,6 @@ Change Notes:
         <br>
 
         <label>
-            Rooms Requested
-        </label><br>
-
-        <select id="rooms_requested"
-                name="rooms_requested"
-                style="
-                    width: 160px;
-                    padding: 8px;
-                ">
-    """
-
-    for room_count in range(1, 5):
-
-        selected = ""
-
-        if int(current_rooms) == room_count:
-            selected = "selected"
-
-        html += f"""
-            <option value="{room_count}" {selected}>
-                {room_count} Room{"s" if room_count != 1 else ""}
-            </option>
-        """
-
-    html += f"""
-
-        </select>
-
-        <br>
-
-        <label>
             Notes About This Change
         </label><br>
 
@@ -15753,6 +19790,9 @@ Change Notes:
         </button>
 
     </form>
+
+        </div>
+    </div>
 
     <script>
         const blockedDates = {blocked_list};
@@ -15884,6 +19924,27 @@ Change Notes:
             nextDateField = "arrival";
         }});
 
+        function preserveCalendarNavigationSelection() {{
+            document.querySelectorAll('[data-calendar-nav="1"]').forEach(function (link) {{
+                link.addEventListener("click", function () {{
+                    const arrival = document.getElementById("arrival_date").value;
+                    const departure = document.getElementById("departure_date").value;
+                    const url = new URL(link.href, window.location.origin);
+
+                    if (arrival) {{
+                        url.searchParams.set("arrival_date", arrival);
+                    }}
+
+                    if (departure) {{
+                        url.searchParams.set("departure_date", departure);
+                    }}
+
+                    url.searchParams.set("next_date_field", nextDateField || "arrival");
+                    link.href = url.toString();
+                }});
+            }});
+        }}
+
         function checkUnavailableDates() {{
             const arrival = document.getElementById("arrival_date").value;
             const departure = document.getElementById("departure_date").value;
@@ -15925,12 +19986,13 @@ Change Notes:
         updateNightsMessage();
     </script>
 
+        </div>
+    </div>
+
     <br>
 
     <p>
-        <a href="/request/{request_id}">
-            Back to Request
-        </a>
+        <strong style="color: #198754;">Done</strong>
     </p>
     """
 
@@ -15990,10 +20052,7 @@ def cancel_request(request_id):
     if not rooms_requested:
         rooms_requested = 1
 
-    new_request_link = "/"
-
-    if request_row["invitation_id"]:
-        new_request_link = f"/invite/{request_row['invitation_id']}"
+    new_request_link = "/new-request"
 
     if request.method == "POST":
 
@@ -16179,24 +20238,17 @@ Cancellation Reason:
                     request_row["departure_date"]
                 )
 
-                cancellation_body = f"""Hi {request_row['name']},
-
-Your Strathmere visit has been cancelled.
-
-Cancelled Visit Details:
-- Arrival: {format_date(request_row['arrival_date'])}
-- Departure: {format_date(request_row['departure_date'])}
-- Nights: {nights}
-- Rooms: {rooms_requested}
-
-If you would like to request different dates, please use this link:
-{BASE_URL}{new_request_link}
-
-Thanks for letting us know.
-
-John & Mark
-302-521-5401
-"""
+                cancellation_body = render_email_template(
+                    "cancellation.txt",
+                    guest_name=safe_text(request_row["name"]),
+                    arrival_date=format_date(request_row["arrival_date"]),
+                    departure_date=format_date(request_row["departure_date"]),
+                    nights=safe_text(nights),
+                    rooms_requested=safe_text(rooms_requested),
+                    additional_names=safe_text(row_value(request_row, "additional_names")) or "None listed",
+                    request_link=standard_new_request_url(),
+                    new_request_link=standard_new_request_url()
+                )
 
                 send_email(
                     recipient_email,
@@ -16346,9 +20398,7 @@ John & Mark
     <br>
 
     <p>
-        <a href="/request/{request_id}">
-            Back to Request
-        </a>
+        <strong style="color: #198754;">Done</strong>
     </p>
     """
 
@@ -16431,7 +20481,7 @@ def coordination_groups():
 
             if status_display == "confirmed_coordination":
                 status_display = "Confirmed Coordination"
-            elif status_display == "finalized":
+            elif status_display in ["finalized", "closed"]:
                 status_display = "Closed / Finalized"
             elif status_display == "tentative":
                 status_display = "Tentative"
@@ -16499,6 +20549,18 @@ def coordination_group_new():
             request.form.get("status")
         )
 
+        organizer_guest_profile_id = clean_text(
+            request.form.get("organizer_guest_profile_id")
+        )
+
+        organizer_admin_message = clean_text(
+            request.form.get("organizer_admin_message")
+        )
+
+        organizer_suggested_guests = clean_text(
+            request.form.get("organizer_suggested_guests")
+        )
+
         if not title:
 
             return f"""
@@ -16526,7 +20588,7 @@ def coordination_group_new():
             target_year_value = date.today().year
 
         if not status:
-            status = "planning"
+            status = "forming"
 
         conn = get_db_connection()
 
@@ -16547,6 +20609,34 @@ def coordination_group_new():
 
         group_id = cursor.lastrowid
 
+        try:
+            organizer_profile_id_value = int(organizer_guest_profile_id)
+        except Exception:
+            organizer_profile_id_value = None
+
+        if organizer_profile_id_value:
+
+            organizer_profile = conn.execute("""
+                SELECT *
+                FROM guest_profiles
+                WHERE id = ?
+            """, (
+                organizer_profile_id_value,
+            )).fetchone()
+
+            if organizer_profile:
+
+                cursor.execute("""
+                    INSERT INTO coordination_group_members
+                    (coordination_group_id, guest_profile_id, role, invitation_status, organizer_suggested_guests, organizer_suggested_dates_notes)
+                    VALUES (?, ?, 'organizer', 'draft', ?, ?)
+                """, (
+                    group_id,
+                    organizer_profile_id_value,
+                    organizer_suggested_guests,
+                    organizer_admin_message
+                ))
+
         conn.commit()
         conn.close()
 
@@ -16555,6 +20645,26 @@ def coordination_group_new():
         )
 
     current_year = date.today().year
+
+    conn = get_db_connection()
+
+    available_profiles = conn.execute("""
+        SELECT id, primary_name, primary_email, status
+        FROM guest_profiles
+        ORDER BY primary_name, primary_email
+    """).fetchall()
+
+    conn.close()
+
+    organizer_options_html = ""
+
+    for profile in available_profiles:
+
+        organizer_options_html += f"""
+            <option value="{profile['id']}">
+                {safe_text(profile['primary_name'])} — {safe_text(profile['primary_email'])} ({safe_text(profile['status'])})
+            </option>
+        """
 
     html = nav_links() + f"""
     <h1>Create Coordination Group</h1>
@@ -16588,6 +20698,35 @@ def coordination_group_new():
 
         <br>
 
+        <div style="border:1px solid #b6d4fe; background:#eef5ff; padding:12px; border-radius:8px; max-width:760px; margin:10px 0;">
+            <h3 style="margin-top:0;">Organizer Formation</h3>
+            <p style="font-size:13px; margin-top:0;">
+                Phase 2: choose the organizer first. The organizer can suggest group members and initial dates before the rest of the group is invited.
+            </p>
+
+            <label>
+                <strong>Organizer</strong>
+            </label><br>
+            <select name="organizer_guest_profile_id" style="width: 420px;">
+                <option value="">No organizer yet</option>
+                {organizer_options_html}
+            </select>
+
+            <br><br>
+
+            <label>
+                <strong>Admin Message to Organizer</strong>
+            </label><br>
+            <textarea name="organizer_admin_message" rows="3" style="width:520px;" placeholder="Example: We are starting a family visit group. Please suggest who should be included and your preferred dates."></textarea>
+
+            <br><br>
+
+            <label>
+                <strong>Possible Guests / Notes</strong>
+            </label><br>
+            <textarea name="organizer_suggested_guests" rows="3" style="width:520px;" placeholder="Example: Kevin, Eric, Judy"></textarea>
+        </div>
+
         <label>
             <strong>Target Year</strong>
         </label><br>
@@ -16604,6 +20743,7 @@ def coordination_group_new():
         </label><br>
 
         <select name="status">
+            <option value="forming" selected>Forming / Organizer Email Sent / Organizer Setup Returned</option>
             <option value="planning">Planning</option>
             <option value="collecting_dates">Collecting Dates</option>
             <option value="tentative">Tentative</option>
@@ -16632,30 +20772,2313 @@ def coordination_group_new():
 @app.route("/coordination-group/<int:group_id>")
 def coordination_group_detail(group_id):
 
-    conn = get_db_connection()
+    # V34.2 Planning View hard fallback: never crash the admin View page.
+    try:
 
-    ensure_coordination_tables(conn)
+        conn = get_db_connection()
 
-    group = conn.execute("""
-        SELECT *
-        FROM coordination_groups
-        WHERE id = ?
-    """, (
-        group_id,
-    )).fetchone()
+        ensure_coordination_tables(conn)
 
-    if not group:
+        group = conn.execute("""
+            SELECT *
+            FROM coordination_groups
+            WHERE id = ?
+        """, (
+            group_id,
+        )).fetchone()
 
-        conn.close()
+        if not group:
 
-        return f"""
-        {nav_links()}
+            conn.close()
 
-        <h1>Coordination Group Not Found</h1>
+            return f"""
+            {nav_links()}
 
+            <h1>Coordination Group Not Found</h1>
+
+            <p>
+                The coordination group could not be found.
+            </p>
+
+            <p>
+                <a href="/coordination-groups">
+                    Back to Coordination Groups
+                </a>
+            </p>
+            """
+
+        try:
+            members = conn.execute("""
+                SELECT
+                    coordination_group_members.*,
+                    guest_profiles.primary_name,
+                    guest_profiles.primary_email,
+                    COUNT(coordination_date_options.id) AS date_option_count,
+                    MAX(COALESCE(coordination_date_options.rooms_requested, 1)) AS rooms_requested
+                FROM coordination_group_members
+                JOIN guest_profiles
+                    ON coordination_group_members.guest_profile_id = guest_profiles.id
+                LEFT JOIN coordination_date_options
+                    ON coordination_group_members.id = coordination_date_options.coordination_group_member_id
+                WHERE coordination_group_members.coordination_group_id = ?
+                GROUP BY coordination_group_members.id
+                ORDER BY
+                    guest_profiles.primary_name
+            """, (
+                group_id,
+            )).fetchall()
+        except Exception:
+            members = conn.execute("""
+                SELECT
+                    coordination_group_members.*,
+                    guest_profiles.primary_name,
+                    guest_profiles.primary_email,
+                    COUNT(coordination_date_options.id) AS date_option_count,
+                    1 AS rooms_requested
+                FROM coordination_group_members
+                JOIN guest_profiles
+                    ON coordination_group_members.guest_profile_id = guest_profiles.id
+                LEFT JOIN coordination_date_options
+                    ON coordination_group_members.id = coordination_date_options.coordination_group_member_id
+                WHERE coordination_group_members.coordination_group_id = ?
+                GROUP BY coordination_group_members.id
+                ORDER BY
+                    guest_profiles.primary_name
+            """, (
+                group_id,
+            )).fetchall()
+
+        available_profiles = conn.execute("""
+            SELECT
+                guest_profiles.id,
+                guest_profiles.primary_name,
+                guest_profiles.primary_email,
+                guest_profiles.status
+            FROM guest_profiles
+            WHERE guest_profiles.id NOT IN (
+                SELECT guest_profile_id
+                FROM coordination_group_members
+                WHERE coordination_group_id = ?
+            )
+            ORDER BY
+                guest_profiles.primary_name,
+                guest_profiles.primary_email
+        """, (
+            group_id,
+        )).fetchall()
+
+        group_date_options = conn.execute("""
+            SELECT
+                coordination_date_options.*,
+                coordination_group_members.id AS member_id,
+                coordination_group_members.invitation_status,
+                coordination_group_members.role,
+                guest_profiles.primary_name,
+                guest_profiles.primary_email
+            FROM coordination_date_options
+            JOIN coordination_group_members
+                ON coordination_date_options.coordination_group_member_id = coordination_group_members.id
+            JOIN guest_profiles
+                ON coordination_group_members.guest_profile_id = guest_profiles.id
+            WHERE coordination_group_members.coordination_group_id = ?
+            ORDER BY
+                coordination_date_options.arrival_date,
+                coordination_date_options.departure_date,
+                CASE coordination_date_options.priority
+                    WHEN 'preferred' THEN 1
+                    WHEN 'alternate' THEN 2
+                    ELSE 3
+                END,
+                guest_profiles.primary_name
+        """, (
+            group_id,
+        )).fetchall()
+
+        approved_bookings_for_matching = conn.execute("""
+            SELECT arrival_date, departure_date
+            FROM bookings
+            WHERE status = 'approved'
+        """).fetchall()
+
+        blocked_ranges_for_matching = conn.execute("""
+            SELECT *
+            FROM blocked_dates
+            ORDER BY start_date
+        """).fetchall()
+
+        total_rooms_for_matching = conn.execute("""
+            SELECT COUNT(*) AS count
+            FROM rooms
+        """).fetchone()["count"]
+
+        tentative_holds_for_matching = get_coordination_tentative_holds(
+            conn,
+            exclude_group_id=group_id,
+            expand_rooms=True
+        )
+
+        match_suggestions = build_coordination_match_suggestions(
+            group_date_options,
+            list(approved_bookings_for_matching) + tentative_holds_for_matching,
+            blocked_ranges_for_matching,
+            total_rooms_for_matching
+        )
+
+        intersection_suggestions = build_coordination_intersection_suggestions(
+            group_date_options,
+            list(approved_bookings_for_matching) + tentative_holds_for_matching,
+            blocked_ranges_for_matching,
+            total_rooms_for_matching
+        )
+
+        tentative_adjustments = conn.execute("""
+            SELECT *
+            FROM coordination_tentative_adjustments
+            WHERE coordination_group_id = ?
+            ORDER BY created_at DESC
+            LIMIT 5
+        """, (
+            group_id,
+        )).fetchall()
+
+        try:
+            created_booking_request_rows = conn.execute("""
+                SELECT
+                    coordination_group_members.id AS member_id,
+                    coordination_group_members.converted_request_id,
+                    guest_profiles.primary_name,
+                    guest_profiles.primary_email,
+                    booking_requests.status AS request_status,
+                    booking_requests.email_status,
+                    booking_requests.email_needed_type,
+                    booking_requests.additional_names,
+                    booking_requests.arrival_date,
+                    booking_requests.departure_date,
+                    booking_requests.rooms_requested,
+                    COUNT(bookings.id) AS approved_booking_count,
+                    GROUP_CONCAT(rooms.name, ', ') AS approved_room_names
+                FROM coordination_group_members
+
+                JOIN guest_profiles
+                    ON coordination_group_members.guest_profile_id = guest_profiles.id
+
+                LEFT JOIN booking_requests
+                    ON coordination_group_members.converted_request_id = booking_requests.id
+
+                LEFT JOIN bookings
+                    ON booking_requests.id = bookings.request_id
+                   AND bookings.status = 'approved'
+
+                LEFT JOIN rooms
+                    ON bookings.room_id = rooms.id
+
+                WHERE coordination_group_members.coordination_group_id = ?
+                  AND coordination_group_members.converted_request_id IS NOT NULL
+
+                GROUP BY
+                    coordination_group_members.id,
+                    coordination_group_members.converted_request_id,
+                    guest_profiles.primary_name,
+                    guest_profiles.primary_email,
+                    booking_requests.status,
+                    booking_requests.email_status,
+                    booking_requests.email_needed_type,
+                    booking_requests.additional_names,
+                    booking_requests.arrival_date,
+                    booking_requests.departure_date,
+                    booking_requests.rooms_requested
+
+                ORDER BY guest_profiles.primary_name
+            """, (
+                group_id,
+            )).fetchall()
+
+        except Exception:
+            # Fallback for live databases missing newer email-status columns.
+            # Keeps the Planning/View page loading after Booking Handoff.
+            created_booking_request_rows = conn.execute("""
+                SELECT
+                    coordination_group_members.id AS member_id,
+                    coordination_group_members.converted_request_id,
+                    guest_profiles.primary_name,
+                    guest_profiles.primary_email,
+                    booking_requests.status AS request_status,
+                    '' AS email_status,
+                    '' AS email_needed_type,
+                    booking_requests.additional_names,
+                    booking_requests.arrival_date,
+                    booking_requests.departure_date,
+                    booking_requests.rooms_requested,
+                    COUNT(bookings.id) AS approved_booking_count,
+                    GROUP_CONCAT(rooms.name, ', ') AS approved_room_names
+                FROM coordination_group_members
+
+                JOIN guest_profiles
+                    ON coordination_group_members.guest_profile_id = guest_profiles.id
+
+                LEFT JOIN booking_requests
+                    ON coordination_group_members.converted_request_id = booking_requests.id
+
+                LEFT JOIN bookings
+                    ON booking_requests.id = bookings.request_id
+                   AND bookings.status = 'approved'
+
+                LEFT JOIN rooms
+                    ON bookings.room_id = rooms.id
+
+                WHERE coordination_group_members.coordination_group_id = ?
+                  AND coordination_group_members.converted_request_id IS NOT NULL
+
+                GROUP BY
+                    coordination_group_members.id,
+                    coordination_group_members.converted_request_id,
+                    guest_profiles.primary_name,
+                    guest_profiles.primary_email,
+                    booking_requests.status,
+                    booking_requests.additional_names,
+                    booking_requests.arrival_date,
+                    booking_requests.departure_date,
+                    booking_requests.rooms_requested
+
+                ORDER BY guest_profiles.primary_name
+            """, (
+                group_id,
+            )).fetchall()
+
+        conn.commit()
+
+        group_room_demand_by_member = {}
+
+        for option in group_date_options:
+
+            member_key = option["member_id"]
+            option_rooms = normalize_rooms_requested(
+                option["rooms_requested"],
+                total_rooms_for_matching
+            )
+
+            if member_key not in group_room_demand_by_member:
+                group_room_demand_by_member[member_key] = option_rooms
+            elif option_rooms > group_room_demand_by_member[member_key]:
+                group_room_demand_by_member[member_key] = option_rooms
+
+        total_group_rooms_requested = sum(group_room_demand_by_member.values())
+
+        capacity_warning_html = ""
+
+        if total_group_rooms_requested > total_rooms_for_matching:
+
+            guest_room_rows = ""
+
+            for option in group_date_options:
+
+                if option["member_id"] in group_room_demand_by_member:
+
+                    guest_room_rows += f"""
+                    <tr>
+                        <td>{safe_text(option['primary_name'])}</td>
+                        <td align="center">{group_room_demand_by_member[option['member_id']]}</td>
+                    </tr>
+                    """
+
+                    del group_room_demand_by_member[option["member_id"]]
+
+            capacity_warning_html = f"""
+            <div style="
+                background-color: #f8d7da;
+                border: 2px solid #dc3545;
+                padding: 12px;
+                border-radius: 8px;
+                margin-bottom: 10px;
+                max-width: 900px;
+            ">
+                <h3 style="margin-top: 0; color: #842029;">Room Capacity Warning</h3>
+                <p>
+                    <strong>Maximum rooms available:</strong> {total_rooms_for_matching}<br>
+                    <strong>Rooms requested by group:</strong> {total_group_rooms_requested}
+                </p>
+                <p>
+                    The group is requesting more rooms than the house has available.
+                    No single date option can work for the full group until rooms are reduced,
+                    guests are split into separate visits, or the group plan changes.
+                </p>
+                <table border="1" cellpadding="4" cellspacing="0" style="border-collapse: collapse; font-size: 13px;">
+                    <tr style="background-color: #f5f5f5;">
+                        <th align="left">Guest</th>
+                        <th align="center">Rooms Requested</th>
+                    </tr>
+                    {guest_room_rows}
+                </table>
+            </div>
+            """
+
+        tentative_dates_html = """
+        <p>No tentative group dates selected yet.</p>
+        """
+
+        tentative_confirmation_html = """
+        <p>No tentative confirmation responses yet.</p>
+        """
+
+        tentative_confirmed_count = 0
+        tentative_cannot_count = 0
+        tentative_discussion_count = 0
+        tentative_no_response_count = 0
+
+        all_confirmed_banner = ""
+
+        if safe_text(group["tentative_arrival_date"]) and safe_text(group["tentative_departure_date"]):
+
+            tentative_dates_html = f"""
+            <div style="
+                border: 2px solid #198754;
+                background-color: #e8f7ea;
+                padding: 12px;
+                margin-bottom: 14px;
+                border-radius: 8px;
+                max-width: 720px;
+            ">
+                <h3 style="margin-top: 0;">
+                    Tentative Dates That May Work for Everyone
+                </h3>
+
+                <p style="font-size: 16px; margin-bottom: 4px;">
+                    <strong>{format_date(group['tentative_arrival_date'])}</strong>
+                    to
+                    <strong>{format_date(group['tentative_departure_date'])}</strong>
+                </p>
+
+                <small>
+                    Selected: {safe_text(group['tentative_selected_at'])}<br>
+                    Calendar status: Tentative Coordination Hold is active until the group is closed, canceled, or tentative dates are changed.
+                </small>
+            </div>
+            """
+
+            response_rows = []
+
+            for member in members:
+
+                response_status = safe_text(
+                    member["tentative_response_status"]
+                )
+
+                if response_status == "confirmed":
+                    tentative_confirmed_count += 1
+                elif response_status == "cannot_make":
+                    tentative_cannot_count += 1
+                elif response_status == "needs_discussion":
+                    tentative_discussion_count += 1
+                else:
+                    tentative_no_response_count += 1
+
+                response_rows.append(f"""
+                <tr style="background-color: {tentative_response_color(response_status)};">
+                    <td>{safe_text(member['primary_name'])}</td>
+                    <td>{coordination_role_badge(member['role'])}</td>
+                    <td>{safe_text(member['primary_email'])}</td>
+                    <td>{tentative_response_display(response_status)}</td>
+                    <td>{safe_text(member['tentative_response_at'])}</td>
+                    <td>{safe_text(member['tentative_response_notes'])}</td>
+                </tr>
+                """)
+
+            tentative_confirmation_html = f"""
+            <table border="1"
+                   cellpadding="5"
+                   cellspacing="0"
+                   style="
+                       border-collapse: collapse;
+                       width: 100%;
+                       font-size: 13px;
+                       margin-top: 8px;
+                       margin-bottom: 18px;
+                   ">
+                <tr style="background-color: #f5f5f5;">
+                    <th align="left">Guest</th>
+                    <th align="left">Role</th>
+                    <th align="left">Email</th>
+                    <th align="left">Response</th>
+                    <th align="left">Responded At</th>
+                    <th align="left">Notes</th>
+                </tr>
+                {''.join(response_rows)}
+            </table>
+            """
+
+            if len(members) > 0 and tentative_confirmed_count == len(members):
+
+                final_email_sent_display = safe_text(
+                    group["final_coordination_email_sent_at"]
+                )
+
+                if not final_email_sent_display:
+                    final_email_sent_display = "Not sent yet"
+
+                final_capacity_check = coordination_capacity_check_for_window(
+                    conn,
+                    group_id,
+                    group["tentative_arrival_date"],
+                    group["tentative_departure_date"]
+                )
+
+                if final_capacity_check["capacity_ok"]:
+
+                    all_confirmed_banner = f"""
+                    <div style="
+                        background-color: #d4edda;
+                        border: 2px solid #198754;
+                        padding: 14px;
+                        border-radius: 8px;
+                        margin-bottom: 18px;
+                        max-width: 900px;
+                    ">
+
+                        <h2 style="
+                            color: #198754;
+                            margin-top: 0;
+                        ">
+                            Round Status: Ready for Final Confirmation
+                        </h2>
+
+                        <p>
+                            All coordination members have confirmed the tentative dates and capacity still checks out.
+                        </p>
+
+                        <p>
+                            <strong>Tentative Dates:</strong>
+                            {format_date(group['tentative_arrival_date'])}
+                            to
+                            {format_date(group['tentative_departure_date'])}<br>
+                            <strong>Rooms Needed:</strong> {safe_text(final_capacity_check['rooms_needed'])}<br>
+                            <strong>Final Coordination Email:</strong> {final_email_sent_display}
+                        </p>
+
+                        <p>
+                            <a href="/coordination-group/{group_id}/handoff"
+                               style="
+                                   display: inline-block;
+                                   background-color: #198754;
+                                   color: white;
+                                   padding: 8px 12px;
+                                   border-radius: 5px;
+                                   text-decoration: none;
+                                   font-weight: bold;
+                               ">
+                                Continue to Booking Handoff / Finalize Group Visit
+                            </a>
+                        </p>
+
+                        <p style="font-size: 13px; color: #555; margin-bottom: 0;">
+                            Use Booking Handoff for guest confirmations, booking requests, room assignments, final confirmation, and closing.
+                        </p>
+
+                    </div>
+                    """
+
+                else:
+
+                    all_confirmed_banner = f"""
+                    <div style="
+                        background-color: #fff3cd;
+                        border: 2px solid #fd7e14;
+                        padding: 14px;
+                        border-radius: 8px;
+                        margin-bottom: 18px;
+                        max-width: 900px;
+                    ">
+
+                        <h2 style="
+                            color: #856404;
+                            margin-top: 0;
+                        ">
+                            Round Status: Needs Another Round
+                        </h2>
+
+                        <p>
+                            Guests confirmed the tentative dates, but capacity or availability changed before finalization.
+                        </p>
+
+                        <p>
+                            <strong>Issue:</strong><br>
+                            {safe_text('; '.join(final_capacity_check['notes']))}
+                        </p>
+
+                        <p style="font-size: 13px; color: #555; margin-bottom: 0;">
+                            Adjust tentative dates or room counts before finalizing the group visit.
+                        </p>
+
+                    </div>
+                    """
+
+        tentative_management_html = """
         <p>
-            The coordination group could not be found.
+            First select tentative dates from a best match. Then guests confirm whether those dates work. After that, create booking requests for confirmed guests.
         </p>
+        """
+
+        if safe_text(group["tentative_arrival_date"]) and safe_text(group["tentative_departure_date"]):
+
+            due_date_display = safe_text(
+                group["tentative_response_due_date"]
+            ).strip() or default_coordination_due_date()
+
+            overdue_label = ""
+
+            if coordination_group_is_overdue(group):
+                overdue_label = """
+                <strong style='color: red;'>Overdue</strong>
+                """
+
+            converted_count = 0
+
+            for member in members:
+
+                if member["converted_request_id"]:
+                    converted_count += 1
+
+            tentative_management_html = f"""
+            <div style="
+                border: 1px solid #dee2e6;
+                background-color: #f8f9fa;
+                padding: 12px;
+                margin-bottom: 10px;
+                border-radius: 8px;
+                max-width: 900px;
+            ">
+                <h3 style="margin-top: 0;">Planning Complete — Next Step</h3>
+
+                <p>
+                    <strong>RSVP Due Date:</strong> {due_date_display} {overdue_label}<br>
+                    <strong>Booking Requests Created:</strong> {converted_count} of {len(members)}
+                </p>
+
+                <p>
+                    Tentative dates have been selected. Use the Booking Handoff page for confirmation emails, booking requests, room assignments, final confirmation, and closing.
+                </p>
+
+                <p style="margin-bottom: 0;">
+                    <a href="/coordination-group/{group_id}/handoff"
+                       style="
+                           display: inline-block;
+                           background-color: #0d6efd;
+                           color: white;
+                           padding: 8px 12px;
+                           border-radius: 5px;
+                           text-decoration: none;
+                           font-weight: bold;
+                       ">
+                        Go to Booking Handoff Page
+                    </a>
+                </p>
+            </div>
+            """
+
+        responded_count = 0
+        not_responded_names = []
+
+        for member in members:
+
+            if member["date_option_count"]:
+
+                responded_count += 1
+
+            else:
+
+                not_responded_names.append(
+                    safe_text(member["primary_name"])
+                )
+
+        current_round = coordination_round_number(group)
+        round_pending_follow_up_members = []
+        round_completed_follow_up_members = []
+
+        for member in members:
+
+            try:
+                member_follow_up_round = int(row_value(member, "follow_up_round") or 0)
+            except Exception:
+                member_follow_up_round = 0
+
+            if member_follow_up_round == current_round and safe_text(row_value(member, "follow_up_sent_at")).strip():
+
+                if safe_text(row_value(member, "follow_up_response_at")).strip():
+                    round_completed_follow_up_members.append(member)
+                else:
+                    round_pending_follow_up_members.append(member)
+
+        round_status_label = "Collecting initial dates"
+        round_status_background = "#eef5ff"
+        round_waiting_text = "Waiting for initial group responses."
+
+        if current_round > 1:
+
+            if round_pending_follow_up_members:
+                round_status_label = "Targeted follow-up in progress"
+                round_status_background = "#fff3cd"
+                round_waiting_text = "Waiting for: " + safe_text(", ".join([safe_text(member["primary_name"]) for member in round_pending_follow_up_members]))
+            else:
+                round_status_label = "Follow-up round complete"
+                round_status_background = "#e8f7ea"
+                round_waiting_text = "All targeted follow-up guests have responded. Review the updated Best Group Option below."
+
+        round_status_html = f"""
+        <div style="
+            background-color: {round_status_background};
+            border: 1px solid #ced4da;
+            padding: 10px;
+            border-radius: 8px;
+            margin-bottom: 12px;
+            max-width: 1080px;
+            font-size: 13px;
+        ">
+            <strong>Current Planning Round:</strong> Round {current_round} — {round_status_label}<br>
+            <strong>Status:</strong> {round_waiting_text}<br>
+            <strong>Round Note:</strong> Round 1 starts with organizer setup. Later rounds are used when dates need another pass.
+        </div>
+        """
+
+        date_options_summary_html = """
+        <p>No date options have been submitted yet.</p>
+        """
+
+        if group_date_options:
+
+            date_options_summary_html = """
+            <table border="1"
+                   cellpadding="5"
+                   cellspacing="0"
+                   style="
+                       border-collapse: collapse;
+                       width: 100%;
+                       font-size: 13px;
+                       margin-top: 8px;
+                   ">
+                <tr style="background-color: #f5f5f5;">
+                    <th align="left">Guest</th>
+                    <th align="left">Role</th>
+                    <th align="left">Priority</th>
+                    <th align="left">Arrival</th>
+                    <th align="left">Departure</th>
+                    <th align="center">Nights</th>
+                    <th align="center">Rooms</th>
+                    <th align="center">Flexibility</th>
+                    <th align="left">Notes</th>
+                    <th align="left">Request Page</th>
+                </tr>
+            """
+
+            for option in group_date_options:
+
+                try:
+
+                    nights = (
+                        datetime.strptime(
+                            option["departure_date"],
+                            "%Y-%m-%d"
+                        )
+                        - datetime.strptime(
+                            option["arrival_date"],
+                            "%Y-%m-%d"
+                        )
+                    ).days
+
+                except:
+
+                    nights = ""
+
+                date_options_summary_html += f"""
+                <tr>
+                    <td>{safe_text(option['primary_name'])}</td>
+                    <td>{coordination_role_badge(option['role'])}</td>
+                    <td>{safe_text(option['priority']).title()}</td>
+                    <td>{format_date(option['arrival_date'])}</td>
+                    <td>{format_date(option['departure_date'])}</td>
+                    <td align="center">{safe_text(nights)}</td>
+                    <td align="center">{safe_text(option['rooms_requested'])}</td>
+                    <td align="center">± {safe_text(option['flexibility_days'])} day(s)</td>
+                    <td>{safe_text(option['notes'])}</td>
+                    <td>
+                        <a href="/coordination-group-member/{option['member_id']}/request">
+                            Open
+                        </a>
+                    </td>
+                </tr>
+                """
+
+            date_options_summary_html += "</table>"
+
+        not_responded_html = """
+        <span style="color: green; font-weight: bold;">
+            Everyone with a profile in this group has submitted date options.
+        </span>
+        """
+
+        if not_responded_names:
+
+            not_responded_html = safe_text(
+                ", ".join(not_responded_names)
+            )
+
+        invitation_sent_count = 0
+        invitation_not_sent_count = 0
+        invitation_sent_names = []
+        invitation_not_sent_names = []
+
+        for member in members:
+
+            member_invitation_status = safe_text(member["invitation_status"]).strip()
+
+            if member_invitation_status in ["sent", "viewed", "responded", "capacity_review"]:
+
+                invitation_sent_count += 1
+                invitation_sent_names.append(safe_text(member["primary_name"]))
+
+            else:
+
+                invitation_not_sent_count += 1
+                invitation_not_sent_names.append(safe_text(member["primary_name"]))
+
+        planning_invitation_state = "Not Started"
+        planning_invitation_icon = "⬜"
+        planning_invitation_background = "#f8f9fa"
+
+        if len(members) > 0 and invitation_sent_count == len(members):
+
+            planning_invitation_state = "Done"
+            planning_invitation_icon = "✅"
+            planning_invitation_background = "#e8f7ea"
+
+        elif invitation_sent_count > 0:
+
+            planning_invitation_state = "Needs Action"
+            planning_invitation_icon = "⚠️"
+            planning_invitation_background = "#fff3cd"
+
+        response_state = "Not Started"
+        response_icon = "⬜"
+        response_background = "#f8f9fa"
+
+        if len(members) > 0 and responded_count == len(members):
+
+            response_state = "Done"
+            response_icon = "✅"
+            response_background = "#e8f7ea"
+
+        elif responded_count > 0 or invitation_sent_count > 0:
+
+            response_state = "Needs Action"
+            response_icon = "⚠️"
+            response_background = "#fff3cd"
+
+        overlap_state = "Not Started"
+        overlap_icon = "⬜"
+        overlap_background = "#f8f9fa"
+
+        if group_date_options:
+
+            overlap_state = "Review"
+            overlap_icon = "⚠️"
+            overlap_background = "#fff3cd"
+
+            if match_suggestions:
+
+                overlap_state = "Ready"
+                overlap_icon = "✅"
+                overlap_background = "#e8f7ea"
+
+        tentative_state = "Not Started"
+        tentative_icon = "⬜"
+        tentative_background = "#f8f9fa"
+
+        tentative_selected = bool(
+            safe_text(group["tentative_arrival_date"])
+            and safe_text(group["tentative_departure_date"])
+        )
+
+        planning_ready_for_booking = (
+            safe_text(group["status"]) == "ready_for_booking"
+            and tentative_selected
+        )
+
+        if safe_text(group["tentative_arrival_date"]) and safe_text(group["tentative_departure_date"]):
+
+            tentative_state = "Done"
+            tentative_icon = "✅"
+            tentative_background = "#e8f7ea"
+
+        outstanding_invitation_display = "None"
+
+        if invitation_not_sent_names:
+
+            outstanding_invitation_display = safe_text(", ".join(invitation_not_sent_names))
+
+        step4_detail = "Pick the best overlap window and ask guests to confirm."
+        step4_action = '<a href="#best-match-suggestions">Set Tentative Dates</a>'
+
+        if tentative_selected:
+            step4_detail = "Tentative dates selected. Planning is complete; continue on the Booking Handoff page."
+            step4_action = f"""
+            <a href="/coordination-group/{group_id}/handoff"
+               style="display: inline-block; background-color: #198754; color: white; padding: 7px 10px; border-radius: 5px; text-decoration: none; font-weight: bold;">
+                Go to Booking Handoff Page
+            </a>
+            """
+
+        if safe_text(group["status"]) == "capacity_review":
+            overlap_state = "Review Date / Capacity Overlap"
+            overlap_icon = "⚠️"
+            overlap_background = "#fff3cd"
+            step4_detail = "Capacity or date overlap needs review before booking handoff. Use the Capacity Status section below to email guests if they need to change dates or bedrooms."
+            step4_action = '<a href="#capacity-status">Review Capacity / Email Guests</a>'
+
+        if planning_ready_for_booking:
+            overlap_state = "Done"
+            overlap_icon = "✅"
+            overlap_background = "#e8f7ea"
+            tentative_state = "Ready for Booking"
+            tentative_icon = "✅"
+            tentative_background = "#d4edda"
+            step4_detail = "All guests now fit these dates. Planning is closed; use Booking Handoff for the rest."
+            step4_action = f"""
+            <a href="/coordination-group/{group_id}/handoff"
+               style="display: inline-block; background-color: #198754; color: white; padding: 8px 12px; border-radius: 5px; text-decoration: none; font-weight: bold;">
+                Go to Booking Handoff Page
+            </a>
+            """
+
+        organizer_member = None
+
+        for member in members:
+
+            if safe_text(row_value(member, "role")).strip() == "organizer":
+                organizer_member = member
+                break
+
+        organizer_formation_html = """
+        <p>No organizer has been assigned yet.</p>
+        """
+
+        if organizer_member:
+
+            organizer_link = organizer_planning_url(coordination_member_row_id(organizer_member))
+            organizer_suggested_guests = safe_text(row_value(organizer_member, "organizer_suggested_guests")).strip()
+            organizer_suggested_dates_notes = safe_text(row_value(organizer_member, "organizer_suggested_dates_notes")).strip()
+            organizer_suggestions_at = safe_text(row_value(organizer_member, "organizer_suggestions_at")).strip()
+            organizer_kickoff_sent_at = safe_text(row_value(organizer_member, "organizer_kickoff_sent_at")).strip()
+
+            if not organizer_suggested_guests:
+                organizer_suggested_guests = "No suggested guests submitted yet."
+
+            if not organizer_suggested_dates_notes:
+                organizer_suggested_dates_notes = "No organizer date notes submitted yet."
+
+            if not organizer_suggestions_at:
+                organizer_suggestions_at = "Not submitted yet"
+
+            if not organizer_kickoff_sent_at:
+                organizer_kickoff_sent_at = "Not sent yet"
+
+            organizer_formation_html = f"""
+            <div style="border:2px solid #0d6efd; background:#eef5ff; border-radius:8px; padding:12px; max-width:980px; margin-bottom:14px; font-size:13px;">
+                <h3 style="margin-top:0;">Organizer-Led Formation</h3>
+                <p style="margin-bottom:6px;">
+                    <strong>Organizer:</strong> {safe_text(organizer_member['primary_name'])} &lt;{safe_text(organizer_member['primary_email'])}&gt;<br>
+                    <strong>Kickoff Email:</strong> {safe_text(organizer_kickoff_sent_at)}<br>
+                    <strong>Organizer Email Sent / Returned Suggestions:</strong> {safe_text(organizer_suggestions_at)}
+                </p>
+                <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:13px; background:white;">
+                    <tr style="background:#f5f5f5;">
+                        <th align="left">Organizer Link</th>
+                        <th align="left">Suggested Guests</th>
+                        <th align="left">Initial Date Notes</th>
+                    </tr>
+                    <tr>
+                        <td><a href="{organizer_link}">Open Organizer Setup Page</a></td>
+                        <td style="white-space:pre-wrap;">{safe_text(organizer_suggested_guests)}</td>
+                        <td style="white-space:pre-wrap;">{safe_text(organizer_suggested_dates_notes)}</td>
+                    </tr>
+                </table>
+                <p style="margin-bottom:0;">
+                    <a href="/coordination-group/{group_id}/organizer-kickoff-preview" style="font-weight:bold;">Preview / Send Organizer Setup Email</a>
+                </p>
+            </div>
+            """
+
+        organizer_workflow_state = "Needs Action"
+        organizer_workflow_name = "None assigned"
+        organizer_workflow_kickoff = "Not sent"
+        organizer_workflow_returned = "Not returned"
+        organizer_workflow_action = "Assign an Organizer first"
+
+        if organizer_member:
+            organizer_workflow_name = safe_text(organizer_member["primary_name"])
+            organizer_workflow_kickoff = safe_text(row_value(organizer_member, "organizer_kickoff_sent_at")).strip() or "Not sent"
+            organizer_workflow_returned = safe_text(row_value(organizer_member, "organizer_suggestions_at")).strip() or "Not returned"
+            organizer_workflow_action = f'<a href="/coordination-group/{group_id}/organizer-kickoff-preview">Preview / Send Organizer Email</a>'
+
+            if organizer_workflow_kickoff != "Not sent" and organizer_workflow_returned != "Not returned":
+                organizer_workflow_state = "✅ Complete"
+
+        planning_workflow_html = f"""
+        <h2>Action Workflow</h2>
+
+        {round_status_html}
+
+        <div style="
+            background-color: #eef5ff;
+            border: 2px solid #4a90e2;
+            padding: 14px;
+            border-radius: 8px;
+            margin-bottom: 18px;
+            max-width: 1080px;
+        ">
+            <p style="margin-top: 0;">
+                Use this section to move the group through date planning before booking handoff.
+            </p>
+
+            <table border="1"
+                   cellpadding="6"
+                   cellspacing="0"
+                   style="
+                       border-collapse: collapse;
+                       width: 100%;
+                       font-size: 13px;
+                       margin-bottom: 14px;
+                   ">
+                <tr style="background-color: #f5f5f5;">
+                    <th align="left">Step</th>
+                    <th align="left">Status</th>
+                    <th align="left">Details</th>
+                    <th align="left">Action</th>
+                </tr>
+
+                <tr style="background-color:#fff8e6;">
+                    <td><strong>1. Organizer Email Sent / Returned</strong></td>
+                    <td>
+                        {organizer_workflow_state}
+                    </td>
+                    <td>
+                        Organizer: {organizer_workflow_name}<br>
+                        Kickoff Email: {organizer_workflow_kickoff}<br>
+                        Organizer Returned: {organizer_workflow_returned}
+                    </td>
+                    <td>
+                        {organizer_workflow_action}
+                    </td>
+                </tr>
+
+                <tr style="background-color: {planning_invitation_background};">
+                    <td><strong>2. Send Coordination Invitations</strong></td>
+                    <td>{planning_invitation_icon} {planning_invitation_state}</td>
+                    <td>
+                        Members Added: {len(members)}<br>
+                        Invitations Sent: {invitation_sent_count}<br>
+                        Not Sent: {invitation_not_sent_count}<br>
+                        <small>Outstanding: {outstanding_invitation_display}</small>
+                    </td>
+                    <td>
+                        <a href="/coordination-group/{group_id}/email-preview">
+                            Preview / Send Invitations
+                        </a>
+                    </td>
+                </tr>
+
+                <tr style="background-color: {response_background};">
+                    <td><strong>3. Collect Responses</strong></td>
+                    <td>{response_icon} {response_state}</td>
+                    <td>
+                        Responses Received: {responded_count} of {len(members)}<br>
+                        Waiting On: {not_responded_html}
+                    </td>
+                    <td>
+                        <a href="/coordination-group/{group_id}/email-preview">
+                            Resend / Remind Guests
+                        </a>
+                    </td>
+                </tr>
+
+                <tr style="background-color: {overlap_background};">
+                    <td><strong>4. Review Date Overlap</strong></td>
+                    <td>{overlap_icon} {overlap_state}</td>
+                    <td>Review best match suggestions and unmatched guests below.</td>
+                    <td><a href="#best-match-suggestions">View Suggestions</a></td>
+                </tr>
+
+                <tr style="background-color: {tentative_background};">
+                    <td><strong>5. Select Tentative Dates</strong></td>
+                    <td>{tentative_icon} {tentative_state}</td>
+                    <td>{step4_detail}</td>
+                    <td>{step4_action}</td>
+                </tr>
+            </table>
+
+            <p style="font-size: 13px; color: #555; margin-bottom: 0;">
+                After tentative dates are selected, use the Booking Handoff page for confirmations, booking requests, room assignments, approvals, and closing.
+            </p>
+        </div>
+        """
+
+        created_booking_requests_html = """
+        <p>No booking requests have been created from this coordination group yet.</p>
+        """
+
+        if created_booking_request_rows:
+
+            created_booking_requests_html = """
+            <table border="1"
+                   cellpadding="5"
+                   cellspacing="0"
+                   style="
+                       border-collapse: collapse;
+                       width: 100%;
+                       font-size: 13px;
+                       margin-bottom: 18px;
+                   ">
+                <tr style="background-color: #f5f5f5;">
+                    <th align="left">Guest</th>
+                    <th align="left">Email</th>
+                    <th align="left">Additional Guests</th>
+                    <th align="left">Request</th>
+                    <th align="left">Dates</th>
+                    <th align="center">Rooms Requested</th>
+                    <th align="left">Request Status</th>
+                    <th align="left">Email Status</th>
+                    <th align="left">Room Assignment</th>
+                    <th align="left">Action</th>
+                </tr>
+            """
+
+            for created_request in created_booking_request_rows:
+
+                room_assignment_display = "Not assigned yet"
+
+                if row_value(created_request, "approved_room_names"):
+                    room_assignment_display = safe_text(
+                        row_value(created_request, "approved_room_names")
+                    )
+
+                request_status_display_text = safe_text(
+                    row_value(created_request, "request_status")
+                )
+
+                row_background = "#fff3cd"
+
+                if request_status_display_text == "approved" and (row_value(created_request, "approved_booking_count") or 0) > 0:
+                    row_background = "#e8f7ea"
+
+                created_booking_requests_html += f"""
+                <tr style="background-color: {row_background};">
+                    <td>{safe_text(created_request['primary_name'])}</td>
+                    <td>{safe_text(created_request['primary_email'])}</td>
+                    <td>{safe_text(created_request['additional_names']) or 'None listed'}</td>
+                    <td>
+                        <a href="/request/{created_request['converted_request_id']}">
+                            Request {created_request['converted_request_id']}
+                        </a>
+                    </td>
+                    <td>
+                        {format_date(created_request['arrival_date'])}<br>
+                        to {format_date(created_request['departure_date'])}
+                    </td>
+                    <td align="center">
+                        {safe_text(created_request['rooms_requested'])}
+                    </td>
+                    <td>{request_status_display_text}</td>
+                    <td>{email_status_display(row_value(created_request, "email_status"), row_value(created_request, "email_needed_type"), row_value(created_request, "converted_request_id"))}</td>
+                    <td>{room_assignment_display}</td>
+                    <td>
+                        <a href="/room-assignments">
+                            Open Room Assignments
+                        </a>
+                        <br>
+                        <small>
+                            Request #{created_request['converted_request_id']}
+                        </small>
+                    </td>
+                </tr>
+                """
+
+            created_booking_requests_html += "</table>"
+
+        intersection_suggestions_html = """
+        <p>No shared overlap yet. Once guests submit date options, Phase 3 will look for the common window where everyone can attend.</p>
+        """
+
+        if intersection_suggestions:
+
+            best_intersection = intersection_suggestions[0]
+
+            intersection_capacity_display = "<strong style='color: green;'>Capacity OK</strong>"
+
+            if not best_intersection["capacity_ok"]:
+                intersection_capacity_display = "<strong style='color: red;'>Capacity needs review</strong>"
+
+            changed_names_display = "None — all submitted windows match this exact range"
+
+            if best_intersection["changed_range_names"]:
+                changed_names_display = safe_text(", ".join(best_intersection["changed_range_names"]))
+
+            flexibility_names_display = "None"
+
+            if best_intersection["flexibility_used_names"]:
+                flexibility_names_display = safe_text(", ".join(best_intersection["flexibility_used_names"]))
+
+            other_intersections_html = ""
+
+            if len(intersection_suggestions) > 1:
+                other_rows = ""
+                rank = 2
+                for suggestion in intersection_suggestions[1:5]:
+                    other_rows += f"""
+                    <tr>
+                        <td>{rank}</td>
+                        <td>{format_date(suggestion['arrival_date'])} to {format_date(suggestion['departure_date'])}</td>
+                        <td align="center">{suggestion['nights']}</td>
+                        <td align="center">{suggestion['rooms_needed']} of {suggestion['rooms_available']}</td>
+                        <td>{'OK' if suggestion['capacity_ok'] else 'Needs Review'}</td>
+                        <td>
+                            <form method="POST" action="/coordination-group/{group_id}/set-tentative">
+                                <input type="hidden" name="arrival_date" value="{suggestion['arrival_date']}">
+                                <input type="hidden" name="departure_date" value="{suggestion['departure_date']}">
+                                <button type="submit" style="font-size:12px; padding:4px 8px;">Set Tentative</button>
+                            </form>
+                        </td>
+                    </tr>
+                    """
+                    rank += 1
+
+                other_intersections_html = f"""
+                <h4 style="margin-bottom:6px;">Other Shared Overlap Options</h4>
+                <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:13px;">
+                    <tr style="background:#f5f5f5;">
+                        <th>Rank</th><th>Dates</th><th>Nights</th><th>Rooms</th><th>Capacity</th><th>Action</th>
+                    </tr>
+                    {other_rows}
+                </table>
+                """
+
+            intersection_suggestions_html = f"""
+            <div style="background:#e8f7ea; border:2px solid #198754; border-radius:8px; padding:12px; margin-bottom:14px; max-width:1040px;">
+                <h3 style="margin-top:0;">Round Shared Overlap Window</h3>
+                <p style="font-size:16px; margin:4px 0;">
+                    <strong>{format_date(best_intersection['arrival_date'])}</strong>
+                    to
+                    <strong>{format_date(best_intersection['departure_date'])}</strong>
+                    ({best_intersection['nights']} night(s))
+                </p>
+                <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:13px; margin-top:8px;">
+                    <tr style="background:#f5f5f5;">
+                        <th align="left">Guests Included</th>
+                        <th align="left">Rooms Needed</th>
+                        <th align="left">Capacity</th>
+                        <th align="left">Adjusted From Original Dates</th>
+                        <th align="left">Flexibility Used</th>
+                    </tr>
+                    <tr>
+                        <td>{best_intersection['matched_count']} of {best_intersection['total_member_count']}</td>
+                        <td>{best_intersection['rooms_needed']} of {best_intersection['rooms_available']}</td>
+                        <td>{intersection_capacity_display}</td>
+                        <td>{changed_names_display}</td>
+                        <td>{flexibility_names_display}</td>
+                    </tr>
+                </table>
+                <p style="font-size:13px; color:#555;">
+                    This uses the intersection rule: latest usable arrival plus earliest usable departure. It reserves only this shared overlap window, not every guest's full requested range.
+                </p>
+                <form method="POST" action="/coordination-group/{group_id}/set-tentative" style="margin-top:10px;">
+                    <input type="hidden" name="arrival_date" value="{best_intersection['arrival_date']}">
+                    <input type="hidden" name="departure_date" value="{best_intersection['departure_date']}">
+                    <button type="submit" style="font-size:14px; padding:7px 12px; font-weight:bold;">
+                        Set Shared Overlap As Tentative
+                    </button>
+                </form>
+                {other_intersections_html}
+            </div>
+            """
+
+
+        tentative_adjustments_html = ""
+
+        if tentative_adjustments:
+            adjustment_rows = ""
+            for adjustment in tentative_adjustments:
+                adjustment_rows += f"""
+                <tr>
+                    <td>{format_datetime_display(adjustment['created_at'])}</td>
+                    <td>{format_date(adjustment['system_arrival_date'])} to {format_date(adjustment['system_departure_date'])}</td>
+                    <td>{format_date(adjustment['admin_arrival_date'])} to {format_date(adjustment['admin_departure_date'])}</td>
+                    <td>{safe_text(adjustment['rooms_needed'])}</td>
+                    <td>{safe_text(adjustment['capacity_status'])}</td>
+                    <td>{safe_text(adjustment['adjustment_reason'])}</td>
+                </tr>
+                """
+
+            tentative_adjustments_html = f"""
+            <div style="background:#f8fbff; border:1px solid #d8e6f3; border-radius:8px; padding:10px; margin:10px 0; max-width:1040px;">
+                <h3 style="margin:0 0 6px 0;">Admin Tentative Date Adjustment History</h3>
+                <table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:12px;">
+                    <tr style="background:#f5f5f5;">
+                        <th>When</th>
+                        <th>System Suggested</th>
+                        <th>Admin Selected</th>
+                        <th>Rooms</th>
+                        <th>Capacity</th>
+                        <th>Reason</th>
+                    </tr>
+                    {adjustment_rows}
+                </table>
+            </div>
+            """
+
+        phase4_default_arrival = safe_text(row_value(group, "tentative_arrival_date")).strip()
+        phase4_default_departure = safe_text(row_value(group, "tentative_departure_date")).strip()
+        phase4_system_arrival = ""
+        phase4_system_departure = ""
+
+        if intersection_suggestions:
+            phase4_system_arrival = intersection_suggestions[0]["arrival_date"]
+            phase4_system_departure = intersection_suggestions[0]["departure_date"]
+            if not phase4_default_arrival:
+                phase4_default_arrival = phase4_system_arrival
+            if not phase4_default_departure:
+                phase4_default_departure = phase4_system_departure
+
+        phase4_system_text = "No system shared-overlap suggestion is available yet."
+        if phase4_system_arrival and phase4_system_departure:
+            phase4_system_text = f"{format_date(phase4_system_arrival)} to {format_date(phase4_system_departure)}"
+
+        phase4_current_text = "No tentative dates currently selected."
+        if phase4_default_arrival and phase4_default_departure:
+            phase4_current_text = f"{format_date(phase4_default_arrival)} to {format_date(phase4_default_departure)}"
+
+        phase4_admin_override_html = f"""
+        <div style="background:#fff8e6; border:2px solid #fd7e14; border-radius:8px; padding:12px; margin:12px 0; max-width:1040px;">
+            <h3 style="margin-top:0;">Round Admin Adjust Tentative Dates</h3>
+            <p style="margin:4px 0; font-size:13px;">
+                <strong>System suggested overlap:</strong> {phase4_system_text}<br>
+                <strong>Current tentative dates:</strong> {phase4_current_text}
+            </p>
+
+            <form method="POST" action="/coordination-group/{group_id}/set-tentative" style="display:grid; grid-template-columns: repeat(2, minmax(180px, 1fr)); gap:8px; max-width:720px;">
+                <input type="hidden" name="system_arrival_date" value="{safe_text(phase4_system_arrival)}">
+                <input type="hidden" name="system_departure_date" value="{safe_text(phase4_system_departure)}">
+                <input type="hidden" name="admin_adjustment" value="yes">
+
+                <label>
+                    Tentative Arrival<br>
+                    <input type="date" name="arrival_date" value="{safe_text(phase4_default_arrival)}" required style="width:100%; padding:6px;">
+                </label>
+
+                <label>
+                    Tentative Departure<br>
+                    <input type="date" name="departure_date" value="{safe_text(phase4_default_departure)}" required style="width:100%; padding:6px;">
+                </label>
+
+                <label style="grid-column:1 / -1;">
+                    Adjustment reason / planning note<br>
+                    <textarea name="adjustment_reason" rows="3" style="width:100%; padding:6px;" placeholder="Example: Better fit for family travel, room pressure, or guest flexibility."></textarea>
+                </label>
+
+                <div style="grid-column:1 / -1;">
+                    <button type="submit" style="font-weight:bold; padding:7px 12px;">
+                        Save Admin Tentative Dates
+                    </button>
+                    <small style="color:#555; margin-left:8px;">
+                        Validates against blocked dates, bookings, partial blocks, and other tentative holds.
+                    </small>
+                </div>
+            </form>
+        </div>
+        """ + tentative_adjustments_html
+
+        match_suggestions_html = """
+        <p>No match suggestions yet. Add date options for at least one group member.</p>
+        """
+
+        if match_suggestions:
+
+            best_suggestion = match_suggestions[0]
+
+            best_capacity_display = "<strong style='color: green;'>Capacity OK</strong>"
+
+            if not best_suggestion["capacity_ok"]:
+                best_capacity_display = "<strong style='color: red;'>Capacity needs review</strong>"
+
+            all_group_member_names = []
+
+            for member in members:
+                all_group_member_names.append(
+                    safe_text(member["primary_name"])
+                )
+
+            best_unmatched_names = []
+
+            for member_name in all_group_member_names:
+                if member_name not in best_suggestion["guest_names"]:
+                    best_unmatched_names.append(member_name)
+
+            best_unmatched_display = "None"
+
+            best_unmatched_members = []
+
+            if best_unmatched_names:
+                best_unmatched_display = safe_text(", ".join(sorted(best_unmatched_names)))
+
+                for member in members:
+                    if safe_text(member["primary_name"]) in best_unmatched_names:
+                        best_unmatched_members.append(member)
+
+            targeted_follow_up_html = ""
+
+            if best_unmatched_members:
+
+                targeted_follow_up_rows = ""
+
+                for member in best_unmatched_members:
+
+                    targeted_follow_up_rows += f"""
+                    <tr>
+                        <td>{safe_text(member['primary_name'])}</td>
+                        <td>{safe_text(member['primary_email'])}</td>
+                        <td>
+                            <a href="/coordination-group-member/{coordination_member_row_id(member)}/request?follow_up=1&suggested_arrival={best_suggestion['arrival_date']}&suggested_departure={best_suggestion['departure_date']}">
+                                Open Date Link
+                            </a>
+                        </td>
+                    </tr>
+                    """
+
+                targeted_follow_up_html = f"""
+                <div style="
+                    background-color: #fff3cd;
+                    border: 1px solid #f0ad4e;
+                    border-radius: 8px;
+                    padding: 10px;
+                    margin-top: 12px;
+                ">
+                    <h4 style="margin: 0 0 6px 0;">Targeted Follow-Up</h4>
+                    <p style="margin: 0 0 8px 0; font-size: 13px;">
+                        This option works for most guests. Start the next round by following up only with the guest(s) who do not match.
+                    </p>
+                    <table border="1" cellpadding="5" cellspacing="0"
+                           style="border-collapse: collapse; width: 100%; font-size: 13px; margin-bottom: 8px;">
+                        <tr style="background-color: #f5f5f5;">
+                            <th align="left">Guest</th>
+                            <th align="left">Email</th>
+                            <th align="left">Date Link</th>
+                        </tr>
+                        {targeted_follow_up_rows}
+                    </table>
+                    <p style="margin: 0;">
+                        <a href="/coordination-group/{group_id}/follow-up-unmatched?arrival_date={best_suggestion['arrival_date']}&departure_date={best_suggestion['departure_date']}"
+                           style="display: inline-block; background-color: #fd7e14; color: white; padding: 7px 10px; border-radius: 5px; text-decoration: none; font-weight: bold;">
+                            Email Guest(s) To Update Availability
+                        </a>
+                    </p>
+                </div>
+                """
+
+            best_why_html = f"<li>{best_suggestion['matched_count']} of {len(members)} guest(s) can attend</li>"
+
+            for why_item in best_suggestion["why_bullets"]:
+                if "guest(s) can attend" in safe_text(why_item):
+                    continue
+                best_why_html += f"<li>{safe_text(why_item)}</li>"
+
+            nearby_html = ""
+
+            if best_suggestion["nearby_before_names"]:
+                nearby_html += f"""
+                <li>
+                    {format_date(best_suggestion['nearby_before_date'])} works for:
+                    {safe_text(', '.join(best_suggestion['nearby_before_names']))}
+                </li>
+                """
+
+            if best_suggestion["nearby_after_names"]:
+                nearby_html += f"""
+                <li>
+                    {format_date(best_suggestion['nearby_after_date'])} works for:
+                    {safe_text(', '.join(best_suggestion['nearby_after_names']))}
+                </li>
+                """
+
+            if not nearby_html:
+                nearby_html = "<li>No nearby fallback dates found from the submitted windows.</li>"
+
+            match_suggestions_html = f"""
+            <div style="
+                background-color: #e8f7ea;
+                border: 2px solid #198754;
+                border-radius: 8px;
+                padding: 12px;
+                margin-bottom: 12px;
+                max-width: 1040px;
+            ">
+                <h3 style="margin-top: 0; margin-bottom: 6px;">
+                    Best Group Option
+                </h3>
+
+                <p style="font-size: 16px; margin: 4px 0;">
+                    <strong>{format_date(best_suggestion['arrival_date'])}</strong>
+                    to
+                    <strong>{format_date(best_suggestion['departure_date'])}</strong>
+                    ({best_suggestion['nights']} night(s))
+                </p>
+
+                <table border="1"
+                       cellpadding="5"
+                       cellspacing="0"
+                       style="border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 8px;">
+                    <tr style="background-color: #f5f5f5;">
+                        <th align="left">Matched</th>
+                        <th align="left">Rooms</th>
+                        <th align="left">Preferred / Alternate</th>
+                        <th align="left">Capacity</th>
+                        <th align="left">Needs Follow-Up</th>
+                    </tr>
+                    <tr>
+                        <td>{best_suggestion['matched_count']} of {len(members)}</td>
+                        <td>{best_suggestion['rooms_needed']} of {best_suggestion['rooms_available']}</td>
+                        <td>{best_suggestion['preferred_count']} preferred / {best_suggestion['alternate_count']} alternate</td>
+                        <td>{best_capacity_display}</td>
+                        <td>{best_unmatched_display}</td>
+                    </tr>
+                </table>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 10px;">
+                    <div>
+                        <strong>Why this is suggested:</strong>
+                        <ul style="margin-top: 4px; margin-bottom: 0; padding-left: 20px;">
+                            {best_why_html}
+                        </ul>
+                    </div>
+                    <div>
+                        <strong>Nearby dates that almost work:</strong>
+                        <ul style="margin-top: 4px; margin-bottom: 0; padding-left: 20px;">
+                            {nearby_html}
+                        </ul>
+                    </div>
+                </div>
+
+                <form method="POST"
+                      action="/coordination-group/{group_id}/set-tentative"
+                      style="margin-top: 12px;">
+                    <input type="hidden" name="arrival_date" value="{best_suggestion['arrival_date']}">
+                    <input type="hidden" name="departure_date" value="{best_suggestion['departure_date']}">
+                    <button type="submit"
+                            style="font-size: 14px; padding: 7px 12px; font-weight: bold;">
+                        Set Best Option As Tentative
+                    </button>
+                </form>
+
+                {targeted_follow_up_html}
+            </div>
+            """
+
+            if len(match_suggestions) > 1:
+
+                match_suggestions_html += """
+                <h3 style="margin-bottom: 6px;">Other Possible Options</h3>
+                <table border="1"
+                       cellpadding="5"
+                       cellspacing="0"
+                       style="
+                           border-collapse: collapse;
+                           width: 100%;
+                           font-size: 13px;
+                           margin-top: 6px;
+                       ">
+                    <tr style="background-color: #f5f5f5;">
+                        <th align="left">Rank</th>
+                        <th align="left">Dates</th>
+                        <th align="center">Guests</th>
+                        <th align="center">Rooms</th>
+                        <th align="left">Why / Follow-Up</th>
+                        <th align="left">Action</th>
+                    </tr>
+                """
+
+                rank = 2
+
+                for suggestion in match_suggestions[1:4]:
+
+                    other_capacity_display = "Capacity OK"
+
+                    if not suggestion["capacity_ok"]:
+                        other_capacity_display = "Capacity needs review"
+
+                    other_unmatched_names = []
+
+                    for member_name in all_group_member_names:
+                        if member_name not in suggestion["guest_names"]:
+                            other_unmatched_names.append(member_name)
+
+                    follow_up_display = "No follow-up needed"
+
+                    if other_unmatched_names:
+                        follow_up_display = "Follow up with: " + safe_text(", ".join(sorted(other_unmatched_names)))
+
+                    match_suggestions_html += f"""
+                    <tr>
+                        <td>{rank}</td>
+                        <td>
+                            <strong>{format_date(suggestion['arrival_date'])}</strong><br>
+                            to {format_date(suggestion['departure_date'])}<br>
+                            <small>{suggestion['nights']} night(s)</small>
+                        </td>
+                        <td align="center">{suggestion['matched_count']} of {len(members)}</td>
+                        <td align="center">{suggestion['rooms_needed']} of {suggestion['rooms_available']}</td>
+                        <td>
+                            {suggestion['preferred_count']} preferred / {suggestion['alternate_count']} alternate<br>
+                            {other_capacity_display}<br>
+                            <small>{follow_up_display}</small>
+                        </td>
+                        <td>
+                            <form method="POST"
+                                  action="/coordination-group/{group_id}/set-tentative">
+                                <input type="hidden" name="arrival_date" value="{suggestion['arrival_date']}">
+                                <input type="hidden" name="departure_date" value="{suggestion['departure_date']}">
+                                <button type="submit" style="font-size: 12px; padding: 4px 8px;">
+                                    Set Tentative
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                    """
+
+                    rank += 1
+
+                match_suggestions_html += "</table>"
+
+
+        def workflow_status_row(label, state, detail):
+
+            if state == "done":
+                icon = "✅"
+                status_text = "Done"
+                background = "#e8f7ea"
+                border = "#198754"
+
+            elif state == "needs_action":
+                icon = "⚠️"
+                status_text = "Needs Action"
+                background = "#fff3cd"
+                border = "#f0ad4e"
+
+            else:
+                icon = "⬜"
+                status_text = "Not Started"
+                background = "#f8f9fa"
+                border = "#dee2e6"
+
+            return f"""
+            <tr style="background-color: {background};">
+                <td style="width: 42px; font-size: 18px; text-align: center;">
+                    {icon}
+                </td>
+                <td>
+                    <strong>{label}</strong><br>
+                    <small>{detail}</small>
+                </td>
+                <td style="width: 140px; font-weight: bold; border-left: 4px solid {border};">
+                    {status_text}
+                </td>
+            </tr>
+            """
+
+        tentative_selected = bool(
+            safe_text(group["tentative_arrival_date"])
+            and safe_text(group["tentative_departure_date"])
+        )
+
+        all_guests_confirmed = (
+            len(members) > 0
+            and tentative_confirmed_count == len(members)
+        )
+
+        final_coordination_email_sent = bool(
+            safe_text(group["final_coordination_email_sent_at"])
+        )
+
+        final_visit_confirmation_sent = bool(
+            safe_text(group["final_visit_confirmation_sent_at"])
+        )
+
+        converted_member_count = 0
+
+        for member in members:
+
+            if member["converted_request_id"]:
+                converted_member_count += 1
+
+        booking_requests_created = converted_member_count > 0
+
+        all_confirmed_guests_converted = (
+            all_guests_confirmed
+            and converted_member_count >= tentative_confirmed_count
+        )
+
+        all_created_requests_reviewed = False
+
+        if created_booking_request_rows:
+
+            all_created_requests_reviewed = True
+
+            for created_request in created_booking_request_rows:
+
+                try:
+                    rooms_requested_for_check = int(created_request["rooms_requested"] or 1)
+                except:
+                    rooms_requested_for_check = 1
+
+                if safe_text(created_request["request_status"]) != "approved":
+                    all_created_requests_reviewed = False
+
+                if int(created_request["approved_booking_count"] or 0) < rooms_requested_for_check:
+                    all_created_requests_reviewed = False
+
+        group_raw_closed = safe_text(group["status"]) in [
+            "closed",
+            "finalized",
+            "archived"
+        ]
+
+        group_is_closed = (
+            group_raw_closed
+            and all_created_requests_reviewed
+            and final_visit_confirmation_sent
+        )
+
+        tentative_step_state = "not_started"
+
+        if tentative_selected:
+            tentative_step_state = "done"
+        elif match_suggestions:
+            tentative_step_state = "needs_action"
+
+        confirmation_step_state = "not_started"
+
+        if all_guests_confirmed:
+            confirmation_step_state = "done"
+        elif tentative_selected:
+            confirmation_step_state = "needs_action"
+
+        tentative_email_step_state = "not_started"
+
+        if safe_text(group["coordination_reminder_sent_at"]):
+            tentative_email_step_state = "done"
+        elif tentative_selected:
+            tentative_email_step_state = "needs_action"
+
+        final_visit_email_step_state = "not_started"
+
+        if final_visit_confirmation_sent and all_created_requests_reviewed:
+            final_visit_email_step_state = "done"
+        elif all_created_requests_reviewed:
+            final_visit_email_step_state = "needs_action"
+
+        conversion_step_state = "not_started"
+
+        if all_confirmed_guests_converted:
+            conversion_step_state = "done"
+        elif all_guests_confirmed:
+            conversion_step_state = "needs_action"
+
+        room_assignment_step_state = "not_started"
+
+        if all_created_requests_reviewed:
+            room_assignment_step_state = "done"
+        elif booking_requests_created:
+            room_assignment_step_state = "needs_action"
+
+        close_step_state = "not_started"
+
+        if group_is_closed:
+            close_step_state = "done"
+        elif all_created_requests_reviewed:
+            close_step_state = "needs_action"
+
+        workflow_progress_html = f"""
+        <div style="
+            background-color: #eef5ff;
+            border: 2px solid #4a90e2;
+            padding: 14px;
+            border-radius: 8px;
+            margin-bottom: 18px;
+            max-width: 1080px;
+        ">
+            <h2 style="margin-top: 0;">
+                Workflow Progress
+            </h2>
+
+            <p style="margin-top: 0; color: #555;">
+                This shows what is done, what needs action, and what has not started yet.
+            </p>
+
+            <table border="1"
+                   cellpadding="6"
+                   cellspacing="0"
+                   style="
+                       border-collapse: collapse;
+                       width: 100%;
+                       font-size: 13px;
+                   ">
+                <tr style="background-color: #f5f5f5;">
+                    <th></th>
+                    <th align="left">Workflow Step</th>
+                    <th align="left">Status</th>
+                </tr>
+                {workflow_status_row(
+                    "Pick or review tentative dates",
+                    tentative_step_state,
+                    "Choose the best overlap window from the suggested matches."
+                )}
+                {workflow_status_row(
+                    "Get guest confirmations",
+                    confirmation_step_state,
+                    f"Confirmed: {tentative_confirmed_count} of {len(members)}"
+                )}
+                {workflow_status_row(
+                    "Send final visit confirmation email",
+                    final_visit_email_step_state,
+                    "Send after booking requests are approved and rooms are assigned."
+                )}
+                {workflow_status_row(
+                    "Create booking requests",
+                    conversion_step_state,
+                    f"Booking requests created: {converted_member_count} of {len(members)}"
+                )}
+                {workflow_status_row(
+                    "Assign rooms and approve requests",
+                    room_assignment_step_state,
+                    "Use the Booking Handoff section below to review requests and assign rooms."
+                )}
+                {workflow_status_row(
+                    "Close coordination group",
+                    close_step_state,
+                    "Close only after booking requests have been reviewed and the group is no longer active."
+                )}
+            </table>
+        </div>
+        """
+
+        if planning_ready_for_booking:
+            match_suggestions_html = f"""
+            <div style="
+                background-color: #d4edda;
+                border: 2px solid #198754;
+                border-radius: 8px;
+                padding: 14px;
+                margin-bottom: 14px;
+                max-width: 1040px;
+            ">
+                <h2 style="margin-top: 0; color: #198754;">
+                    Dates Work for Everyone
+                </h2>
+                <p style="font-size: 16px; margin-bottom: 6px;">
+                    <strong>{format_date(group['tentative_arrival_date'])}</strong>
+                    to
+                    <strong>{format_date(group['tentative_departure_date'])}</strong>
+                </p>
+                <p>
+                    No more planning follow-up is needed. The next step is Booking Handoff.
+                </p>
+                <p style="margin-bottom: 0;">
+                    <a href="/coordination-group/{group_id}/handoff"
+                       style="display: inline-block; background-color: #198754; color: white; padding: 8px 12px; border-radius: 5px; text-decoration: none; font-weight: bold;">
+                        Go to Booking Handoff Page
+                    </a>
+                </p>
+            </div>
+            """
+
+        capacity_dashboard_html = ""
+        next_recommended_action = "Invite Guests"
+
+        try:
+            requested_rooms = 0
+            preferred_rows = ""
+            alternate_rows = ""
+            seen_member_rooms = {}
+
+            for option in group_date_options:
+                member_id_for_option = row_value(option, "member_id") or row_value(option, "coordination_group_member_id")
+                option_rooms = row_value(option, "rooms_requested") or 1
+
+                try:
+                    option_rooms = int(option_rooms)
+                except Exception:
+                    option_rooms = 1
+
+                previous_rooms = seen_member_rooms.get(member_id_for_option, 0)
+                if option_rooms > previous_rooms:
+                    seen_member_rooms[member_id_for_option] = option_rooms
+
+                row_html = f"""
+                <tr>
+                    <td>{safe_text(option['primary_name'])}</td>
+                    <td>{format_date(option['arrival_date'])} to {format_date(option['departure_date'])}</td>
+                    <td align="center">{option_rooms}</td>
+                    <td>{safe_text(option['created_at'])[:10]}</td>
+                </tr>
+                """
+
+                if safe_text(option["priority"]).lower() == "alternate":
+                    alternate_rows += row_html
+                else:
+                    preferred_rows += row_html
+
+            for member_row in members:
+                member_key = row_value(member_row, "id")
+                if member_key not in seen_member_rooms:
+                    member_rooms = row_value(member_row, "rooms_requested") or 1
+
+                    try:
+                        member_rooms = int(member_rooms)
+                    except Exception:
+                        member_rooms = 1
+
+                    seen_member_rooms[member_key] = member_rooms
+
+            requested_rooms = sum(seen_member_rooms.values())
+
+            if not preferred_rows:
+                preferred_rows = "<tr><td colspan='4'>No preferred dates submitted yet.</td></tr>"
+
+            if not alternate_rows:
+                alternate_rows = "<tr><td colspan='4'>No alternate dates submitted yet.</td></tr>"
+
+            available_rooms = total_rooms_for_matching
+
+            try:
+                available_rooms = int(available_rooms)
+            except Exception:
+                available_rooms = 0
+
+            room_delta = requested_rooms - available_rooms
+
+            if room_delta > 0 or safe_text(group["status"]) == "capacity_review":
+                next_recommended_action = "Review Date / Capacity Overlap"
+            elif not members:
+                next_recommended_action = "Invite Guests"
+            elif not_responded_names:
+                next_recommended_action = "Waiting Responses"
+            elif not safe_text(group["tentative_arrival_date"]) or not safe_text(group["tentative_departure_date"]):
+                next_recommended_action = "Set Tentative Dates"
+            elif safe_text(group["status"]) in ["ready_for_booking", "tentative", "confirmed_coordination"]:
+                next_recommended_action = "Booking Handoff"
+            elif safe_text(group["status"]) in ["finalized", "closed"]:
+                next_recommended_action = "Close Group"
+
+            def next_action_box(label):
+                checked = "☑" if label == next_recommended_action else "☐"
+                background = "#e8f7ea" if label == next_recommended_action else "#f8f9fa"
+                return f"<div style='padding:6px 8px; border:1px solid #dee2e6; background:{background}; border-radius:6px; margin-bottom:4px;'>{checked} {label}</div>"
+
+            next_action_html = f"""
+            <div class="coord-card" style="background:#eef5ff; border:2px solid #0f4c81;">
+                <h2>Next Recommended Action</h2>
+                {next_action_box("Invite Guests")}
+                {next_action_box("Waiting Responses")}
+                {next_action_box("Review Date / Capacity Overlap")}
+                {next_action_box("Set Tentative Dates")}
+                {next_action_box("Booking Handoff")}
+                {next_action_box("Close Group")}
+            </div>
+            """
+
+            capacity_dashboard_html = f"""
+            {next_action_html}
+
+            <div class="coord-card" style="background:#fff8e1; border:2px solid #fd7e14;">
+                <h2 id="capacity-status">Capacity Status</h2>
+
+                <p style="margin-top:0;">
+                    <strong>Rooms Requested:</strong> {requested_rooms}<br>
+                    <strong>Rooms Available:</strong> {available_rooms}<br>
+                    <strong>Difference:</strong> {room_delta:+}
+                </p>
+
+                <h3>Your Current Preferred Dates</h3>
+                <table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:13px;">
+                    <tr style="background:#f5f5f5;">
+                        <th align="left">Guest</th>
+                        <th align="left">Dates</th>
+                        <th align="center">Bedrooms</th>
+                        <th align="left">Date Requested</th>
+                    </tr>
+                    {preferred_rows}
+                </table>
+
+                <h3>Alternate Dates</h3>
+                <table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:13px;">
+                    <tr style="background:#f5f5f5;">
+                        <th align="left">Guest</th>
+                        <th align="left">Dates</th>
+                        <th align="center">Bedrooms</th>
+                        <th align="left">Date Requested</th>
+                    </tr>
+                    {alternate_rows}
+                </table>
+
+                <p style="margin-bottom:0;">
+                    If Difference is positive, reduce bedrooms, split the group, choose different dates, or start another round.
+                </p>
+
+                <form method="POST"
+                      action="/coordination-group/{group_id}/capacity-email"
+                      onsubmit="return confirm('Send capacity review email to all group members?');"
+                      style="margin-top:10px;">
+                    <button type="submit"
+                            style="background:#fd7e14; color:white; border:0; padding:7px 10px; border-radius:5px; font-weight:bold;">
+                        Email Guests to Change Dates / Bedrooms
+                    </button>
+                </form>
+
+                <p style="margin-top:8px;">
+                    <a href="/coordination-group/{group_id}/handoff" style="font-weight:bold;">Booking Handoff</a>
+                    |
+                    <a href="#best-match-suggestions" style="font-weight:bold;">Review Overlaps</a>
+                </p>
+            </div>
+            """
+
+        except Exception:
+            capacity_dashboard_html = """
+            <div class="coord-card" style="background:#fff3cd; border:1px solid #fd7e14;">
+                <h2>Capacity Status</h2>
+                <p>Capacity details could not be summarized, but the rest of the planning page is still available.</p>
+            </div>
+            """
+
+        html = nav_links() + f"""
+        <style>
+            .coord-card {{
+                border: 1px solid #dee2e6;
+                border-radius: 10px;
+                padding: 12px;
+                margin-bottom: 14px;
+                max-width: 1080px;
+                background: #ffffff;
+            }}
+            .coord-card h2 {{
+                margin: 0 0 8px 0;
+                font-size: 20px;
+            }}
+            .coord-card h3 {{
+                margin: 8px 0 6px 0;
+            }}
+            .coord-muted {{
+                color: #555;
+                font-size: 13px;
+            }}
+            .coord-mini-grid {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+                gap: 8px;
+                margin: 8px 0;
+            }}
+            .coord-mini-stat {{
+                background:#f8f9fa;
+                border:1px solid #e5e7eb;
+                border-radius:8px;
+                padding:8px;
+                font-size:13px;
+            }}
+            .coord-mini-stat strong {{
+                display:block;
+                font-size:17px;
+                color:#0f4c81;
+            }}
+            details.coord-collapse {{
+                margin-top: 8px;
+            }}
+            details.coord-collapse summary {{
+                cursor:pointer;
+                font-weight:bold;
+                color:#0f4c81;
+            }}
+        </style>
+
+        <h1>{safe_text(group['title'])} — Planning</h1>
+
+        <div class="coord-card" style="background:#f8f9fa;">
+            <strong>Coordination Pages:</strong>
+            <a href="/coordination-group/{group_id}" style="font-weight:bold; margin-left:8px;">Planning Page</a>
+            |
+            <a href="/coordination-group/{group_id}/handoff" style="font-weight:bold;">Booking Handoff Page</a>
+            <br>
+            <small class="coord-muted">Planning is for finding dates. Booking Handoff is for confirmations, booking requests, room assignments, and approvals.</small>
+        </div>
+
+        {planning_workflow_html}
+
+        <div class="coord-card">
+            <h2>Group Setup</h2>
+
+            <div class="coord-mini-grid">
+                <div class="coord-mini-stat"><strong>{safe_text(group['status'])}</strong>Status</div>
+                <div class="coord-mini-stat"><strong>{len(members)}</strong>Members</div>
+                <div class="coord-mini-stat"><strong>{responded_count}</strong>Responded</div>
+                <div class="coord-mini-stat"><strong>Round {current_round}</strong>Current Round</div>
+            </div>
+
+            <p class="coord-muted" style="margin-bottom:8px;">
+                Target Year: {safe_text(group['target_year'])} |
+                Created: {safe_text(group['created_at'])[:10]}
+            </p>
+
+            <div style="background:#f8fbff; border:1px solid #d8e6f3; padding:8px; border-radius:8px; margin-bottom:10px;">
+                {safe_text(group['description'])}
+            </div>
+
+            {organizer_formation_html}
+
+            <details class="coord-collapse">
+                <summary>Show submitted date options and waiting list</summary>
+                <p>
+                    <strong>Waiting On:</strong><br>
+                    {not_responded_html}
+                </p>
+                {date_options_summary_html}
+            </details>
+        </div>
+
+        <div class="coord-card" id="best-match-suggestions" style="background:#eef7ee;">
+            <h2>Date Coordination</h2>
+
+            <div class="coord-mini-grid">
+                <div class="coord-mini-stat"><strong>{tentative_confirmed_count}</strong>Confirmed Works</div>
+                <div class="coord-mini-stat"><strong>{tentative_cannot_count}</strong>Cannot Make</div>
+                <div class="coord-mini-stat"><strong>{tentative_discussion_count}</strong>Need Different Dates</div>
+                <div class="coord-mini-stat"><strong>{tentative_no_response_count}</strong>No Response</div>
+            </div>
+
+            <h3>Current Tentative Dates</h3>
+            {tentative_dates_html}
+
+            <h3>System Overlap / Best Match</h3>
+            <p class="coord-muted">Use this section to compare submitted preferred and alternate dates, then select or adjust tentative dates.</p>
+
+            {intersection_suggestions_html}
+
+            {phase4_admin_override_html}
+
+            <details class="coord-collapse">
+                <summary>Show additional best-match detail</summary>
+                {match_suggestions_html}
+            </details>
+        </div>
+
+        {capacity_dashboard_html}
+
+        <div class="coord-card">
+            <h2>Issues / Exceptions</h2>
+            <p>
+                <strong>Waiting On:</strong> {len(not_responded_names)} guest(s)<br>
+                <strong>Cannot Make Tentative Dates:</strong> {tentative_cannot_count}<br>
+                <strong>Need Different Dates / Comments:</strong> {tentative_discussion_count}
+            </p>
+            <p class="coord-muted">Use this as the quick scan area. If everything is zero, move toward Booking Handoff.</p>
+        </div>
+
+        <div class="coord-card" style="background:#fff3cd; border-color:#fd7e14;">
+            <h2>Capacity Review / Over-Room Request</h2>
+            <p style="margin-top:0;">
+                If this round is requesting more rooms than are available, pause here before sending more guest emails.
+            </p>
+            <ol style="margin-top:4px; line-height:1.35;">
+                <li>Review each guest's room count in the Group Members table.</li>
+                <li>Ask the organizer which rooms can be reduced, combined, split, or moved to different dates.</li>
+                <li>After resolving, start/send another round or continue to Booking Handoff.</li>
+            </ol>
+            <p class="coord-muted" style="margin-bottom:0;">
+                If status is <strong>capacity_review</strong>, this is the next action area.
+            </p>
+        </div>
+
+        <div class="coord-card">
+            <h2>Round History / Testing Visibility</h2>
+            <div class="coord-mini-grid">
+                <div class="coord-mini-stat"><strong>Round {current_round}</strong>Active Round</div>
+                <div class="coord-mini-stat"><strong>{invitation_sent_count}</strong>Emails Sent</div>
+                <div class="coord-mini-stat"><strong>{responded_count}</strong>Responses</div>
+                <div class="coord-mini-stat"><strong>{len(created_booking_request_rows)}</strong>Booking Requests</div>
+            </div>
+            <p class="coord-muted" style="margin-bottom:0;">
+                Round numbering is display-only in this version. Use it to test multi-round coordination without changing booking logic.
+            </p>
+        </div>
+
+        <div class="coord-card" style="background:#fff8e6;">
+            <h2>Booking / Closeout</h2>
+            <p style="margin-top:0;">
+                Once guests confirm tentative dates, continue to Booking Handoff for booking requests, room assignment, approval emails, final confirmation, and closing.
+            </p>
+            <p>
+                <a href="/coordination-group/{group_id}/handoff" style="font-weight:bold;">Open Booking Handoff Page</a>
+            </p>
+        </div>
+
+        <div class="coord-card" style="background:#fff3cd; font-size:13px;">
+            <strong>Admin Cleanup:</strong>
+            <a href="/coordination-group/{group_id}/delete" style="color:#842029; font-weight:bold; margin-left:8px;">Delete Coordination Process</a>
+            <br>
+            <small>Deletes the planning/coordination process only. Guest profiles are never deleted. Confirmed bookings block deletion.</small>
+        </div>
+
+        <h2>Group Members</h2>
+
+        <div style="background:#eef5ff; border:1px solid #b6d4fe; border-radius:8px; padding:10px; max-width:760px; margin-bottom:10px; font-size:13px;">
+            <strong>Coordination Roles:</strong><br>
+            <strong>Organizer</strong> = main planning contact / helps suggest group dates.<br>
+            <strong>Participant</strong> = guest submitting availability for the group.
+        </div>
+
+        <details class="coord-collapse" open>
+            <summary>Add / review group members</summary>
+
+        <div style="
+            border: 1px solid #dee2e6;
+            background-color: #f8f9fa;
+            padding: 10px;
+            margin-bottom: 12px;
+            border-radius: 8px;
+            max-width: 760px;
+        ">
+            <h3 style="
+                margin-top: 0;
+            ">
+                Add Guest Profile to Group
+            </h3>
+        """
+
+        if not available_profiles:
+
+            html += """
+            <p>
+                No available guest profiles found to add.
+            </p>
+            """
+
+        else:
+
+            html += f"""
+            <form method="POST"
+                  action="/coordination-group/{group_id}/add-member">
+
+                <label>
+                    <strong>Guest Profile</strong>
+                </label><br>
+
+                <select name="guest_profile_id"
+                        required
+                        style="width: 420px;">
+            """
+
+            for profile in available_profiles:
+
+                html += f"""
+                    <option value="{profile['id']}">
+                        {safe_text(profile['primary_name'])} — {safe_text(profile['primary_email'])} ({safe_text(profile['status'])})
+                    </option>
+                """
+
+            html += """
+                </select>
+
+                <br>
+
+                <label>
+                    <strong>Role</strong>
+                </label><br>
+
+                <select name="role">
+                    <option value="participant">Participant</option>
+                    <option value="organizer">Organizer</option>
+                </select>
+
+                <br>
+
+                <button type="submit">
+                    Add Guest to Group
+                </button>
+
+            </form>
+            """
+
+        html += """
+        </div>
+        """
+
+        if not members:
+
+            html += """
+            <p>
+                No guest profiles have been added yet.
+            </p>
+
+            <p>
+                Add existing guest profiles above. Next V10 step after this
+                is generating group request links.
+            </p>
+            """
+
+        else:
+
+            html += """
+            <table border="1"
+                   cellpadding="5"
+                   cellspacing="0"
+                   style="
+                       border-collapse: collapse;
+                       width: 100%;
+                       font-size: 13px;
+                   ">
+
+                <tr style="background-color: #f5f5f5;">
+                    <th align="left">Guest</th>
+                    <th align="left">Email</th>
+                    <th align="left">Role</th>
+                    <th align="left">Invitation Status</th>
+                    <th align="left">Last Response</th>
+                    <th align="center">Rooms</th>
+                    <th align="center">Date Options</th>
+                    <th align="left">Request Link</th>
+                    <th align="left">Profile</th>
+                </tr>
+            """
+
+            for member in members:
+
+                html += f"""
+                <tr>
+                    <td>{safe_text(member['primary_name'])}</td>
+                    <td>{safe_text(member['primary_email'])}</td>
+                    <td>{coordination_role_badge(member['role'])}</td>
+                    <td>{safe_text(member['invitation_status'])}</td>
+                    <td>{safe_text(member['last_response_at'])}</td>
+                    <td align="center">{safe_text(row_value(member, 'rooms_requested')) or '1'}</td>
+                    <td align="center">{member['date_option_count']}</td>
+                    <td>
+                        <a href="/coordination-group-member/{coordination_member_row_id(member)}/request">
+                            Open Request Page
+                        </a>
+                    </td>
+                    <td>
+                        <a href="/profile/{member['guest_profile_id']}">
+                            View
+                        </a>
+                    </td>
+                </tr>
+                """
+
+            html += "</table>"
+
+        html += f"""
+        </details>
 
         <p>
             <a href="/coordination-groups">
@@ -16664,1619 +23087,187 @@ def coordination_group_detail(group_id):
         </p>
         """
 
-    members = conn.execute("""
-        SELECT
-            coordination_group_members.*,
-            guest_profiles.primary_name,
-            guest_profiles.primary_email,
-            COUNT(coordination_date_options.id) AS date_option_count
-        FROM coordination_group_members
-        JOIN guest_profiles
-            ON coordination_group_members.guest_profile_id = guest_profiles.id
-        LEFT JOIN coordination_date_options
-            ON coordination_group_members.id = coordination_date_options.coordination_group_member_id
-        WHERE coordination_group_members.coordination_group_id = ?
-        GROUP BY coordination_group_members.id
-        ORDER BY
-            guest_profiles.primary_name
-    """, (
-        group_id,
-    )).fetchall()
+        try:
+            conn.close()
+        except Exception:
+            pass
 
-    available_profiles = conn.execute("""
-        SELECT
-            guest_profiles.id,
-            guest_profiles.primary_name,
-            guest_profiles.primary_email,
-            guest_profiles.status
-        FROM guest_profiles
-        WHERE guest_profiles.id NOT IN (
-            SELECT guest_profile_id
-            FROM coordination_group_members
-            WHERE coordination_group_id = ?
-        )
-        ORDER BY
-            guest_profiles.primary_name,
-            guest_profiles.primary_email
-    """, (
-        group_id,
-    )).fetchall()
+        return html
 
-    group_date_options = conn.execute("""
-        SELECT
-            coordination_date_options.*,
-            coordination_group_members.id AS member_id,
-            coordination_group_members.invitation_status,
-            coordination_group_members.role,
-            guest_profiles.primary_name,
-            guest_profiles.primary_email
-        FROM coordination_date_options
-        JOIN coordination_group_members
-            ON coordination_date_options.coordination_group_member_id = coordination_group_members.id
-        JOIN guest_profiles
-            ON coordination_group_members.guest_profile_id = guest_profiles.id
-        WHERE coordination_group_members.coordination_group_id = ?
-        ORDER BY
-            coordination_date_options.arrival_date,
-            coordination_date_options.departure_date,
-            CASE coordination_date_options.priority
-                WHEN 'preferred' THEN 1
-                WHEN 'alternate' THEN 2
-                ELSE 3
-            END,
-            guest_profiles.primary_name
-    """, (
-        group_id,
-    )).fetchall()
 
-    approved_bookings_for_matching = conn.execute("""
-        SELECT arrival_date, departure_date
-        FROM bookings
-        WHERE status = 'approved'
-    """).fetchall()
 
-    blocked_ranges_for_matching = conn.execute("""
-        SELECT start_date, end_date
-        FROM blocked_dates
-        ORDER BY start_date
-    """).fetchall()
-
-    total_rooms_for_matching = conn.execute("""
-        SELECT COUNT(*) AS count
-        FROM rooms
-    """).fetchone()["count"]
-
-    tentative_holds_for_matching = get_coordination_tentative_holds(
-        conn,
-        exclude_group_id=group_id,
-        expand_rooms=True
-    )
-
-    match_suggestions = build_coordination_match_suggestions(
-        group_date_options,
-        list(approved_bookings_for_matching) + tentative_holds_for_matching,
-        blocked_ranges_for_matching,
-        total_rooms_for_matching
-    )
-
-    created_booking_request_rows = conn.execute("""
-        SELECT
-            coordination_group_members.id AS member_id,
-            coordination_group_members.converted_request_id,
-            guest_profiles.primary_name,
-            guest_profiles.primary_email,
-            booking_requests.status AS request_status,
-            booking_requests.email_status,
-            booking_requests.email_needed_type,
-            booking_requests.additional_names,
-            booking_requests.arrival_date,
-            booking_requests.departure_date,
-            booking_requests.rooms_requested,
-            COUNT(bookings.id) AS approved_booking_count,
-            GROUP_CONCAT(rooms.name, ', ') AS approved_room_names
-        FROM coordination_group_members
-
-        JOIN guest_profiles
-            ON coordination_group_members.guest_profile_id = guest_profiles.id
-
-        LEFT JOIN booking_requests
-            ON coordination_group_members.converted_request_id = booking_requests.id
-
-        LEFT JOIN bookings
-            ON booking_requests.id = bookings.request_id
-           AND bookings.status = 'approved'
-
-        LEFT JOIN rooms
-            ON bookings.room_id = rooms.id
-
-        WHERE coordination_group_members.coordination_group_id = ?
-          AND coordination_group_members.converted_request_id IS NOT NULL
-
-        GROUP BY
-            coordination_group_members.id,
-            coordination_group_members.converted_request_id,
-            guest_profiles.primary_name,
-            guest_profiles.primary_email,
-            booking_requests.status,
-            booking_requests.email_status,
-            booking_requests.email_needed_type,
-            booking_requests.additional_names,
-            booking_requests.arrival_date,
-            booking_requests.departure_date,
-            booking_requests.rooms_requested
-
-        ORDER BY guest_profiles.primary_name
-    """, (
-        group_id,
-    )).fetchall()
-
-    conn.commit()
-    conn.close()
-
-    group_room_demand_by_member = {}
-
-    for option in group_date_options:
-
-        member_key = option["member_id"]
-        option_rooms = normalize_rooms_requested(
-            option["rooms_requested"],
-            total_rooms_for_matching
-        )
-
-        if member_key not in group_room_demand_by_member:
-            group_room_demand_by_member[member_key] = option_rooms
-        elif option_rooms > group_room_demand_by_member[member_key]:
-            group_room_demand_by_member[member_key] = option_rooms
-
-    total_group_rooms_requested = sum(group_room_demand_by_member.values())
-
-    capacity_warning_html = ""
-
-    if total_group_rooms_requested > total_rooms_for_matching:
-
-        guest_room_rows = ""
-
-        for option in group_date_options:
-
-            if option["member_id"] in group_room_demand_by_member:
-
-                guest_room_rows += f"""
-                <tr>
-                    <td>{safe_text(option['primary_name'])}</td>
-                    <td align="center">{group_room_demand_by_member[option['member_id']]}</td>
-                </tr>
-                """
-
-                del group_room_demand_by_member[option["member_id"]]
-
-        capacity_warning_html = f"""
-        <div style="
-            background-color: #f8d7da;
-            border: 2px solid #dc3545;
-            padding: 12px;
-            border-radius: 8px;
-            margin-bottom: 10px;
-            max-width: 900px;
-        ">
-            <h3 style="margin-top: 0; color: #842029;">Room Capacity Warning</h3>
-            <p>
-                <strong>Maximum rooms available:</strong> {total_rooms_for_matching}<br>
-                <strong>Rooms requested by group:</strong> {total_group_rooms_requested}
-            </p>
-            <p>
-                The group is requesting more rooms than the house has available.
-                No single date option can work for the full group until rooms are reduced,
-                guests are split into separate visits, or the group plan changes.
-            </p>
-            <table border="1" cellpadding="4" cellspacing="0" style="border-collapse: collapse; font-size: 13px;">
-                <tr style="background-color: #f5f5f5;">
-                    <th align="left">Guest</th>
-                    <th align="center">Rooms Requested</th>
-                </tr>
-                {guest_room_rows}
-            </table>
-        </div>
-        """
-
-    tentative_dates_html = """
-    <p>No tentative group dates selected yet.</p>
-    """
-
-    tentative_confirmation_html = """
-    <p>No tentative confirmation responses yet.</p>
-    """
-
-    tentative_confirmed_count = 0
-    tentative_cannot_count = 0
-    tentative_discussion_count = 0
-    tentative_no_response_count = 0
-
-    all_confirmed_banner = ""
-
-    if safe_text(group["tentative_arrival_date"]) and safe_text(group["tentative_departure_date"]):
-
-        tentative_dates_html = f"""
-        <div style="
-            border: 2px solid #198754;
-            background-color: #e8f7ea;
-            padding: 12px;
-            margin-bottom: 14px;
-            border-radius: 8px;
-            max-width: 720px;
-        ">
-            <h3 style="margin-top: 0;">
-                Tentative Group Dates
-            </h3>
-
-            <p style="font-size: 16px; margin-bottom: 4px;">
-                <strong>{format_date(group['tentative_arrival_date'])}</strong>
-                to
-                <strong>{format_date(group['tentative_departure_date'])}</strong>
-            </p>
-
-            <small>
-                Selected: {safe_text(group['tentative_selected_at'])}<br>
-                Calendar status: Tentative Coordination Hold is active until the group is closed, canceled, or tentative dates are changed.
-            </small>
-        </div>
-        """
-
-        response_rows = []
-
-        for member in members:
-
-            response_status = safe_text(
-                member["tentative_response_status"]
-            )
-
-            if response_status == "confirmed":
-                tentative_confirmed_count += 1
-            elif response_status == "cannot_make":
-                tentative_cannot_count += 1
-            elif response_status == "needs_discussion":
-                tentative_discussion_count += 1
-            else:
-                tentative_no_response_count += 1
-
-            response_rows.append(f"""
-            <tr style="background-color: {tentative_response_color(response_status)};">
-                <td>{safe_text(member['primary_name'])}</td>
-                <td>{safe_text(member['primary_email'])}</td>
-                <td>{tentative_response_display(response_status)}</td>
-                <td>{safe_text(member['tentative_response_at'])}</td>
-                <td>{safe_text(member['tentative_response_notes'])}</td>
-            </tr>
-            """)
-
-        tentative_confirmation_html = f"""
-        <table border="1"
-               cellpadding="5"
-               cellspacing="0"
-               style="
-                   border-collapse: collapse;
-                   width: 100%;
-                   font-size: 13px;
-                   margin-top: 8px;
-                   margin-bottom: 18px;
-               ">
-            <tr style="background-color: #f5f5f5;">
-                <th align="left">Guest</th>
-                <th align="left">Email</th>
-                <th align="left">Response</th>
-                <th align="left">Responded At</th>
-                <th align="left">Notes</th>
-            </tr>
-            {''.join(response_rows)}
-        </table>
-        """
-
-        if len(members) > 0 and tentative_confirmed_count == len(members):
-
-            final_email_sent_display = safe_text(
-                group["final_coordination_email_sent_at"]
-            )
-
-            if not final_email_sent_display:
-                final_email_sent_display = "Not sent yet"
-
-            all_confirmed_banner = f"""
-            <div style="
-                background-color: #d4edda;
-                border: 2px solid #198754;
-                padding: 14px;
-                border-radius: 8px;
-                margin-bottom: 18px;
-                max-width: 900px;
-            ">
-
-                <h2 style="
-                    color: #198754;
-                    margin-top: 0;
-                ">
-                    All Guests Confirmed Tentative Dates
-                </h2>
-
-                <p>
-                    This coordination group is ready for final communication
-                    and booking request creation.
-                </p>
-
-                <p>
-                    <strong>Final Coordination Email:</strong> {final_email_sent_display}
-                </p>
-
-                <p>
-                    <a href="/coordination-group/{group_id}/handoff"
-                       style="
-                           display: inline-block;
-                           background-color: #198754;
-                           color: white;
-                           padding: 8px 12px;
-                           border-radius: 5px;
-                           text-decoration: none;
-                           font-weight: bold;
-                       ">
-                        Go to Booking Handoff
-                    </a>
-                </p>
-
-                <p style="font-size: 13px; color: #555; margin-bottom: 0;">
-                    Planning is complete. Use Booking Handoff for guest confirmations, booking requests, room assignments, final confirmation, and closing.
-                </p>
-
-            </div>
-            """
-
-    tentative_management_html = """
-    <p>
-        First select tentative dates from a best match. Then guests confirm whether those dates work. After that, create booking requests for confirmed guests.
-    </p>
-    """
-
-    if safe_text(group["tentative_arrival_date"]) and safe_text(group["tentative_departure_date"]):
-
-        due_date_display = safe_text(
-            group["tentative_response_due_date"]
-        )
-
-        if not due_date_display:
-            due_date_display = "No due date set"
-
-        overdue_label = ""
-
-        if coordination_group_is_overdue(group):
-            overdue_label = """
-            <strong style='color: red;'>Overdue</strong>
-            """
-
-        converted_count = 0
-
-        for member in members:
-
-            if member["converted_request_id"]:
-                converted_count += 1
-
-        tentative_management_html = f"""
-        <div style="
-            border: 1px solid #dee2e6;
-            background-color: #f8f9fa;
-            padding: 12px;
-            margin-bottom: 10px;
-            border-radius: 8px;
-            max-width: 900px;
-        ">
-            <h3 style="margin-top: 0;">Planning Complete — Next Step</h3>
-
-            <p>
-                <strong>RSVP Due Date:</strong> {due_date_display} {overdue_label}<br>
-                <strong>Booking Requests Created:</strong> {converted_count} of {len(members)}
-            </p>
-
-            <p>
-                Tentative dates have been selected. Use the Booking Handoff page for confirmation emails, booking requests, room assignments, final confirmation, and closing.
-            </p>
-
-            <p style="margin-bottom: 0;">
-                <a href="/coordination-group/{group_id}/handoff"
-                   style="
-                       display: inline-block;
-                       background-color: #0d6efd;
-                       color: white;
-                       padding: 8px 12px;
-                       border-radius: 5px;
-                       text-decoration: none;
-                       font-weight: bold;
-                   ">
-                    Go to Booking Handoff Page
-                </a>
-            </p>
-        </div>
-        """
-
-    responded_count = 0
-    not_responded_names = []
-
-    for member in members:
-
-        if member["date_option_count"]:
-
-            responded_count += 1
-
-        else:
-
-            not_responded_names.append(
-                safe_text(member["primary_name"])
-            )
-
-    current_round = coordination_round_number(group)
-    round_pending_follow_up_members = []
-    round_completed_follow_up_members = []
-
-    for member in members:
+    except Exception as planning_error:
 
         try:
-            member_follow_up_round = int(row_value(member, "follow_up_round") or 0)
+            conn.close()
         except Exception:
-            member_follow_up_round = 0
+            pass
 
-        if member_follow_up_round == current_round and safe_text(row_value(member, "follow_up_sent_at")).strip():
+        error_text = safe_text(planning_error)
 
-            if safe_text(row_value(member, "follow_up_response_at")).strip():
-                round_completed_follow_up_members.append(member)
-            else:
-                round_pending_follow_up_members.append(member)
-
-    round_status_label = "Collecting initial dates"
-    round_status_background = "#eef5ff"
-    round_waiting_text = "Waiting for initial group responses."
-
-    if current_round > 1:
-
-        if round_pending_follow_up_members:
-            round_status_label = "Targeted follow-up in progress"
-            round_status_background = "#fff3cd"
-            round_waiting_text = "Waiting for: " + safe_text(", ".join([safe_text(member["primary_name"]) for member in round_pending_follow_up_members]))
-        else:
-            round_status_label = "Follow-up round complete"
-            round_status_background = "#e8f7ea"
-            round_waiting_text = "All targeted follow-up guests have responded. Review the updated Best Group Option below."
-
-    round_status_html = f"""
-    <div style="
-        background-color: {round_status_background};
-        border: 1px solid #ced4da;
-        padding: 10px;
-        border-radius: 8px;
-        margin-bottom: 12px;
-        max-width: 1080px;
-        font-size: 13px;
-    ">
-        <strong>Current Round:</strong> Round {current_round} — {round_status_label}<br>
-        <strong>Status:</strong> {round_waiting_text}
-    </div>
-    """
-
-    date_options_summary_html = """
-    <p>No date options have been submitted yet.</p>
-    """
-
-    if group_date_options:
-
-        date_options_summary_html = """
-        <table border="1"
-               cellpadding="5"
-               cellspacing="0"
-               style="
-                   border-collapse: collapse;
-                   width: 100%;
-                   font-size: 13px;
-                   margin-top: 8px;
-               ">
-            <tr style="background-color: #f5f5f5;">
-                <th align="left">Guest</th>
-                <th align="left">Priority</th>
-                <th align="left">Arrival</th>
-                <th align="left">Departure</th>
-                <th align="center">Nights</th>
-                <th align="center">Rooms</th>
-                <th align="center">Flexibility</th>
-                <th align="left">Notes</th>
-                <th align="left">Request Page</th>
-            </tr>
-        """
-
-        for option in group_date_options:
-
-            try:
-
-                nights = (
-                    datetime.strptime(
-                        option["departure_date"],
-                        "%Y-%m-%d"
-                    )
-                    - datetime.strptime(
-                        option["arrival_date"],
-                        "%Y-%m-%d"
-                    )
-                ).days
-
-            except:
-
-                nights = ""
-
-            date_options_summary_html += f"""
-            <tr>
-                <td>{safe_text(option['primary_name'])}</td>
-                <td>{safe_text(option['priority']).title()}</td>
-                <td>{format_date(option['arrival_date'])}</td>
-                <td>{format_date(option['departure_date'])}</td>
-                <td align="center">{safe_text(nights)}</td>
-                <td align="center">{safe_text(option['rooms_requested'])}</td>
-                <td align="center">± {safe_text(option['flexibility_days'])} day(s)</td>
-                <td>{safe_text(option['notes'])}</td>
-                <td>
-                    <a href="/coordination-group-member/{option['member_id']}/request">
-                        Open
-                    </a>
-                </td>
-            </tr>
-            """
-
-        date_options_summary_html += "</table>"
-
-    not_responded_html = """
-    <span style="color: green; font-weight: bold;">
-        Everyone with a profile in this group has submitted date options.
-    </span>
-    """
-
-    if not_responded_names:
-
-        not_responded_html = safe_text(
-            ", ".join(not_responded_names)
-        )
-
-    invitation_sent_count = 0
-    invitation_not_sent_count = 0
-    invitation_sent_names = []
-    invitation_not_sent_names = []
-
-    for member in members:
-
-        member_invitation_status = safe_text(member["invitation_status"]).strip()
-
-        if member_invitation_status in ["sent", "viewed", "responded"]:
-
-            invitation_sent_count += 1
-            invitation_sent_names.append(safe_text(member["primary_name"]))
-
-        else:
-
-            invitation_not_sent_count += 1
-            invitation_not_sent_names.append(safe_text(member["primary_name"]))
-
-    planning_invitation_state = "Not Started"
-    planning_invitation_icon = "⬜"
-    planning_invitation_background = "#f8f9fa"
-
-    if len(members) > 0 and invitation_sent_count == len(members):
-
-        planning_invitation_state = "Done"
-        planning_invitation_icon = "✅"
-        planning_invitation_background = "#e8f7ea"
-
-    elif invitation_sent_count > 0:
-
-        planning_invitation_state = "Needs Action"
-        planning_invitation_icon = "⚠️"
-        planning_invitation_background = "#fff3cd"
-
-    response_state = "Not Started"
-    response_icon = "⬜"
-    response_background = "#f8f9fa"
-
-    if len(members) > 0 and responded_count == len(members):
-
-        response_state = "Done"
-        response_icon = "✅"
-        response_background = "#e8f7ea"
-
-    elif responded_count > 0 or invitation_sent_count > 0:
-
-        response_state = "Needs Action"
-        response_icon = "⚠️"
-        response_background = "#fff3cd"
-
-    overlap_state = "Not Started"
-    overlap_icon = "⬜"
-    overlap_background = "#f8f9fa"
-
-    if group_date_options:
-
-        overlap_state = "Review"
-        overlap_icon = "⚠️"
-        overlap_background = "#fff3cd"
-
-        if match_suggestions:
-
-            overlap_state = "Ready"
-            overlap_icon = "✅"
-            overlap_background = "#e8f7ea"
-
-    tentative_state = "Not Started"
-    tentative_icon = "⬜"
-    tentative_background = "#f8f9fa"
-
-    tentative_selected = bool(
-        safe_text(group["tentative_arrival_date"])
-        and safe_text(group["tentative_departure_date"])
-    )
-
-    planning_ready_for_booking = (
-        safe_text(group["status"]) == "ready_for_booking"
-        and tentative_selected
-    )
-
-    if safe_text(group["tentative_arrival_date"]) and safe_text(group["tentative_departure_date"]):
-
-        tentative_state = "Done"
-        tentative_icon = "✅"
-        tentative_background = "#e8f7ea"
-
-    outstanding_invitation_display = "None"
-
-    if invitation_not_sent_names:
-
-        outstanding_invitation_display = safe_text(", ".join(invitation_not_sent_names))
-
-    step4_detail = "Pick the best overlap window and ask guests to confirm."
-    step4_action = '<a href="#best-match-suggestions">Set Tentative Dates</a>'
-
-    if tentative_selected:
-        step4_detail = "Tentative dates selected. Planning is complete; continue on the Booking Handoff page."
-        step4_action = f"""
-        <a href="/coordination-group/{group_id}/handoff"
-           style="display: inline-block; background-color: #198754; color: white; padding: 7px 10px; border-radius: 5px; text-decoration: none; font-weight: bold;">
-            Go to Booking Handoff Page
-        </a>
-        """
-
-    if planning_ready_for_booking:
-        overlap_state = "Done"
-        overlap_icon = "✅"
-        overlap_background = "#e8f7ea"
-        tentative_state = "Ready for Booking"
-        tentative_icon = "✅"
-        tentative_background = "#d4edda"
-        step4_detail = "All guests now fit these dates. Planning is closed; use Booking Handoff for the rest."
-        step4_action = f"""
-        <a href="/coordination-group/{group_id}/handoff"
-           style="display: inline-block; background-color: #198754; color: white; padding: 8px 12px; border-radius: 5px; text-decoration: none; font-weight: bold;">
-            Go to Booking Handoff Page
-        </a>
-        """
-
-    planning_workflow_html = f"""
-    <h2>Planning Workflow</h2>
-
-    {round_status_html}
-
-    <div style="
-        background-color: #eef5ff;
-        border: 2px solid #4a90e2;
-        padding: 14px;
-        border-radius: 8px;
-        margin-bottom: 18px;
-        max-width: 1080px;
-    ">
-        <p style="margin-top: 0;">
-            Use this section to move the group through date planning before booking handoff.
-        </p>
-
-        <table border="1"
-               cellpadding="6"
-               cellspacing="0"
-               style="
-                   border-collapse: collapse;
-                   width: 100%;
-                   font-size: 13px;
-                   margin-bottom: 14px;
-               ">
-            <tr style="background-color: #f5f5f5;">
-                <th align="left">Step</th>
-                <th align="left">Status</th>
-                <th align="left">Details</th>
-                <th align="left">Action</th>
-            </tr>
-
-            <tr style="background-color: {planning_invitation_background};">
-                <td><strong>1. Send Coordination Invitations</strong></td>
-                <td>{planning_invitation_icon} {planning_invitation_state}</td>
-                <td>
-                    Members Added: {len(members)}<br>
-                    Invitations Sent: {invitation_sent_count}<br>
-                    Not Sent: {invitation_not_sent_count}<br>
-                    <small>Outstanding: {outstanding_invitation_display}</small>
-                </td>
-                <td>
-                    <a href="/coordination-group/{group_id}/email-preview">
-                        Preview / Send Invitations
-                    </a>
-                </td>
-            </tr>
-
-            <tr style="background-color: {response_background};">
-                <td><strong>2. Collect Responses</strong></td>
-                <td>{response_icon} {response_state}</td>
-                <td>
-                    Responses Received: {responded_count} of {len(members)}<br>
-                    Waiting On: {not_responded_html}
-                </td>
-                <td>
-                    <a href="/coordination-group/{group_id}/email-preview">
-                        Resend / Remind Guests
-                    </a>
-                </td>
-            </tr>
-
-            <tr style="background-color: {overlap_background};">
-                <td><strong>3. Review Date Overlap</strong></td>
-                <td>{overlap_icon} {overlap_state}</td>
-                <td>Review best match suggestions and unmatched guests below.</td>
-                <td><a href="#best-match-suggestions">View Suggestions</a></td>
-            </tr>
-
-            <tr style="background-color: {tentative_background};">
-                <td><strong>4. Select Tentative Dates</strong></td>
-                <td>{tentative_icon} {tentative_state}</td>
-                <td>{step4_detail}</td>
-                <td>{step4_action}</td>
-            </tr>
-        </table>
-
-        <p style="font-size: 13px; color: #555; margin-bottom: 0;">
-            After tentative dates are selected, use the Booking Handoff page for confirmations, booking requests, room assignments, approvals, and closing.
-        </p>
-    </div>
-    """
-
-    created_booking_requests_html = """
-    <p>No booking requests have been created from this coordination group yet.</p>
-    """
-
-    if created_booking_request_rows:
-
-        created_booking_requests_html = """
-        <table border="1"
-               cellpadding="5"
-               cellspacing="0"
-               style="
-                   border-collapse: collapse;
-                   width: 100%;
-                   font-size: 13px;
-                   margin-bottom: 18px;
-               ">
-            <tr style="background-color: #f5f5f5;">
-                <th align="left">Guest</th>
-                <th align="left">Email</th>
-                <th align="left">Additional Guests</th>
-                <th align="left">Request</th>
-                <th align="left">Dates</th>
-                <th align="center">Rooms Requested</th>
-                <th align="left">Request Status</th>
-                <th align="left">Email Status</th>
-                <th align="left">Room Assignment</th>
-                <th align="left">Action</th>
-            </tr>
-        """
-
-        for created_request in created_booking_request_rows:
-
-            room_assignment_display = "Not assigned yet"
-
-            if created_request["approved_room_names"]:
-                room_assignment_display = safe_text(
-                    created_request["approved_room_names"]
-                )
-
-            request_status_display_text = safe_text(
-                created_request["request_status"]
-            )
-
-            row_background = "#fff3cd"
-
-            if request_status_display_text == "approved" and created_request["approved_booking_count"] > 0:
-                row_background = "#e8f7ea"
-
-            created_booking_requests_html += f"""
-            <tr style="background-color: {row_background};">
-                <td>{safe_text(created_request['primary_name'])}</td>
-                <td>{safe_text(created_request['primary_email'])}</td>
-                <td>{safe_text(created_request['additional_names']) or 'None listed'}</td>
-                <td>
-                    <a href="/request/{created_request['converted_request_id']}">
-                        Request {created_request['converted_request_id']}
-                    </a>
-                </td>
-                <td>
-                    {format_date(created_request['arrival_date'])}<br>
-                    to {format_date(created_request['departure_date'])}
-                </td>
-                <td align="center">
-                    {safe_text(created_request['rooms_requested'])}
-                </td>
-                <td>{request_status_display_text}</td>
-                <td>{email_status_display(created_request['email_status'], created_request['email_needed_type'], created_request['converted_request_id'])}</td>
-                <td>{room_assignment_display}</td>
-                <td>
-                    <a href="/room-assignments">
-                        Open Room Assignments
-                    </a>
-                    <br>
-                    <small>
-                        Request #{created_request['converted_request_id']}
-                    </small>
-                </td>
-            </tr>
-            """
-
-        created_booking_requests_html += "</table>"
-
-    match_suggestions_html = """
-    <p>No match suggestions yet. Add date options for at least one group member.</p>
-    """
-
-    if match_suggestions:
-
-        best_suggestion = match_suggestions[0]
-
-        best_capacity_display = "<strong style='color: green;'>Capacity OK</strong>"
-
-        if not best_suggestion["capacity_ok"]:
-            best_capacity_display = "<strong style='color: red;'>Capacity needs review</strong>"
-
-        all_group_member_names = []
-
-        for member in members:
-            all_group_member_names.append(
-                safe_text(member["primary_name"])
-            )
-
-        best_unmatched_names = []
-
-        for member_name in all_group_member_names:
-            if member_name not in best_suggestion["guest_names"]:
-                best_unmatched_names.append(member_name)
-
-        best_unmatched_display = "None"
-
-        best_unmatched_members = []
-
-        if best_unmatched_names:
-            best_unmatched_display = safe_text(", ".join(sorted(best_unmatched_names)))
-
-            for member in members:
-                if safe_text(member["primary_name"]) in best_unmatched_names:
-                    best_unmatched_members.append(member)
-
-        targeted_follow_up_html = ""
-
-        if best_unmatched_members:
-
-            targeted_follow_up_rows = ""
-
-            for member in best_unmatched_members:
-
-                targeted_follow_up_rows += f"""
-                <tr>
-                    <td>{safe_text(member['primary_name'])}</td>
-                    <td>{safe_text(member['primary_email'])}</td>
-                    <td>
-                        <a href="/coordination-group-member/{coordination_member_row_id(member)}/request?follow_up=1&suggested_arrival={best_suggestion['arrival_date']}&suggested_departure={best_suggestion['departure_date']}">
-                            Open Date Link
-                        </a>
-                    </td>
-                </tr>
-                """
-
-            targeted_follow_up_html = f"""
-            <div style="
-                background-color: #fff3cd;
-                border: 1px solid #f0ad4e;
-                border-radius: 8px;
-                padding: 10px;
-                margin-top: 12px;
-            ">
-                <h4 style="margin: 0 0 6px 0;">Targeted Follow-Up</h4>
-                <p style="margin: 0 0 8px 0; font-size: 13px;">
-                    This option works for most guests. Start the next round by following up only with the guest(s) who do not match.
-                </p>
-                <table border="1" cellpadding="5" cellspacing="0"
-                       style="border-collapse: collapse; width: 100%; font-size: 13px; margin-bottom: 8px;">
-                    <tr style="background-color: #f5f5f5;">
-                        <th align="left">Guest</th>
-                        <th align="left">Email</th>
-                        <th align="left">Date Link</th>
-                    </tr>
-                    {targeted_follow_up_rows}
-                </table>
-                <p style="margin: 0;">
-                    <a href="/coordination-group/{group_id}/follow-up-unmatched?arrival_date={best_suggestion['arrival_date']}&departure_date={best_suggestion['departure_date']}"
-                       style="display: inline-block; background-color: #fd7e14; color: white; padding: 7px 10px; border-radius: 5px; text-decoration: none; font-weight: bold;">
-                        Email Guest(s) To Update Availability
-                    </a>
-                </p>
-            </div>
-            """
-
-        best_why_html = f"<li>{best_suggestion['matched_count']} of {len(members)} guest(s) can attend</li>"
-
-        for why_item in best_suggestion["why_bullets"]:
-            if "guest(s) can attend" in safe_text(why_item):
-                continue
-            best_why_html += f"<li>{safe_text(why_item)}</li>"
-
-        nearby_html = ""
-
-        if best_suggestion["nearby_before_names"]:
-            nearby_html += f"""
-            <li>
-                {format_date(best_suggestion['nearby_before_date'])} works for:
-                {safe_text(', '.join(best_suggestion['nearby_before_names']))}
-            </li>
-            """
-
-        if best_suggestion["nearby_after_names"]:
-            nearby_html += f"""
-            <li>
-                {format_date(best_suggestion['nearby_after_date'])} works for:
-                {safe_text(', '.join(best_suggestion['nearby_after_names']))}
-            </li>
-            """
-
-        if not nearby_html:
-            nearby_html = "<li>No nearby fallback dates found from the submitted windows.</li>"
-
-        match_suggestions_html = f"""
-        <div style="
-            background-color: #e8f7ea;
-            border: 2px solid #198754;
-            border-radius: 8px;
-            padding: 12px;
-            margin-bottom: 12px;
-            max-width: 1040px;
-        ">
-            <h3 style="margin-top: 0; margin-bottom: 6px;">
-                Best Group Option
-            </h3>
-
-            <p style="font-size: 16px; margin: 4px 0;">
-                <strong>{format_date(best_suggestion['arrival_date'])}</strong>
-                to
-                <strong>{format_date(best_suggestion['departure_date'])}</strong>
-                ({best_suggestion['nights']} night(s))
-            </p>
-
-            <table border="1"
-                   cellpadding="5"
-                   cellspacing="0"
-                   style="border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 8px;">
-                <tr style="background-color: #f5f5f5;">
-                    <th align="left">Matched</th>
-                    <th align="left">Rooms</th>
-                    <th align="left">Preferred / Alternate</th>
-                    <th align="left">Capacity</th>
-                    <th align="left">Needs Follow-Up</th>
-                </tr>
-                <tr>
-                    <td>{best_suggestion['matched_count']} of {len(members)}</td>
-                    <td>{best_suggestion['rooms_needed']} of {best_suggestion['rooms_available']}</td>
-                    <td>{best_suggestion['preferred_count']} preferred / {best_suggestion['alternate_count']} alternate</td>
-                    <td>{best_capacity_display}</td>
-                    <td>{best_unmatched_display}</td>
-                </tr>
-            </table>
-
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 10px;">
-                <div>
-                    <strong>Why this is suggested:</strong>
-                    <ul style="margin-top: 4px; margin-bottom: 0; padding-left: 20px;">
-                        {best_why_html}
-                    </ul>
-                </div>
-                <div>
-                    <strong>Nearby dates that almost work:</strong>
-                    <ul style="margin-top: 4px; margin-bottom: 0; padding-left: 20px;">
-                        {nearby_html}
-                    </ul>
-                </div>
-            </div>
-
-            <form method="POST"
-                  action="/coordination-group/{group_id}/set-tentative"
-                  style="margin-top: 12px;">
-                <input type="hidden" name="arrival_date" value="{best_suggestion['arrival_date']}">
-                <input type="hidden" name="departure_date" value="{best_suggestion['departure_date']}">
-                <button type="submit"
-                        style="font-size: 14px; padding: 7px 12px; font-weight: bold;">
-                    Set Best Option As Tentative
-                </button>
-            </form>
-
-            {targeted_follow_up_html}
-        </div>
-        """
-
-        if len(match_suggestions) > 1:
-
-            match_suggestions_html += """
-            <h3 style="margin-bottom: 6px;">Other Possible Options</h3>
-            <table border="1"
-                   cellpadding="5"
-                   cellspacing="0"
-                   style="
-                       border-collapse: collapse;
-                       width: 100%;
-                       font-size: 13px;
-                       margin-top: 6px;
-                   ">
-                <tr style="background-color: #f5f5f5;">
-                    <th align="left">Rank</th>
-                    <th align="left">Dates</th>
-                    <th align="center">Guests</th>
-                    <th align="center">Rooms</th>
-                    <th align="left">Why / Follow-Up</th>
-                    <th align="left">Action</th>
-                </tr>
-            """
-
-            rank = 2
-
-            for suggestion in match_suggestions[1:4]:
-
-                other_capacity_display = "Capacity OK"
-
-                if not suggestion["capacity_ok"]:
-                    other_capacity_display = "Capacity needs review"
-
-                other_unmatched_names = []
-
-                for member_name in all_group_member_names:
-                    if member_name not in suggestion["guest_names"]:
-                        other_unmatched_names.append(member_name)
-
-                follow_up_display = "No follow-up needed"
-
-                if other_unmatched_names:
-                    follow_up_display = "Follow up with: " + safe_text(", ".join(sorted(other_unmatched_names)))
-
-                match_suggestions_html += f"""
-                <tr>
-                    <td>{rank}</td>
-                    <td>
-                        <strong>{format_date(suggestion['arrival_date'])}</strong><br>
-                        to {format_date(suggestion['departure_date'])}<br>
-                        <small>{suggestion['nights']} night(s)</small>
-                    </td>
-                    <td align="center">{suggestion['matched_count']} of {len(members)}</td>
-                    <td align="center">{suggestion['rooms_needed']} of {suggestion['rooms_available']}</td>
-                    <td>
-                        {suggestion['preferred_count']} preferred / {suggestion['alternate_count']} alternate<br>
-                        {other_capacity_display}<br>
-                        <small>{follow_up_display}</small>
-                    </td>
-                    <td>
-                        <form method="POST"
-                              action="/coordination-group/{group_id}/set-tentative">
-                            <input type="hidden" name="arrival_date" value="{suggestion['arrival_date']}">
-                            <input type="hidden" name="departure_date" value="{suggestion['departure_date']}">
-                            <button type="submit" style="font-size: 12px; padding: 4px 8px;">
-                                Set Tentative
-                            </button>
-                        </form>
-                    </td>
-                </tr>
-                """
-
-                rank += 1
-
-            match_suggestions_html += "</table>"
-
-
-    def workflow_status_row(label, state, detail):
-
-        if state == "done":
-            icon = "✅"
-            status_text = "Done"
-            background = "#e8f7ea"
-            border = "#198754"
-
-        elif state == "needs_action":
-            icon = "⚠️"
-            status_text = "Needs Action"
-            background = "#fff3cd"
-            border = "#f0ad4e"
-
-        else:
-            icon = "⬜"
-            status_text = "Not Started"
-            background = "#f8f9fa"
-            border = "#dee2e6"
+        try:
+            navigation_html = nav_links()
+        except Exception:
+            navigation_html = ""
 
         return f"""
-        <tr style="background-color: {background};">
-            <td style="width: 42px; font-size: 18px; text-align: center;">
-                {icon}
-            </td>
-            <td>
-                <strong>{label}</strong><br>
-                <small>{detail}</small>
-            </td>
-            <td style="width: 140px; font-weight: bold; border-left: 4px solid {border};">
-                {status_text}
-            </td>
-        </tr>
-        """
+        {navigation_html}
 
-    tentative_selected = bool(
-        safe_text(group["tentative_arrival_date"])
-        and safe_text(group["tentative_departure_date"])
-    )
+        <h1>Planning Page Needs Review</h1>
 
-    all_guests_confirmed = (
-        len(members) > 0
-        and tentative_confirmed_count == len(members)
-    )
-
-    final_coordination_email_sent = bool(
-        safe_text(group["final_coordination_email_sent_at"])
-    )
-
-    final_visit_confirmation_sent = bool(
-        safe_text(group["final_visit_confirmation_sent_at"])
-    )
-
-    converted_member_count = 0
-
-    for member in members:
-
-        if member["converted_request_id"]:
-            converted_member_count += 1
-
-    booking_requests_created = converted_member_count > 0
-
-    all_confirmed_guests_converted = (
-        all_guests_confirmed
-        and converted_member_count >= tentative_confirmed_count
-    )
-
-    all_created_requests_reviewed = False
-
-    if created_booking_request_rows:
-
-        all_created_requests_reviewed = True
-
-        for created_request in created_booking_request_rows:
-
-            try:
-                rooms_requested_for_check = int(created_request["rooms_requested"] or 1)
-            except:
-                rooms_requested_for_check = 1
-
-            if safe_text(created_request["request_status"]) != "approved":
-                all_created_requests_reviewed = False
-
-            if int(created_request["approved_booking_count"] or 0) < rooms_requested_for_check:
-                all_created_requests_reviewed = False
-
-    group_raw_closed = safe_text(group["status"]) in [
-        "closed",
-        "finalized",
-        "archived"
-    ]
-
-    group_is_closed = (
-        group_raw_closed
-        and all_created_requests_reviewed
-        and final_visit_confirmation_sent
-    )
-
-    tentative_step_state = "not_started"
-
-    if tentative_selected:
-        tentative_step_state = "done"
-    elif match_suggestions:
-        tentative_step_state = "needs_action"
-
-    confirmation_step_state = "not_started"
-
-    if all_guests_confirmed:
-        confirmation_step_state = "done"
-    elif tentative_selected:
-        confirmation_step_state = "needs_action"
-
-    tentative_email_step_state = "not_started"
-
-    if safe_text(group["coordination_reminder_sent_at"]):
-        tentative_email_step_state = "done"
-    elif tentative_selected:
-        tentative_email_step_state = "needs_action"
-
-    final_visit_email_step_state = "not_started"
-
-    if final_visit_confirmation_sent and all_created_requests_reviewed:
-        final_visit_email_step_state = "done"
-    elif all_created_requests_reviewed:
-        final_visit_email_step_state = "needs_action"
-
-    conversion_step_state = "not_started"
-
-    if all_confirmed_guests_converted:
-        conversion_step_state = "done"
-    elif all_guests_confirmed:
-        conversion_step_state = "needs_action"
-
-    room_assignment_step_state = "not_started"
-
-    if all_created_requests_reviewed:
-        room_assignment_step_state = "done"
-    elif booking_requests_created:
-        room_assignment_step_state = "needs_action"
-
-    close_step_state = "not_started"
-
-    if group_is_closed:
-        close_step_state = "done"
-    elif all_created_requests_reviewed:
-        close_step_state = "needs_action"
-
-    workflow_progress_html = f"""
-    <div style="
-        background-color: #eef5ff;
-        border: 2px solid #4a90e2;
-        padding: 14px;
-        border-radius: 8px;
-        margin-bottom: 18px;
-        max-width: 1080px;
-    ">
-        <h2 style="margin-top: 0;">
-            Workflow Progress
-        </h2>
-
-        <p style="margin-top: 0; color: #555;">
-            This shows what is done, what needs action, and what has not started yet.
-        </p>
-
-        <table border="1"
-               cellpadding="6"
-               cellspacing="0"
-               style="
-                   border-collapse: collapse;
-                   width: 100%;
-                   font-size: 13px;
-               ">
-            <tr style="background-color: #f5f5f5;">
-                <th></th>
-                <th align="left">Workflow Step</th>
-                <th align="left">Status</th>
-            </tr>
-            {workflow_status_row(
-                "Pick or review tentative dates",
-                tentative_step_state,
-                "Choose the best overlap window from the suggested matches."
-            )}
-            {workflow_status_row(
-                "Get guest confirmations",
-                confirmation_step_state,
-                f"Confirmed: {tentative_confirmed_count} of {len(members)}"
-            )}
-            {workflow_status_row(
-                "Send final visit confirmation email",
-                final_visit_email_step_state,
-                "Send after booking requests are approved and rooms are assigned."
-            )}
-            {workflow_status_row(
-                "Create booking requests",
-                conversion_step_state,
-                f"Booking requests created: {converted_member_count} of {len(members)}"
-            )}
-            {workflow_status_row(
-                "Assign rooms and approve requests",
-                room_assignment_step_state,
-                "Use the Booking Handoff section below to review requests and assign rooms."
-            )}
-            {workflow_status_row(
-                "Close coordination group",
-                close_step_state,
-                "Close only after booking requests have been reviewed and the group is no longer active."
-            )}
-        </table>
-    </div>
-    """
-
-    if planning_ready_for_booking:
-        match_suggestions_html = f"""
         <div style="
-            background-color: #d4edda;
-            border: 2px solid #198754;
-            border-radius: 8px;
+            border: 2px solid #fd7e14;
+            background: #fff3cd;
             padding: 14px;
-            margin-bottom: 14px;
-            max-width: 1040px;
+            border-radius: 10px;
+            max-width: 820px;
         ">
-            <h2 style="margin-top: 0; color: #198754;">
-                Dates Work for Everyone
-            </h2>
-            <p style="font-size: 16px; margin-bottom: 6px;">
-                <strong>{format_date(group['tentative_arrival_date'])}</strong>
-                to
-                <strong>{format_date(group['tentative_departure_date'])}</strong>
+            <p style="font-weight: bold; margin-top: 0;">
+                The detailed Planning view could not fully load, but the app did not lose any saved data.
             </p>
+
             <p>
-                No more planning follow-up is needed. The next step is Booking Handoff.
+                This usually means the group has booking-handoff data that the Planning page could not summarize safely.
+                Use Booking Handoff for this group, or go back to Coordination Groups.
             </p>
-            <p style="margin-bottom: 0;">
+
+            <p>
+                <strong>Technical detail:</strong><br>
+                {error_text}
+            </p>
+
+            <p>
                 <a href="/coordination-group/{group_id}/handoff"
-                   style="display: inline-block; background-color: #198754; color: white; padding: 8px 12px; border-radius: 5px; text-decoration: none; font-weight: bold;">
-                    Go to Booking Handoff Page
+                   style="font-weight:bold;">
+                    Open Booking Handoff
+                </a>
+                |
+                <a href="/coordination-groups"
+                   style="font-weight:bold;">
+                    Back to Coordination Groups
                 </a>
             </p>
         </div>
         """
 
-    html = nav_links() + f"""
-    <h1>{safe_text(group['title'])} — Planning</h1>
 
-    <div style="
-        background-color: #f8f9fa;
-        border: 1px solid #dee2e6;
-        padding: 10px;
-        border-radius: 8px;
-        margin-bottom: 18px;
-        max-width: 1080px;
-    ">
-        <strong>Coordination Pages:</strong>
-        <a href="/coordination-group/{group_id}"
-           style="font-weight: bold; margin-left: 8px;">
-            Planning Page
-        </a>
-        |
-        <a href="/coordination-group/{group_id}/handoff"
-           style="font-weight: bold;">
-            Booking Handoff Page
-        </a>
-        <br>
-        <small style="color: #555;">
-            Planning is for finding dates. Booking Handoff is for confirmations, booking requests, room assignments, and approvals.
-        </small>
-    </div>
 
-    {planning_workflow_html}
+@app.route("/coordination-group/<int:group_id>/delete", methods=["GET", "POST"])
+def coordination_group_delete(group_id):
 
-    <h2>Current Coordination Status</h2>
+    conn = get_db_connection()
+    ensure_coordination_tables(conn)
 
-    <div style="
-        background-color: #f8f9fa;
-        padding: 14px;
-        border-radius: 8px;
-        margin-bottom: 18px;
-        max-width: 1080px;
-        line-height: 1.5;
-    ">
-        <p style="margin-top: 0;">
-            <strong>Status:</strong> {safe_text(group['status'])}<br>
-            <strong>Target Year:</strong> {safe_text(group['target_year'])}<br>
-            <strong>Created:</strong> {safe_text(group['created_at'])[:10]}<br>
-            <strong>Confirmed Works:</strong> {tentative_confirmed_count} |
-            <strong>Cannot Make:</strong> {tentative_cannot_count} |
-            <strong>Need Different Dates (Add Comments):</strong> {tentative_discussion_count} |
-            <strong>No Response:</strong> {tentative_no_response_count}
-        </p>
+    group = conn.execute("""
+        SELECT *
+        FROM coordination_groups
+        WHERE id = ?
+    """, (group_id,)).fetchone()
 
-        <div style="
-            background-color: #ffffff;
-            border: 1px solid #dee2e6;
-            padding: 10px;
-            border-radius: 6px;
-            margin-bottom: 12px;
-        ">
-            {safe_text(group['description'])}
+    if not group:
+        conn.close()
+        return f"""
+        {nav_links()}
+        <h1>Coordination Group Not Found</h1>
+        <p><a href="/coordination-groups">Back to Coordination Groups</a></p>
+        """
+
+    members = conn.execute("""
+        SELECT id, converted_request_id
+        FROM coordination_group_members
+        WHERE coordination_group_id = ?
+    """, (group_id,)).fetchall()
+
+    converted_request_ids = [
+        safe_text(member["converted_request_id"]).strip()
+        for member in members
+        if safe_text(member["converted_request_id"]).strip().isdigit()
+    ]
+
+    approved_booking_count = 0
+
+    if converted_request_ids:
+        placeholders = ",".join(["?"] * len(converted_request_ids))
+        approved_booking_count = conn.execute(f"""
+            SELECT COUNT(*) AS count
+            FROM bookings
+            WHERE request_id IN ({placeholders})
+              AND status = 'approved'
+        """, converted_request_ids).fetchone()["count"]
+
+    if approved_booking_count:
+        conn.close()
+        return f"""
+        {nav_links()}
+        <h1>Coordination Process Not Deleted</h1>
+        <div style="background:#f8d7da; border:2px solid #dc3545; padding:12px; border-radius:8px; max-width:850px;">
+            <p style="font-weight:bold; margin-top:0;">This coordination group has confirmed/approved bookings.</p>
+            <p>Cancel or remove those confirmed stays first. This safety check prevents deleting planning history while bookings still exist.</p>
         </div>
+        <p><a href="/coordination-group/{group_id}/handoff">Back to Booking Handoff</a></p>
+        <p><a href="/coordination-group/{group_id}">Back to Planning Page</a></p>
+        """
 
-        <h3>Tentative Group Dates</h3>
+    if request.method != "POST":
+        conn.close()
+        return action_confirmation_page(
+            "Delete Coordination Process",
+            f"Delete coordination group '{safe_text(group['title'])}' and its planning responses/date options? Guest profiles will not be deleted. Converted booking requests without approved bookings will be unlinked, not deleted.",
+            f"/coordination-group/{group_id}/delete",
+            f"/coordination-group/{group_id}"
+        )
 
-        {tentative_dates_html}
-    </div>
+    backup_path = create_database_backup(
+        f"before_delete_coordination_group_{group_id}"
+    )
 
-    <h2 id="best-match-suggestions">Best Match Suggestions</h2>
+    try:
+        if converted_request_ids:
+            placeholders = ",".join(["?"] * len(converted_request_ids))
+            conn.execute(f"""
+                UPDATE booking_requests
+                SET coordination_group_id = NULL,
+                    coordination_group_member_id = NULL
+                WHERE id IN ({placeholders})
+            """, converted_request_ids)
 
-    <div style="
-        border: 1px solid #dee2e6;
-        background-color: #eef7ee;
-        padding: 14px;
-        margin-bottom: 18px;
-        border-radius: 8px;
-        max-width: 1080px;
-    ">
-        <p style="margin-top: 0;">
-            These suggestions compare submitted preferred and alternate dates. Use them to pick tentative dates. After tentative dates are picked, this becomes reference information.
-        </p>
+        conn.execute("""
+            DELETE FROM coordination_date_options
+            WHERE coordination_group_member_id IN (
+                SELECT id
+                FROM coordination_group_members
+                WHERE coordination_group_id = ?
+            )
+        """, (group_id,))
 
-        {match_suggestions_html}
-    </div>
+        conn.execute("""
+            DELETE FROM coordination_group_members
+            WHERE coordination_group_id = ?
+        """, (group_id,))
 
-    <h2>Submitted Date Options — Reference Only</h2>
+        conn.execute("""
+            DELETE FROM coordination_groups
+            WHERE id = ?
+        """, (group_id,))
 
-    <div style="
-        border: 1px solid #dee2e6;
-        background-color: #ffffff;
-        padding: 14px;
-        margin-bottom: 18px;
-        border-radius: 8px;
-        max-width: 980px;
-    ">
-        <p>
-            <strong>Members:</strong> {len(members)}<br>
-            <strong>Responded:</strong> {responded_count}<br>
-            <strong>Not Responded:</strong> {len(not_responded_names)}
-        </p>
+        conn.commit()
+        conn.close()
 
-        <p>
-            <strong>Waiting On:</strong><br>
-            {not_responded_html}
-        </p>
+    except Exception as error:
+        rollback_and_close(conn)
+        return transaction_error_page(
+            error,
+            f"/coordination-group/{group_id}"
+        )
 
-        {date_options_summary_html}
-    </div>
-
-    <h2>Group Members</h2>
-
-    <div style="
-        border: 1px solid #dee2e6;
-        background-color: #f8f9fa;
-        padding: 14px;
-        margin-bottom: 18px;
-        border-radius: 8px;
-        max-width: 760px;
-    ">
-        <h3 style="
-            margin-top: 0;
-        ">
-            Add Guest Profile to Group
-        </h3>
+    return f"""
+    {nav_links()}
+    <h1>Coordination Process Deleted</h1>
+    <p>The coordination process was deleted.</p>
+    <p>Guest profiles were preserved.</p>
+    <p>Backup created before deletion: <code>{safe_text(backup_path)}</code></p>
+    <p><a href="/coordination-groups">Back to Coordination Groups</a></p>
     """
-
-    if not available_profiles:
-
-        html += """
-        <p>
-            No available guest profiles found to add.
-        </p>
-        """
-
-    else:
-
-        html += f"""
-        <form method="POST"
-              action="/coordination-group/{group_id}/add-member">
-
-            <label>
-                <strong>Guest Profile</strong>
-            </label><br>
-
-            <select name="guest_profile_id"
-                    required
-                    style="width: 420px;">
-        """
-
-        for profile in available_profiles:
-
-            html += f"""
-                <option value="{profile['id']}">
-                    {safe_text(profile['primary_name'])} — {safe_text(profile['primary_email'])} ({safe_text(profile['status'])})
-                </option>
-            """
-
-        html += """
-            </select>
-
-            <br>
-
-            <label>
-                <strong>Role</strong>
-            </label><br>
-
-            <select name="role">
-                <option value="guest">Guest</option>
-                <option value="organizer">Organizer</option>
-            </select>
-
-            <br>
-
-            <button type="submit">
-                Add Guest to Group
-            </button>
-
-        </form>
-        """
-
-    html += """
-    </div>
-    """
-
-    if not members:
-
-        html += """
-        <p>
-            No guest profiles have been added yet.
-        </p>
-
-        <p>
-            Add existing guest profiles above. Next V10 step after this
-            is generating group request links.
-        </p>
-        """
-
-    else:
-
-        html += """
-        <table border="1"
-               cellpadding="5"
-               cellspacing="0"
-               style="
-                   border-collapse: collapse;
-                   width: 100%;
-                   font-size: 13px;
-               ">
-
-            <tr style="background-color: #f5f5f5;">
-                <th align="left">Guest</th>
-                <th align="left">Email</th>
-                <th align="left">Role</th>
-                <th align="left">Invitation Status</th>
-                <th align="left">Last Response</th>
-                <th align="center">Date Options</th>
-                <th align="left">Request Link</th>
-                <th align="left">Profile</th>
-            </tr>
-        """
-
-        for member in members:
-
-            html += f"""
-            <tr>
-                <td>{safe_text(member['primary_name'])}</td>
-                <td>{safe_text(member['primary_email'])}</td>
-                <td>{safe_text(member['role'])}</td>
-                <td>{safe_text(member['invitation_status'])}</td>
-                <td>{safe_text(member['last_response_at'])}</td>
-                <td align="center">{member['date_option_count']}</td>
-                <td>
-                    <a href="/coordination-group-member/{coordination_member_row_id(member)}/request">
-                        Open Request Page
-                    </a>
-                </td>
-                <td>
-                    <a href="/profile/{member['guest_profile_id']}">
-                        View
-                    </a>
-                </td>
-            </tr>
-            """
-
-        html += "</table>"
-
-    html += f"""
-    <p>
-        <a href="/coordination-groups">
-            Back to Coordination Groups
-        </a>
-    </p>
-    """
-
-    return html
-
-
 
 
 @app.route("/coordination-group/<int:group_id>/handoff")
@@ -18313,6 +23304,24 @@ def coordination_group_handoff(group_id):
             </a>
         </p>
         """
+
+    default_due_date_value, group = ensure_coordination_due_date(
+        conn,
+        group_id,
+        group
+    )
+
+    due_date_fallback_script = f"""
+    <script>
+        document.addEventListener("DOMContentLoaded", function () {{
+            document.querySelectorAll('input[name="tentative_response_due_date"]').forEach(function (field) {{
+                if (!field.value || field.value === "No due date set") {{
+                    field.value = "{default_due_date_value}";
+                }}
+            }});
+        }});
+    </script>
+    """
 
     members = conn.execute("""
         SELECT
@@ -18552,10 +23561,8 @@ def coordination_group_handoff(group_id):
 
     default_tentative_due_date = safe_text(group["tentative_response_due_date"]).strip()
 
-    if not default_tentative_due_date:
-        default_tentative_due_date = (
-            date.today() + timedelta(days=3)
-        ).strftime("%Y-%m-%d")
+    if not default_tentative_due_date or default_tentative_due_date.lower() in ["no due date set", "none", "null"]:
+        default_tentative_due_date = default_due_date_value
 
     tentative_confirmation_email_action_html = """
     <p style="color: #666;">
@@ -18582,7 +23589,8 @@ def coordination_group_handoff(group_id):
                 </label><br>
                 <input type="date"
                        name="tentative_response_due_date"
-                       value="{default_tentative_due_date}">
+                       value="{default_tentative_due_date}"
+                       data-default-plus-three="1">
                 <br>
                 <button type="submit">
                     Resend / Remind Guests Still Needing Response
@@ -18601,7 +23609,8 @@ def coordination_group_handoff(group_id):
                 </label><br>
                 <input type="date"
                        name="tentative_response_due_date"
-                       value="{default_tentative_due_date}">
+                       value="{default_tentative_due_date}"
+                       data-default-plus-three="1">
                 <br>
                 <button type="submit"
                         style="
@@ -18612,7 +23621,7 @@ def coordination_group_handoff(group_id):
                             border-radius: 5px;
                             font-weight: bold;
                         ">
-                    Send Tentative Date Confirmation Emails
+                    Send Tentative Dates That May Work for Everyone Emails
                 </button>
             </form>
             <small style="color: #666;">
@@ -18970,6 +23979,8 @@ def coordination_group_handoff(group_id):
         </table>
     </div>
 
+    {due_date_fallback_script}
+
     <h2>Current Status</h2>
 
     <div style="
@@ -19191,7 +24202,7 @@ def coordination_group_email_preview(group_id):
     """).fetchall()
 
     blocked_ranges_for_matching = conn.execute("""
-        SELECT start_date, end_date
+        SELECT *
         FROM blocked_dates
         ORDER BY start_date
     """).fetchall()
@@ -19220,7 +24231,7 @@ def coordination_group_email_preview(group_id):
             safe_text(member["primary_name"])
         )
 
-    group_member_text = "\n".join([f"- {safe_text(member['primary_name'])} ({safe_text(row_value(member, 'role') or 'guest')})" for member in members])
+    group_member_text = "\n".join([f"- {safe_text(member['primary_name'])} ({coordination_role_display(row_value(member, 'role') or 'participant')})" for member in members])
 
     if not members:
 
@@ -19240,7 +24251,7 @@ def coordination_group_email_preview(group_id):
         </p>
         """
 
-    group_member_text = "\n".join([f"- {safe_text(member['primary_name'])} ({safe_text(row_value(member, 'role') or 'guest')})" for member in members])
+    group_member_text = "\n".join([f"- {safe_text(member['primary_name'])} ({coordination_role_display(row_value(member, 'role') or 'participant')})" for member in members])
 
     suggestion_lines = []
 
@@ -19294,6 +24305,15 @@ def coordination_group_email_preview(group_id):
 
     suggestion_text = "\n\n".join(suggestion_lines)
 
+    organizer_conn = get_db_connection()
+    ensure_coordination_tables(organizer_conn)
+    organizer_info = get_coordination_organizer_info(organizer_conn, group_id)
+    organizer_conn.close()
+
+    organizer_email_display = ""
+    if organizer_info["email"]:
+        organizer_email_display = "<" + organizer_info["email"] + ">"
+
     email_preview_html = ""
 
     for member in email_target_members:
@@ -19306,7 +24326,10 @@ def coordination_group_email_preview(group_id):
             "coordination_invitation.txt",
             guest_name=safe_text(member["primary_name"]),
             group_title=safe_text(group["title"]),
-            guest_role=safe_text(row_value(member, "role") or "guest"),
+            guest_role=coordination_role_display(row_value(member, "role") or "participant"),
+            organizer_name=organizer_info["name"],
+            organizer_email=organizer_info["email"],
+            organizer_email_display=organizer_email_display,
             group_member_text=group_member_text,
             suggestion_text=suggestion_text,
             request_link=update_link
@@ -19442,8 +24465,10 @@ def coordination_group_follow_up_unmatched_preview(group_id):
         WHERE status = 'approved'
     """).fetchall()
 
+    ensure_house_block_columns(conn)
+
     blocked_ranges = conn.execute("""
-        SELECT start_date, end_date
+        SELECT *
         FROM blocked_dates
     """).fetchall()
 
@@ -19608,8 +24633,10 @@ def coordination_group_send_follow_up_unmatched(group_id):
         WHERE status = 'approved'
     """).fetchall()
 
+    ensure_house_block_columns(conn)
+
     blocked_ranges = conn.execute("""
-        SELECT start_date, end_date
+        SELECT *
         FROM blocked_dates
     """).fetchall()
 
@@ -19667,27 +24694,13 @@ def coordination_group_send_follow_up_unmatched(group_id):
 
         update_link = f"{BASE_URL}/coordination-group-member/{coordination_member_row_id(member)}/request?follow_up=1&suggested_arrival={arrival_date}&suggested_departure={departure_date}"
         subject = "Strathmere group dates - can you update your availability?"
-        body = f"""Hi {safe_text(member['primary_name'])},
-
-We found a possible group date for {safe_text(group['title'])}:
-
-{format_date(arrival_date)} to {format_date(departure_date)}
-
-Right now, your submitted dates do not overlap with this option.
-
-Could you please use the link below to review your dates and either:
-- add a new date option,
-- increase your flexibility, or
-- let us know if these dates will not work for you.
-
-Your update link:
-{update_link}
-
-Thanks!
-
-John & Mark
-302-521-5401
-"""
+        body = render_email_template(
+            "coordination_unmatched_follow_up.txt",
+            guest_name=safe_text(member["primary_name"]),
+            group_title=safe_text(group["title"]),
+            suggested_dates=f"{format_date(arrival_date)} to {format_date(departure_date)}",
+            request_link=update_link
+        )
 
         try:
             send_email(recipient_email, subject, body)
@@ -19775,6 +24788,143 @@ John & Mark
         <a href="/coordination-group/{group_id}">Back to Planning Page</a>
     </p>
     """
+
+
+
+@app.route("/coordination-group/<int:group_id>/capacity-email", methods=["POST"])
+def coordination_group_capacity_email(group_id):
+
+    conn = get_db_connection()
+    ensure_coordination_tables(conn)
+
+    group = conn.execute("""
+        SELECT *
+        FROM coordination_groups
+        WHERE id = ?
+    """, (group_id,)).fetchone()
+
+    if not group:
+        conn.close()
+        return f"""
+        {nav_links()}
+        <h1>Coordination Group Not Found</h1>
+        <p><a href="/coordination-groups">Back to Coordination Groups</a></p>
+        """
+
+    members = conn.execute("""
+        SELECT
+            coordination_group_members.id AS member_id,
+            coordination_group_members.role,
+            guest_profiles.primary_name,
+            guest_profiles.primary_email
+        FROM coordination_group_members
+        JOIN guest_profiles
+            ON coordination_group_members.guest_profile_id = guest_profiles.id
+        WHERE coordination_group_members.coordination_group_id = ?
+        ORDER BY guest_profiles.primary_name
+    """, (group_id,)).fetchall()
+
+    date_options = conn.execute("""
+        SELECT
+            coordination_group_members.id AS member_id,
+            guest_profiles.primary_name,
+            coordination_date_options.priority,
+            coordination_date_options.arrival_date,
+            coordination_date_options.departure_date,
+            coordination_date_options.rooms_requested
+        FROM coordination_date_options
+        JOIN coordination_group_members
+            ON coordination_date_options.coordination_group_member_id = coordination_group_members.id
+        JOIN guest_profiles
+            ON coordination_group_members.guest_profile_id = guest_profiles.id
+        WHERE coordination_group_members.coordination_group_id = ?
+        ORDER BY guest_profiles.primary_name,
+            CASE coordination_date_options.priority
+                WHEN 'preferred' THEN 1
+                WHEN 'alternate' THEN 2
+                ELSE 3
+            END
+    """, (group_id,)).fetchall()
+
+    summary_lines = []
+
+    for option in date_options:
+        summary_lines.append(
+            safe_text(option["primary_name"]) + " - " +
+            safe_text(option["priority"]).title() + ": " +
+            format_date(option["arrival_date"]) + " to " +
+            format_date(option["departure_date"]) + " / " +
+            safe_text(option["rooms_requested"] or 1) + " bedroom(s)"
+        )
+
+    if not summary_lines:
+        summary_lines.append("No date options have been submitted yet.")
+
+    summary_text = "\n".join(summary_lines)
+
+    sent_count = 0
+    skipped = []
+
+    for member in members:
+        recipient = safe_text(member["primary_email"]).strip()
+
+        if not is_valid_email_address(recipient):
+            skipped.append(safe_text(member["primary_name"]))
+            continue
+
+        request_link = BASE_URL.rstrip("/") + f"/coordination-group-member/{member['member_id']}/request"
+
+        body = render_email_template(
+            "capacity_review.txt",
+            guest_name=safe_text(member["primary_name"]),
+            group_name=safe_text(group["title"]),
+            group_summary=summary_text,
+            request_link=request_link,
+            capacity_message=(
+                "The group may currently be requesting more bedrooms than are available for these dates. "
+                "This email was sent to everyone in the group. Someone may have already updated their request, "
+                "so changes may no longer be needed. Click below and check Action Needed to see if updates are still required."
+            )
+        )
+
+        try:
+            send_email(
+                recipient,
+                "Strathmere group visit - room capacity review",
+                body
+            )
+            sent_count += 1
+        except Exception as error:
+            skipped.append(safe_text(member["primary_name"]) + " (" + safe_text(error) + ")")
+
+    try:
+        conn.execute("""
+            UPDATE coordination_groups
+            SET status = 'capacity_review',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (group_id,))
+        conn.commit()
+    except Exception:
+        pass
+
+    conn.close()
+
+    skipped_html = ""
+
+    if skipped:
+        skipped_html = f"""
+        <p><strong>Skipped / failed:</strong> {safe_text(", ".join(skipped))}</p>
+        """
+
+    return f"""
+    {nav_links()}
+    <h1>Capacity Review Email Sent</h1>
+    <p style="color:green; font-weight:bold;">Sent {sent_count} capacity review email(s).</p>
+    {skipped_html}
+    <p><a href="/coordination-group/{group_id}">Back to Planning Page</a></p>
+    """
+
 
 
 @app.route("/coordination-group/<int:group_id>/send-update-email", methods=["POST"])
@@ -19879,7 +25029,7 @@ def coordination_group_send_update_email(group_id):
     """).fetchall()
 
     blocked_ranges_for_matching = conn.execute("""
-        SELECT start_date, end_date
+        SELECT *
         FROM blocked_dates
         ORDER BY start_date
     """).fetchall()
@@ -19907,7 +25057,7 @@ def coordination_group_send_update_email(group_id):
         )
 
     group_member_text = "\n".join(
-        [f"- {safe_text(member['primary_name'])} ({safe_text(row_value(member, 'role') or 'guest')})" for member in members]
+        [f"- {safe_text(member['primary_name'])} ({coordination_role_display(row_value(member, 'role') or 'participant')})" for member in members]
     )
 
     if not group_member_text:
@@ -19965,6 +25115,15 @@ def coordination_group_send_update_email(group_id):
 
     suggestion_text = "\n\n".join(suggestion_lines)
 
+    organizer_conn = get_db_connection()
+    ensure_coordination_tables(organizer_conn)
+    organizer_info = get_coordination_organizer_info(organizer_conn, group_id)
+    organizer_conn.close()
+
+    organizer_email_display = ""
+    if organizer_info["email"]:
+        organizer_email_display = "<" + organizer_info["email"] + ">"
+
     sent_count = 0
     sent_member_ids = []
     skipped_members = []
@@ -19989,7 +25148,10 @@ def coordination_group_send_update_email(group_id):
             "coordination_invitation.txt",
             guest_name=safe_text(member["primary_name"]),
             group_title=safe_text(group["title"]),
-            guest_role=safe_text(row_value(member, "role") or "guest"),
+            guest_role=coordination_role_display(row_value(member, "role") or "participant"),
+            organizer_name=organizer_info["name"],
+            organizer_email=organizer_info["email"],
+            organizer_email_display=organizer_email_display,
             group_member_text=group_member_text,
             suggestion_text=suggestion_text,
             request_link=update_link
@@ -20080,6 +25242,7 @@ def coordination_group_member_request(member_id):
             coordination_groups.title AS group_title,
             coordination_groups.description AS group_description,
             coordination_groups.status AS group_status,
+            coordination_groups.current_round AS current_round,
             coordination_groups.tentative_arrival_date AS tentative_arrival_date,
             coordination_groups.tentative_departure_date AS tentative_departure_date,
             coordination_groups.tentative_selected_at AS tentative_selected_at,
@@ -20144,6 +25307,8 @@ def coordination_group_member_request(member_id):
     if selected_month > 12:
         selected_month = 1
         selected_year += 1
+
+    ensure_house_block_columns(conn)
 
     blocked = conn.execute("""
         SELECT * FROM blocked_dates
@@ -20227,6 +25392,7 @@ def coordination_group_member_request(member_id):
     group_members_for_overlap = conn.execute("""
         SELECT
             coordination_group_members.id,
+            coordination_group_members.role,
             guest_profiles.primary_name,
             guest_profiles.primary_email
         FROM coordination_group_members
@@ -20245,6 +25411,7 @@ def coordination_group_member_request(member_id):
         group_member_list_html += f"""
         <li>
             {safe_text(group_member['primary_name'])}
+            {coordination_role_badge(group_member['role'])}
             <small style="color: #666;">
                 ({safe_text(group_member['primary_email'])})
             </small>
@@ -20279,17 +25446,10 @@ def coordination_group_member_request(member_id):
 
     conn.close()
 
-    blocked_dates = set()
-
-    for b in blocked:
-        start = datetime.strptime(b["start_date"], "%Y-%m-%d")
-        end = datetime.strptime(b["end_date"], "%Y-%m-%d")
-
-        current = start
-
-        while current <= end:
-            blocked_dates.add(current.strftime("%Y-%m-%d"))
-            current += timedelta(days=1)
+    blocked_dates, room_limit_by_date = build_blocked_date_capacity(
+        blocked,
+        total_rooms
+    )
 
     blocked_list = sorted(blocked_dates)
 
@@ -20339,7 +25499,17 @@ def coordination_group_member_request(member_id):
             if booking_start <= current < booking_end:
                 rooms_used += 1
 
-        room_capacity[current.strftime("%Y-%m-%d")] = total_rooms - rooms_used
+        current_date_key = current.strftime("%Y-%m-%d")
+        capacity_limit = room_capacity_limit_for_date(
+            room_limit_by_date,
+            current_date_key,
+            total_rooms
+        )
+
+        room_capacity[current_date_key] = max(
+            0,
+            capacity_limit - rooms_used
+        )
 
         current += timedelta(days=1)
 
@@ -20423,14 +25593,17 @@ def coordination_group_member_request(member_id):
             style="
                 background-color: {background};
                 vertical-align: top;
-                width: 42px;
-                height: 32px;
-                font-size: 11px;
+                width: 56px;
+                height: 44px;
+                font-size: 12px;
                 text-align: center;
                 cursor: {cursor};
                 padding: 2px;
             " title="{display_line_1} {display_line_2}">
-            <strong>{day}</strong>
+            <strong>{day}</strong><br>
+            <span style="font-size: 9px; font-weight: normal; line-height: 1.05;">
+                {str(rooms_open) + " ROOM" + ("" if rooms_open == 1 else "S") + " OPEN" if (not past_date and current_date_str not in blocked_dates and rooms_open > 0) else ("FULL" if (not past_date and current_date_str not in blocked_dates and rooms_open <= 0) else "")}
+            </span>
         </td>
         """
 
@@ -20453,6 +25626,8 @@ def coordination_group_member_request(member_id):
         <span style="background-color: #fff3cd; padding: 3px;">Almost Full</span>
         <span style="background-color: #f8d7da; padding: 3px;">Full / Blocked</span>
         <span style="background-color: #e9ecef; padding: 3px;">Past</span>
+    
+        <span style="border: 2px dotted #dc3545; padding: 3px;">Tentative Group Dates</span>
     </p>
     """
 
@@ -20489,7 +25664,7 @@ def coordination_group_member_request(member_id):
                     to {format_date(booking['departure_date'])}
                 </td>
                 <td>{booking['rooms_requested'] or 1}</td>
-                <td>{safe_text(booking['room_name'])}</td>
+                <td>{display_room_name(booking['room_name'])}</td>
                 <td>
                     <a href="/request/{booking['request_id']}">
                         View
@@ -20664,7 +25839,7 @@ def coordination_group_member_request(member_id):
 
         rank = 1
 
-        for suggestion in group_match_suggestions[:5]:
+        for suggestion in group_match_suggestions[:2]:
 
             if not saved_date_options:
 
@@ -20767,8 +25942,40 @@ def coordination_group_member_request(member_id):
 
         group_overlap_html += "</table>"
 
+        if len(group_match_suggestions) > 2:
+            group_overlap_html += f"""
+            <details style="margin-top:6px;">
+                <summary style="cursor:pointer; font-weight:bold; color:#0f4c81;">
+                    Show {len(group_match_suggestions) - 2} more date option(s)
+                </summary>
+                <p style="font-size:13px; margin:5px 0 0 0;">
+                    The top 2 options are shown above to keep this page simple.
+                    John and Mark can still review all options on the admin planning page.
+                </p>
+            </details>
+            """
+
     follow_up_notice_html = ""
     follow_up_dates_work_button = ""
+
+    if safe_text(member["tentative_arrival_date"]) and safe_text(member["tentative_departure_date"]) and not follow_up_mode:
+        follow_up_notice_html = f"""
+        <div style="
+            border: 2px solid #fd7e14;
+            background-color: #fff3cd;
+            padding: 10px 12px;
+            margin-bottom: 6px;
+            border-radius: 10px;
+            max-width: 1100px;
+            font-size: 16px;
+            line-height: 1.3;
+        ">
+            <div style="font-size: 21px; font-weight: bold; color: #856404; margin-bottom: 3px;">
+                ⚠ ACTION NEEDED {safe_text(row_value(member, "current_round")) or "1"}
+            </div>
+            <div>{action_instruction_text}</div>
+        </div>
+        """
 
     if follow_up_mode:
         suggested_dates_text = ""
@@ -20792,23 +25999,39 @@ def coordination_group_member_request(member_id):
 
         follow_up_notice_html = f"""
         <div style="
-            border: 1px solid #f0ad4e;
+            border: 2px solid #fd7e14;
             background-color: #fff3cd;
-            padding: 8px 10px;
-            margin-bottom: 6px;
-            border-radius: 8px;
+            padding: 12px 14px;
+            margin-bottom: 8px;
+            border-radius: 10px;
             max-width: 1100px;
-            font-size: 13px;
-            line-height: 1.3;
+            font-size: 16px;
+            line-height: 1.35;
         ">
-            <strong>Quick favor — can you take another look?</strong>
-            {suggested_dates_text}
-            <br>If these dates work, click that button. If not, update what you can or use <strong>I cannot change any dates</strong>.
+            <div style="font-size: 22px; font-weight: bold; color: #856404; margin-bottom: 4px;">
+                ⚠ ACTION NEEDED {safe_text(row_value(member, "current_round")) or "1"}
+            </div>
+            <div style="font-size: 16px; font-weight: bold;">
+                Please review the current group date option.
+            </div>
+            <div style="margin-top: 4px;">
+                {suggested_dates_text}
+            </div>
+            <div style="margin-top: 6px;">
+                If these dates work, click <strong>These Dates Work For Me</strong>.
+                If not, update your dates below or use <strong>I cannot change any dates</strong>.
+            </div>
             {follow_up_dates_work_button}
         </div>
         """
 
     html = nav_links() + f"""
+    <style>
+        .shore-admin-nav {{ font-size: 13px; }}
+        input, select, textarea, button {{ font-size: 14px; }}
+        p {{ line-height: 1.28; }}
+        label {{ line-height: 1.25; }}
+    </style>
     <h1 style="margin: 0 0 4px 0; font-size: 22px;">Pick / Update Your Dates</h1>
 
     {follow_up_notice_html}
@@ -20816,8 +26039,8 @@ def coordination_group_member_request(member_id):
     <div style="
         border: 1px solid #dee2e6;
         background-color: #f8f9fa;
-        padding: 5px 8px;
-        margin-bottom: 5px;
+        padding: 4px 7px;
+        margin-bottom: 4px;
         border-radius: 8px;
         max-width: 1100px;
     ">
@@ -20837,30 +26060,31 @@ def coordination_group_member_request(member_id):
         </p>
     </div>
 
-    <div style="
+    <details style="
         border: 1px solid #dee2e6;
         background-color: #ffffff;
-        padding: 5px 8px;
+        padding: 6px 8px;
         margin-bottom: 5px;
         border-radius: 8px;
         max-width: 1100px;
+        font-size: 13px;
     ">
-        <h2 style="margin: 0 0 3px 0; font-size: 17px;">Group Members</h2>
-        <ul style="margin: 0; font-size: 13px; line-height: 1.25;">
+        <summary style="cursor:pointer; font-weight:bold;">Group Members ({len(group_members_for_overlap)})</summary>
+        <ul style="margin: 5px 0 0 16px; font-size: 13px; line-height: 1.25;">
             {group_member_list_html}
         </ul>
-    </div>
+    </details>
 
     <div style="
         border: 1px solid #198754;
         background-color: #e8f7ea;
-        padding: 5px 8px;
-        margin-bottom: 5px;
+        padding: 3px 6px;
+        margin-bottom: 4px;
         border-radius: 8px;
         max-width: 1100px;
     ">
-        <h2 style="margin: 0 0 3px 0; font-size: 17px;">
-            Tentative Group Dates
+        <h2 style="margin: 0 0 2px 0; font-size: 15px;">
+            Tentative Dates That May Work for Everyone
         </h2>
 
         {tentative_member_block}
@@ -20875,11 +26099,11 @@ def coordination_group_member_request(member_id):
         max-width: 1100px;
     ">
         <h2 style="margin: 0 0 3px 0; font-size: 17px;">
-            Current Best Group Dates
+            Suggested Dates Based on Other Guest Responses
         </h2>
 
         <p style="margin: 0 0 5px 0; font-size: 13px; line-height: 1.25;">
-            Current best overlap options based on group date choices. These are not confirmed bookings.
+            These dates appear to work best for the group so far. Select one of these dates if it works for you, or choose dates close to these options to improve the chance of everyone being able to visit together. These are not confirmed bookings.
         </p>
 
         {group_overlap_html}
@@ -20887,7 +26111,7 @@ def coordination_group_member_request(member_id):
 
     <div style="
         display: grid;
-        grid-template-columns: minmax(320px, 0.9fr) minmax(420px, 1.1fr);
+        grid-template-columns: minmax(440px, 1.1fr) minmax(340px, 0.9fr);
         gap: 10px;
         align-items: start;
         max-width: 1180px;
@@ -20895,17 +26119,33 @@ def coordination_group_member_request(member_id):
         <div style="
             border: 1px solid #dee2e6;
             background-color: #ffffff;
-            padding: 10px;
+            padding: 8px;
             border-radius: 8px;
-            font-size: 14px;
         ">
-            <h2 style="
-                margin: 0 0 6px 0;
-                font-size: 22px;
-                font-weight: bold;
-            ">
-                Your Submitted Dates
-            </h2>
+            {calendar_html}
+
+            <div style="border:1px solid #dee2e6; background:#f8f9fa; border-radius:6px; padding:6px; margin:8px 0 0 0; font-size:13px;">
+                <h3 style="margin:0 0 4px 0; font-size:14px;">Previous Approved Stays</h3>
+                {previous_html}
+            </div>
+
+            <div style="border:1px solid #dee2e6; background:#f8f9fa; border-radius:6px; padding:6px; margin:8px 0 0 0; font-size:13px;">
+                <h3 style="margin:0 0 4px 0; font-size:14px;">Guest / Room Notes</h3>
+                <p style="margin: 3px 0;"><strong>Additional Guests for Your Room(s):</strong><br>{safe_text(member['additional_names'])}</p>
+                <p style="margin: 3px 0;"><strong>Pets:</strong><br>{safe_text(member['pet_notes'])}</p>
+                <p style="margin: 3px 0;"><strong>Food Preferences:</strong><br>{safe_text(member['food_notes'])}</p>
+            </div>
+
+        </div>
+
+        <div style="
+            border: 1px solid #dee2e6;
+            background-color: #ffffff;
+            padding: 8px;
+            border-radius: 8px;
+            font-size: 13px;
+        ">
+            <h2 style="margin:0 0 4px 0; font-size:16px; font-weight:bold;">Your Selection / Save Dates</h2>
 
             <form method="POST"
                   action="/coordination-group-member/{member_id}/cannot-change-dates"
@@ -20934,268 +26174,228 @@ def coordination_group_member_request(member_id):
                 </button>
             </form>
 
-            <h3 style="margin: 10px 0 4px 0;">Previous Approved Stays</h3>
-            {previous_html}
-
-            <h3 style="margin: 10px 0 4px 0;">Guest / Room Notes</h3>
-
-            <p style="margin: 4px 0;">
-                <strong>Additional Guests for Your Room(s):</strong><br>
-                {safe_text(member['additional_names'])}
-            </p>
-
-            <p style="margin: 4px 0;">
-                <strong>Pets:</strong><br>
-                {safe_text(member['pet_notes'])}
-            </p>
-
-            <p style="margin: 4px 0;">
-                <strong>Food Preferences:</strong><br>
-                {safe_text(member['food_notes'])}
-            </p>
-        </div>
-
-        <div style="
-            border: 1px solid #dee2e6;
-            background-color: #ffffff;
-            padding: 8px;
-            border-radius: 8px;
-        ">
-            {calendar_html}
-
-            <div style="
-                border: 1px solid #dee2e6;
-                background-color: #f8f9fa;
-                padding: 8px;
-                border-radius: 8px;
-                margin-top: 8px;
-            ">
-                <h2 style="margin: 0 0 4px 0;">
-                    Submit / Update Date Options
-                </h2>
-
-                <p style="margin: 0 0 4px 0; font-size: 13px;">
-                    Add the dates that work best for you. Preferred is your first choice; alternate is your backup plan.
-                </p>
-
-                <p style="color: #856404; font-weight: bold; margin: 0 0 6px 0; font-size: 13px;">
-                    After saving, you’ll see a quick confirmation page. No beach paperwork, promise.
-                </p>
-
-                <form method="POST"
-                      action="/coordination-group-member/{member_id}/date-options"
-                      onsubmit="return validateGroupRoomCapacity();">
-
-                    <div style="
-                        background-color: #fff3cd;
-                        border: 1px solid #fd7e14;
-                        padding: 6px;
-                        border-radius: 6px;
-                        margin-bottom: 6px;
-                        font-size: 13px;
-                        font-weight: bold;
-                        white-space: normal;
-                        overflow-wrap: anywhere;
-                    ">
-                        Choose what the calendar click should fill: preferred arrival, preferred departure, alternate arrival, or alternate departure.
-                    </div>
-
-                    <div style="
-                        border: 1px solid #dee2e6;
-                        background-color: #ffffff;
-                        padding: 6px;
-                        margin-bottom: 8px;
-                        border-radius: 6px;
-                        font-size: 13px;
-                    ">
-                        <strong>Calendar click fills:</strong>
-                        <label>
-                            <input type="radio"
-                                   name="calendar_target"
-                                   value="preferred_arrival"
-                                   checked>
-                            Preferred Arrival
-                        </label>
-                        <label>
-                            <input type="radio"
-                                   name="calendar_target"
-                                   value="preferred_departure">
-                            Preferred Departure
-                        </label>
-                        <label>
-                            <input type="radio"
-                                   name="calendar_target"
-                                   value="alternate_arrival">
-                            Alternate Arrival
-                        </label>
-                        <label>
-                            <input type="radio"
-                                   name="calendar_target"
-                                   value="alternate_departure">
-                            Alternate Departure
-                        </label>
-
-                        <span id="calendar_target_message"
-                              style="
-                                  color: #0d6efd;
-                                  font-weight: bold;
-                                  margin-left: 6px;
-                              ">
-                            Next click will set Preferred Arrival.
-                        </span>
-                    </div>
-
-                    <div style="
-                        border: 2px solid #0d6efd;
-                        background-color: #f8fbff;
-                        padding: 10px;
-                        border-radius: 8px;
-                        margin-bottom: 10px;
-                        max-width: 520px;
-                    ">
-                        <label for="default_rooms" style="font-size: 18px; font-weight: bold;">
-                            How many guest bedrooms do you need?
-                        </label><br>
-                        <span style="font-size: 15px; font-weight: bold;">
-                            Each bedroom sleeps up to 2 guests.
-                        </span><br>
-                        <select id="default_rooms"
-                                onchange="syncDefaultRooms(); validateGroupRoomCapacity(false);">
-                            <option value="1">1 Bedroom</option>
-                            <option value="2">2 Bedrooms</option>
-                            <option value="3">3 Bedrooms</option>
-                            <option value="4">4 Bedrooms</option>
-                        </select>
-                        <p style="font-size: 12px; color: #555; margin: 6px 0 0 0;">
-                            This fills the bedroom count for both preferred and alternate dates. You can still adjust each date option below if needed.
-                        </p>
-                    </div>
-
-                    <div style="
-                        display: grid;
-                        grid-template-columns: repeat(2, minmax(240px, 1fr));
-                        gap: 8px;
-                    ">
                         <div style="
                             border: 1px solid #dee2e6;
-                            background-color: #ffffff;
-                            padding: 8px;
+                            background-color: #f8f9fa;
+                            padding: 7px;
                             border-radius: 8px;
+                            margin-top: 10px;
                         ">
-                            <h3 style="margin: 0 0 4px 0;">
-                                Preferred Dates
-                            </h3>
-
-                            <label><strong>Preferred Arrival</strong></label><br>
-                            <input type="date"
-                                   id="preferred_arrival"
-                                   name="preferred_arrival"
-                                   onchange="setNextDayDeparture('preferred');"
-                                   required>
-                            <br>
-
-                            <label><strong>Preferred Departure</strong></label><br>
-                            <input type="date"
-                                   id="preferred_departure"
-                                   name="preferred_departure"
-                                   required>
-                            <br>
-
-                            <label><strong>Number of Guest Bedrooms Needed</strong></label><br>
-                            <select name="preferred_rooms"
-                                    id="preferred_rooms"
-                                    onchange="validateGroupRoomCapacity(false);">
-                                <option value="1">1 Bedroom</option>
-                                <option value="2">2 Bedrooms</option>
-                                <option value="3">3 Bedrooms</option>
-                                <option value="4">4 Bedrooms</option>
-                            </select>
-                            <br>
-
-                            <label><strong>Flexibility</strong></label><br>
-                            <select name="preferred_flexibility">
-                                <option value="0">Fixed dates</option>
-                                <option value="1">Can shift by 1 day</option>
-                                <option value="2">Can shift by 2 days</option>
-                                <option value="3">Can shift by 3 days</option>
-                            </select>
-                        </div>
-
-                        <div style="
-                            border: 1px solid #dee2e6;
-                            background-color: #ffffff;
-                            padding: 8px;
-                            border-radius: 8px;
-                        ">
-                            <h3 style="margin: 0 0 4px 0;">
-                                Alternate Dates
-                            </h3>
-
-                            <p style="font-size: 12px; margin: 0 0 4px 0;">
-                                Optional, but helpful for finding the best group match.
+                            <h2 style="margin: 0 0 4px 0; font-size:16px;">
+                                Choose Dates → Save → Done
+                            </h2>
+            
+                            <p style="margin: 0 0 4px 0; font-size: 13px;">
+                                Pick your preferred dates. Alternate dates are optional but helpful.
                             </p>
-
-                            <label><strong>Alternate Arrival</strong></label><br>
-                            <input type="date"
-                                   id="alternate_arrival"
-                                   name="alternate_arrival"
-                                   onchange="setNextDayDeparture('alternate');">
-                            <br>
-
-                            <label><strong>Alternate Departure</strong></label><br>
-                            <input type="date"
-                                   id="alternate_departure"
-                                   name="alternate_departure">
-                            <br>
-
-                            <label><strong>Number of Guest Bedrooms Needed</strong></label><br>
-                            <select name="alternate_rooms"
-                                    id="alternate_rooms"
-                                    onchange="validateGroupRoomCapacity(false);">
-                                <option value="1">1 Bedroom</option>
-                                <option value="2">2 Bedrooms</option>
-                                <option value="3">3 Bedrooms</option>
-                                <option value="4">4 Bedrooms</option>
-                            </select>
-                            <br>
-
-                            <label><strong>Alternate Flexibility</strong></label><br>
-                            <select name="alternate_flexibility">
-                                <option value="0">Fixed dates</option>
-                                <option value="1">Can shift by 1 day</option>
-                                <option value="2">Can shift by 2 days</option>
-                                <option value="3">Can shift by 3 days</option>
-                            </select>
+            
+                            <p style="color: #856404; font-weight: bold; margin: 0 0 6px 0; font-size: 13px;">
+                                Save once you are done.
+                            </p>
+            
+                            <form method="POST"
+                                  action="/coordination-group-member/{member_id}/date-options"
+                                  onsubmit="return validateGroupRoomCapacity();">
+            
+                                <div style="background-color:#fff3cd; border:1px solid #fd7e14; padding:4px 6px; border-radius:6px; margin-bottom:5px; font-size:13px; font-weight:bold;">
+                                    Choose what the next calendar click should fill.
+                                </div>
+            
+                                <div style="
+                                    border: 1px solid #dee2e6;
+                                    background-color: #ffffff;
+                                    padding: 6px;
+                                    margin-bottom: 8px;
+                                    border-radius: 6px;
+                                    font-size: 13px;
+                                ">
+                                    <strong>Calendar click fills:</strong>
+                                    <label>
+                                        <input type="radio"
+                                               name="calendar_target"
+                                               value="preferred_arrival"
+                                               checked>
+                                        Preferred Arrival
+                                    </label>
+                                    <label>
+                                        <input type="radio"
+                                               name="calendar_target"
+                                               value="preferred_departure">
+                                        Preferred Departure
+                                    </label>
+                                    <label>
+                                        <input type="radio"
+                                               name="calendar_target"
+                                               value="alternate_arrival">
+                                        Alternate Arrival
+                                    </label>
+                                    <label>
+                                        <input type="radio"
+                                               name="calendar_target"
+                                               value="alternate_departure">
+                                        Alternate Departure
+                                    </label>
+            
+                                    <span id="calendar_target_message"
+                                          style="
+                                              color: #0d6efd;
+                                              font-weight: bold;
+                                              margin-left: 6px;
+                                          ">
+                                        Next click will set Preferred Arrival.
+                                    </span>
+                                </div>
+            
+                                <div style="
+                                    border: 1px solid #0d6efd;
+                                    background-color: #f8fbff;
+                                    padding: 6px;
+                                    border-radius: 8px;
+                                    margin-bottom: 6px;
+                                    max-width: 420px;
+                                ">
+                                    <label for="default_rooms" style="font-size: 14px; font-weight: bold;">
+                                        Bedrooms needed
+                                    </label>
+                                    <span style="font-size: 12px; color:#555;">— sleeps up to 2 per room</span><br>
+                                    <select id="default_rooms"
+                                            onchange="syncDefaultRooms(); validateGroupRoomCapacity(false);">
+                                        <option value="1">1 Bedroom</option>
+                                        <option value="2">2 Bedrooms</option>
+                                        <option value="3">3 Bedrooms</option>
+                                        <option value="4">4 Bedrooms</option>
+                                    </select>
+                                    <p style="font-size: 12px; color: #555; margin: 6px 0 0 0;">
+                                        Applies to preferred and alternate dates. Adjust below if needed. The calendar limits choices to visible availability.
+                                    </p>
+                                </div>
+            
+                                <div style="
+                                    display: grid;
+                                    grid-template-columns: repeat(2, minmax(180px, 1fr));
+                                    gap: 8px;
+                                ">
+                                    <div style="
+                                        border: 1px solid #dee2e6;
+                                        background-color: #ffffff;
+                                        padding: 8px;
+                                        border-radius: 8px;
+                                    ">
+                                        <h3 style="margin: 0 0 4px 0;">
+                                            Your Current Preferred Dates
+                                        </h3>
+            
+                                        <label><strong>Preferred Arrival</strong></label><br>
+                                        <input type="date"
+                                               id="preferred_arrival"
+                                               name="preferred_arrival"
+                                               onchange="setNextDayDeparture('preferred');"
+                                               required>
+                                        <br>
+            
+                                        <label><strong>Preferred Departure</strong></label><br>
+                                        <input type="date"
+                                               id="preferred_departure"
+                                               name="preferred_departure"
+                                               required>
+                                        <br>
+            
+                                        <label><strong>Number of Guest Bedrooms Needed</strong></label><br>
+                                        <select name="preferred_rooms"
+                                                id="preferred_rooms"
+                                                onchange="validateGroupRoomCapacity(false);">
+                                            <option value="1">1 Bedroom</option>
+                                            <option value="2">2 Bedrooms</option>
+                                            <option value="3">3 Bedrooms</option>
+                                            <option value="4">4 Bedrooms</option>
+                                        </select>
+                                        <br>
+            
+                                        <label><strong>Flexibility</strong></label><br>
+                                        <select name="preferred_flexibility">
+                                            <option value="0">Fixed dates</option>
+                                            <option value="1">Can shift by 1 day</option>
+                                            <option value="2">Can shift by 2 days</option>
+                                            <option value="3">Can shift by 3 days</option>
+                                        </select>
+                                    </div>
+            
+                                    <div style="
+                                        border: 1px solid #dee2e6;
+                                        background-color: #ffffff;
+                                        padding: 8px;
+                                        border-radius: 8px;
+                                    ">
+                                        <h3 style="margin: 0 0 4px 0;">
+                                            Alternate Dates
+                                        </h3>
+            
+                                        <p style="font-size: 12px; margin: 0 0 4px 0;">
+                                            Optional, but helpful for finding the best group match.
+                                        </p>
+            
+                                        <label><strong>Alternate Arrival</strong></label><br>
+                                        <input type="date"
+                                               id="alternate_arrival"
+                                               name="alternate_arrival"
+                                               onchange="setNextDayDeparture('alternate');">
+                                        <br>
+            
+                                        <label><strong>Alternate Departure</strong></label><br>
+                                        <input type="date"
+                                               id="alternate_departure"
+                                               name="alternate_departure">
+                                        <br>
+            
+                                        <label><strong>Number of Guest Bedrooms Needed</strong></label><br>
+                                        <select name="alternate_rooms"
+                                                id="alternate_rooms"
+                                                onchange="validateGroupRoomCapacity(false);">
+                                            <option value="1">1 Bedroom</option>
+                                            <option value="2">2 Bedrooms</option>
+                                            <option value="3">3 Bedrooms</option>
+                                            <option value="4">4 Bedrooms</option>
+                                        </select>
+                                        <br>
+            
+                                        <label><strong>Alternate Flexibility</strong></label><br>
+                                        <select name="alternate_flexibility">
+                                            <option value="0">Fixed dates</option>
+                                            <option value="1">Can shift by 1 day</option>
+                                            <option value="2">Can shift by 2 days</option>
+                                            <option value="3">Can shift by 3 days</option>
+                                        </select>
+                                    </div>
+                                </div>
+            
+                                <div id="room_capacity_warning"
+                                     style="
+                                         display: none;
+                                         background-color: #f8d7da;
+                                         border: 1px solid #dc3545;
+                                         padding: 6px;
+                                         border-radius: 6px;
+                                         margin-top: 8px;
+                                         font-weight: bold;
+                                         color: #842029;
+                                     ">
+                                </div>
+            
+                                <div style="margin-top: 8px;">
+                                    <label><strong>Notes</strong></label><br>
+                                    <textarea name="notes"
+                                              rows="2"
+                                              style="width: 100%; max-width: 520px;"></textarea>
+                                </div>
+            
+                                <div style="margin-top: 8px;">
+                                    <button type="submit">
+            Save My Dates
+                                    </button>
+                                </div>
+                            </form>
                         </div>
-                    </div>
-
-                    <div id="room_capacity_warning"
-                         style="
-                             display: none;
-                             background-color: #f8d7da;
-                             border: 1px solid #dc3545;
-                             padding: 6px;
-                             border-radius: 6px;
-                             margin-top: 8px;
-                             font-weight: bold;
-                             color: #842029;
-                         ">
-                    </div>
-
-                    <div style="margin-top: 8px;">
-                        <label><strong>Notes</strong></label><br>
-                        <textarea name="notes"
-                                  rows="2"
-                                  style="width: 100%; max-width: 520px;"></textarea>
-                    </div>
-
-                    <div style="margin-top: 8px;">
-                        <button type="submit">
-Save My Dates
-                        </button>
-                    </div>
-                </form>
-            </div>
+            
         </div>
     </div>
 
@@ -21254,6 +26454,71 @@ Save My Dates
             }}
 
             message.innerText = "Next click will set " + targetLabel(getCalendarTarget()) + ".";
+        }}
+
+        function clearCoordinationCalendarHighlights() {{
+            document.querySelectorAll('[data-date]').forEach(function (cell) {{
+                if (cell.dataset.coordOriginalColor) {{
+                    cell.style.backgroundColor = cell.dataset.coordOriginalColor;
+                }}
+                cell.style.outline = "";
+            }});
+        }}
+
+        function highlightCoordinationSelectedDates() {{
+            clearCoordinationCalendarHighlights();
+
+            const selectedFields = [
+                ["preferred_arrival", "#9ec5fe", "#0d6efd"],
+                ["preferred_departure", "#b6d7a8", "#198754"],
+                ["alternate_arrival", "#d7b9ff", "#6f42c1"],
+                ["alternate_departure", "#ffe0a3", "#fd7e14"]
+            ];
+
+            selectedFields.forEach(function (item) {{
+                const field = document.getElementById(item[0]);
+
+                if (!field || !field.value) {{
+                    return;
+                }}
+
+                const cell = document.querySelector('[data-date="' + field.value + '"]');
+
+                if (!cell) {{
+                    return;
+                }}
+
+                if (!cell.dataset.coordOriginalColor) {{
+                    cell.dataset.coordOriginalColor = cell.style.backgroundColor;
+                }}
+
+                cell.style.backgroundColor = item[1];
+                cell.style.outline = "3px solid " + item[2];
+            }});
+
+            const tentativeFields = [
+                ["{safe_text(member['tentative_arrival_date'])}", "#ffe8a1", "#fd7e14"],
+                ["{safe_text(member['tentative_departure_date'])}", "#ffe8a1", "#fd7e14"]
+            ];
+
+            tentativeFields.forEach(function (item) {{
+                if (!item[0]) {{
+                    return;
+                }}
+
+                const tentativeCell = document.querySelector('[data-date="' + item[0] + '"]');
+
+                if (!tentativeCell) {{
+                    return;
+                }}
+
+                if (!tentativeCell.dataset.coordOriginalColor) {{
+                    tentativeCell.dataset.coordOriginalColor = tentativeCell.style.backgroundColor;
+                }}
+
+                tentativeCell.style.backgroundColor = item[1];
+                tentativeCell.style.outline = "3px dashed " + item[2];
+            }});
         }}
 
         function formatDateForMessage(dateString) {{
@@ -21352,6 +26617,8 @@ Save My Dates
                 arrivalField.value = dateString;
                 departureField.value = addOneDay(dateString);
 
+                highlightCoordinationSelectedDates();
+
                 setCalendarTarget(targetGroup + "_departure");
 
                 return;
@@ -21369,15 +26636,18 @@ Save My Dates
             }}
 
             departureField.value = dateString;
+            highlightCoordinationSelectedDates();
             updateCalendarTargetMessage();
         }}
-    </script>
 
-    <p>
-        <a href="/coordination-group/{member['coordination_group_id']}">
-            Back to Coordination Group
-        </a>
-    </p>
+        document.addEventListener("DOMContentLoaded", function () {{
+            document.querySelectorAll("#preferred_arrival, #preferred_departure, #alternate_arrival, #alternate_departure").forEach(function (field) {{
+                field.addEventListener("change", highlightCoordinationSelectedDates);
+            }});
+
+            highlightCoordinationSelectedDates();
+        }});
+    </script>
     """
 
     return html
@@ -21626,6 +26896,7 @@ def coordination_group_member_date_options(member_id):
     other_members = conn.execute("""
         SELECT
             coordination_group_members.id,
+            coordination_group_members.role,
             guest_profiles.primary_name,
             MAX(COALESCE(coordination_date_options.rooms_requested, 1)) AS rooms_requested
         FROM coordination_group_members
@@ -21668,42 +26939,52 @@ def coordination_group_member_date_options(member_id):
         </tr>
         """
 
-    if total_group_rooms > total_rooms:
+    capacity_review_needed = total_group_rooms > total_rooms
 
-        conn.close()
+    if capacity_review_needed:
 
-        return f"""
-        {nav_links()}
+        group_row = conn.execute("""
+            SELECT title
+            FROM coordination_groups
+            WHERE id = ?
+        """, (
+            member["coordination_group_id"],
+        )).fetchone()
 
-        <h1>Date Options Not Saved</h1>
+        guest_row = conn.execute("""
+            SELECT primary_name
+            FROM guest_profiles
+            JOIN coordination_group_members
+                ON guest_profiles.id = coordination_group_members.guest_profile_id
+            WHERE coordination_group_members.id = ?
+        """, (
+            member_id,
+        )).fetchone()
 
-        <p style="color: red; font-weight: bold;">
-            The group is requesting {total_group_rooms} room(s), but only {total_rooms} room(s) are available.
-        </p>
+        try:
+            conn.execute("""
+                UPDATE coordination_groups
+                SET status = 'capacity_review',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (
+                member["coordination_group_id"],
+            ))
 
-        <p>
-            No single date range can work for the full group until the room count is reduced,
-            the group is split, or the plan is changed.
-        </p>
+            notify_admin(
+                "Capacity Review Required",
+                (
+                    "Group: " + safe_text(group_row["title"] if group_row else member["coordination_group_id"]) + "\n"
+                    "Guest: " + safe_text(guest_row["primary_name"] if guest_row else member_id) + "\n"
+                    "Requested Rooms: " + safe_text(total_group_rooms) + "\n"
+                    "Available Rooms: " + safe_text(total_rooms) + "\n"
+                    "Availability changed while the guest was completing the request. The request was saved for review."
+                ),
+                f"/coordination-group/{member['coordination_group_id']}"
+            )
 
-        <table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; max-width: 520px;">
-            <tr style="background-color: #f5f5f5;">
-                <th align="left">Guest</th>
-                <th align="center">Rooms</th>
-            </tr>
-            {room_detail_rows}
-            <tr style="background-color: #fff3cd; font-weight: bold;">
-                <td>Total Requested</td>
-                <td align="center">{total_group_rooms}</td>
-            </tr>
-        </table>
-
-        <p>
-            <a href="/coordination-group-member/{member_id}/request">
-                Back to Coordination Request
-            </a>
-        </p>
-        """
+        except Exception:
+            pass
 
     try:
 
@@ -21764,6 +27045,8 @@ def coordination_group_member_date_options(member_id):
                 notes
             ))
 
+        final_invitation_status = "capacity_review" if capacity_review_needed else "responded"
+
         conn.execute("""
             UPDATE coordination_group_members
             SET invitation_status = ?,
@@ -21780,7 +27063,7 @@ def coordination_group_member_date_options(member_id):
                 END
             WHERE id = ?
         """, (
-            "responded",
+            final_invitation_status,
             member_id
         ))
 
@@ -21816,6 +27099,11 @@ def coordination_group_member_date_options(member_id):
         )
 
     conn.close()
+
+    if capacity_review_needed:
+        return redirect(
+            f"/coordination-group-member/{member_id}/date-options/thanks?capacity_review=1"
+        )
 
     return redirect(
         f"/coordination-group-member/{member_id}/date-options/thanks"
@@ -21860,6 +27148,18 @@ def coordination_group_member_date_options_thanks(member_id):
     )).fetchall()
 
     conn.close()
+
+    capacity_review_mode = clean_text(request.args.get("capacity_review")) == "1"
+
+    capacity_review_html = ""
+
+    if capacity_review_mode:
+        capacity_review_html = """
+        <div style="max-width:760px; border:2px solid #fd7e14; background:#fff3cd; padding:14px; border-radius:10px; margin-bottom:12px;">
+            <strong>Availability changed while you were completing your request.</strong><br>
+            We saved your request. The group may be requesting more bedrooms than are available, so John and Mark will review options and follow up with next steps. If you need all of the bedrooms requested, you may need to choose different dates and another round may be needed.
+        </div>
+        """
 
     if not member:
 
@@ -22057,55 +27357,61 @@ def coordination_group_member_clear_date_options(member_id):
 @app.route("/coordination-group/<int:group_id>/set-tentative", methods=["POST"])
 def coordination_group_set_tentative(group_id):
 
-    arrival_date = clean_text(
-        request.form.get("arrival_date")
-    )
-
-    departure_date = clean_text(
-        request.form.get("departure_date")
-    )
+    arrival_date = clean_text(request.form.get("arrival_date"))
+    departure_date = clean_text(request.form.get("departure_date"))
+    system_arrival_date = clean_text(request.form.get("system_arrival_date"))
+    system_departure_date = clean_text(request.form.get("system_departure_date"))
+    adjustment_reason = clean_text(request.form.get("adjustment_reason"))
+    admin_adjustment = clean_text(request.form.get("admin_adjustment")) == "yes"
 
     try:
-        arrival = datetime.strptime(
-            arrival_date,
-            "%Y-%m-%d"
-        )
-
-        departure = datetime.strptime(
-            departure_date,
-            "%Y-%m-%d"
-        )
-
+        arrival = datetime.strptime(arrival_date, "%Y-%m-%d")
+        departure = datetime.strptime(departure_date, "%Y-%m-%d")
         if departure <= arrival:
             raise ValueError("Departure must be after arrival.")
-
     except Exception as error:
-
-        return transaction_error_page(
-            error,
-            f"/coordination-group/{group_id}"
-        )
+        return transaction_error_page(error, f"/coordination-group/{group_id}")
 
     conn = get_db_connection()
-
     ensure_coordination_tables(conn)
 
     try:
+        try:
+            capacity_check = coordination_capacity_check_for_window(conn, group_id, arrival_date, departure_date)
+        except Exception as capacity_error:
+            capacity_check = {
+                "capacity_ok": True,
+                "rooms_needed": 0,
+                "rooms_available": 0,
+                "min_rooms_open": 0,
+                "notes": ["Capacity check could not complete: " + safe_text(capacity_error)]
+            }
+
+        if not capacity_check["capacity_ok"]:
+            raise ValueError(
+                "Tentative dates are blocked by capacity or unavailable dates: "
+                + "; ".join(capacity_check["notes"])
+            )
+
+        if admin_adjustment and not adjustment_reason:
+            adjustment_reason = "Admin selected/confirmed tentative dates."
+
+        if admin_adjustment and (not system_arrival_date or not system_departure_date):
+            system_overlap = latest_coordination_system_overlap(conn, group_id)
+            if system_overlap:
+                system_arrival_date = system_overlap["arrival_date"]
+                system_departure_date = system_overlap["departure_date"]
 
         conn.execute("""
             UPDATE coordination_groups
             SET tentative_arrival_date = ?,
                 tentative_departure_date = ?,
                 tentative_selected_at = CURRENT_TIMESTAMP,
+                tentative_response_due_date = COALESCE(NULLIF(TRIM(tentative_response_due_date), ''), ?),
                 status = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
-        """, (
-            arrival_date,
-            departure_date,
-            "tentative",
-            group_id
-        ))
+        """, (arrival_date, departure_date, default_coordination_due_date(), "tentative", group_id))
 
         conn.execute("""
             UPDATE coordination_group_members
@@ -22113,26 +27419,41 @@ def coordination_group_set_tentative(group_id):
                 tentative_response_at = NULL,
                 tentative_response_notes = NULL
             WHERE coordination_group_id = ?
-        """, (
-            group_id,
-        ))
+        """, (group_id,))
+
+        if admin_adjustment:
+            conn.execute("""
+                INSERT INTO coordination_tentative_adjustments
+                (
+                    coordination_group_id,
+                    system_arrival_date,
+                    system_departure_date,
+                    admin_arrival_date,
+                    admin_departure_date,
+                    adjustment_reason,
+                    rooms_needed,
+                    capacity_status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                group_id,
+                system_arrival_date,
+                system_departure_date,
+                arrival_date,
+                departure_date,
+                adjustment_reason,
+                capacity_check["rooms_needed"],
+                "OK" if capacity_check["capacity_ok"] else "Needs Review"
+            ))
 
         conn.commit()
 
     except Exception as error:
-
         rollback_and_close(conn)
-
-        return transaction_error_page(
-            error,
-            f"/coordination-group/{group_id}"
-        )
+        return transaction_error_page(error, f"/coordination-group/{group_id}")
 
     conn.close()
-
-    return redirect(
-        f"/coordination-group/{group_id}"
-    )
+    return redirect(f"/coordination-group/{group_id}")
 
 
 @app.route("/coordination-group-member/<int:member_id>/follow-up-dates-work", methods=["POST"])
@@ -23166,24 +28487,12 @@ def coordination_group_send_final_email(group_id):
 
         subject = f"Strathmere group dates confirmed - {safe_text(group['title'])}"
 
-        body = f"""Hi {safe_text(member['primary_name'])},
-
-Great news — the group has successfully coordinated dates for {safe_text(group['title'])}.
-
-Tentative group dates:
-{format_date(group['tentative_arrival_date'])} to {format_date(group['tentative_departure_date'])}
-
-Everyone has now confirmed these tentative dates.
-
-The next step is final booking review and room planning. Nothing is fully booked until the normal booking requests are reviewed and approved.
-
-If anything changes before final approvals are completed, please reply as soon as possible.
-
-Thanks everyone for coordinating together.
-
-John & Mark
-302-521-5401
-"""
+        body = render_email_template(
+            "final_group_ready.txt",
+            guest_name=safe_text(member["primary_name"]),
+            group_title=safe_text(group["title"]),
+            tentative_dates=f"{format_date(group['tentative_arrival_date'])} to {format_date(group['tentative_departure_date'])}"
+        )
 
         try:
             send_email(
@@ -23359,39 +28668,20 @@ def coordination_group_send_reminders(group_id):
         if not to_email:
             continue
 
-        subject = f"Strathmere tentative dates reminder - {safe_text(group['title'])}"
+        subject = f"Strathmere tentative group dates - {safe_text(group['title'])}"
 
         update_link = f"{BASE_URL}/coordination-group-member/{coordination_member_row_id(member)}/request"
 
-        body = f"""Hi {safe_text(member['primary_name'])},
-
-Just a reminder that we are trying to confirm tentative dates for {safe_text(group['title'])}.
-
-Tentative dates:
-{format_date(group['tentative_arrival_date'])} to {format_date(group['tentative_departure_date'])}
-
-Current response due date: {format_date(tentative_response_due_date)}
-
-Please use your link below to confirm whether these dates work, cannot work, or need discussion:
-
-{update_link}
-
-Need to make a change?
-
-Change / Review Dates:
-{update_link}
-
-Cancel / Cannot Make These Dates:
-{update_link}
-
-Start a New Request:
-{BASE_URL}
-
-Nothing is fully booked yet. This just helps us coordinate the group before final approvals.
-
-John & Mark
-302-521-5401
-"""
+        body = render_email_template(
+            "tentative_confirmation.txt",
+            guest_name=safe_text(member["primary_name"]),
+            group_title=safe_text(group["title"]),
+            tentative_dates=f"{format_date(group['tentative_arrival_date'])} to {format_date(group['tentative_departure_date'])}",
+            due_date=format_date(tentative_response_due_date),
+            request_link=update_link,
+            new_request_link=standard_new_request_url(),
+            base_url=BASE_URL.rstrip("/")
+        )
 
         try:
             send_email(
@@ -23434,7 +28724,7 @@ John & Mark
     return f"""
     {nav_links()}
 
-    <h1>Tentative Date Confirmation Emails Sent</h1>
+    <h1>Tentative Dates That May Work for Everyone Emails Sent</h1>
 
     {email_template_metadata_html("tentative_confirmation")}
 
@@ -23997,42 +29287,21 @@ def coordination_group_close(group_id):
         if not room_list:
             room_list = "Assigned room details will be confirmed separately."
 
-        email_body = f"""
-Hi {safe_text(final_request['name'])},
-
-Your Strathmere visit is confirmed.
-
-VISIT DETAILS:
-- Arrival: {format_date(final_request['arrival_date'])}
-- Departure: {format_date(final_request['departure_date'])}
-- Nights: {nights}
-- Room(s): {room_list}
-- Rooms Requested: {safe_text(final_request['rooms_requested'])}
-
-Confirmed Group Members:
-{group_member_list_text}
-
-Additional Guests for Your Room(s):
-{safe_text(final_request['additional_names']) or 'None listed'}
-
-Food Preferences / Restrictions:
-{safe_text(final_request['food_restrictions']) or 'None listed'}
-
-Pets:
-{safe_text(final_request['pets']) or 'None listed'}
-
-Need to change or cancel this visit?
-Change request: {BASE_URL}/request/{final_request['id']}/change
-Cancel request: {BASE_URL}/request/{final_request['id']}/cancel
-New request: {BASE_URL}
-
-If anything does not look right, just reply to this email.
-
-Looking forward to seeing everyone at the shore!
-
-John & Mark
-302-521-5401
-"""
+        email_body = render_email_template(
+            "final_visit_confirmation.txt",
+            guest_name=safe_text(final_request["name"]),
+            arrival_date=format_date(final_request["arrival_date"]),
+            departure_date=format_date(final_request["departure_date"]),
+            nights=safe_text(nights),
+            room_list=room_list,
+            rooms_requested=safe_text(final_request["rooms_requested"]),
+            confirmed_group_members=group_member_list_text,
+            food_restrictions=safe_text(final_request["food_restrictions"]) or "None listed",
+            pets=safe_text(final_request["pets"]) or "None listed",
+            change_link=f"{BASE_URL}/request/{final_request['id']}/change",
+            cancel_link=f"{BASE_URL}/request/{final_request['id']}/cancel",
+            new_request_link=standard_new_request_url()
+        )
 
         try:
             send_email(
@@ -24116,8 +29385,11 @@ def coordination_group_add_member(group_id):
         request.form.get("role")
     )
 
-    if role not in ["guest", "organizer"]:
-        role = "guest"
+    if role not in ["participant", "guest", "organizer"]:
+        role = "participant"
+
+    if role == "guest":
+        role = "participant"
 
     try:
         guest_profile_id = int(guest_profile_id)
@@ -24242,7 +29514,7 @@ def coordination_group_add_member(group_id):
             f"/coordination-group/{group_id}"
         )
 
-    conn.execute("""
+    cursor = conn.execute("""
         INSERT INTO coordination_group_members
         (
             coordination_group_id,
@@ -24258,12 +29530,403 @@ def coordination_group_add_member(group_id):
         "draft"
     ))
 
+    new_member_id = cursor.lastrowid
+
     conn.commit()
+
+    # Send the coordination request email immediately when a new guest is added.
+    # This keeps the planning workflow moving without requiring a separate manual send step.
+    email_send_error = ""
+
+    try:
+
+        members_for_email = conn.execute("""
+            SELECT
+                coordination_group_members.id AS member_id,
+                coordination_group_members.role,
+                guest_profiles.primary_name,
+                guest_profiles.primary_email
+            FROM coordination_group_members
+            JOIN guest_profiles
+                ON coordination_group_members.guest_profile_id = guest_profiles.id
+            WHERE coordination_group_members.coordination_group_id = ?
+            ORDER BY guest_profiles.primary_name
+        """, (
+            group_id,
+        )).fetchall()
+
+        group_member_text = "\n".join(
+            [
+                f"- {safe_text(member['primary_name'])} ({coordination_role_display(row_value(member, 'role') or 'participant')})"
+                for member in members_for_email
+            ]
+        )
+
+        if not group_member_text:
+            group_member_text = "No group members listed."
+
+        new_member = conn.execute("""
+            SELECT
+                coordination_group_members.id AS member_id,
+                coordination_group_members.role,
+                guest_profiles.primary_name,
+                guest_profiles.primary_email
+            FROM coordination_group_members
+            JOIN guest_profiles
+                ON coordination_group_members.guest_profile_id = guest_profiles.id
+            WHERE coordination_group_members.id = ?
+        """, (
+            new_member_id,
+        )).fetchone()
+
+        if new_member and is_valid_email_address(new_member["primary_email"]):
+
+            organizer_info = get_coordination_organizer_info(conn, group_id)
+            organizer_email_display = ""
+            if organizer_info["email"]:
+                organizer_email_display = "<" + organizer_info["email"] + ">"
+
+            request_link = f"{BASE_URL}/coordination-group-member/{new_member_id}/request"
+
+            body = render_email_template(
+                "coordination_invitation.txt",
+                guest_name=safe_text(new_member["primary_name"]),
+                group_title=safe_text(group["title"]),
+                guest_role=coordination_role_display(row_value(new_member, "role") or "participant"),
+                organizer_name=organizer_info["name"],
+                organizer_email=organizer_info["email"],
+                organizer_email_display=organizer_email_display,
+                group_member_text=group_member_text,
+                suggestion_text="No group overlap suggestion is available yet. Please submit or update your date options.",
+                request_link=request_link
+            )
+
+            send_email(
+                safe_text(new_member["primary_email"]).strip(),
+                f"Strathmere group date coordination - {safe_text(group['title'])}",
+                body
+            )
+
+            conn.execute("""
+                UPDATE coordination_group_members
+                SET invitation_status = 'sent'
+                WHERE id = ?
+            """, (
+                new_member_id,
+            ))
+
+            conn.commit()
+
+    except Exception as error:
+        email_send_error = safe_text(error)
+
     conn.close()
+
+    if email_send_error:
+        return transaction_error_page(
+            "Guest was added, but the coordination request email could not be sent: " + email_send_error,
+            f"/coordination-group/{group_id}"
+        )
 
     return redirect(
         f"/coordination-group/{group_id}"
     )
+
+
+
+
+@app.route("/coordination-group/<int:group_id>/organizer-kickoff-preview", methods=["GET", "POST"])
+def coordination_group_organizer_kickoff_preview(group_id):
+
+    conn = get_db_connection()
+    ensure_coordination_tables(conn)
+
+    group = conn.execute("""
+        SELECT *
+        FROM coordination_groups
+        WHERE id = ?
+    """, (group_id,)).fetchone()
+
+    organizer = conn.execute("""
+        SELECT
+            coordination_group_members.*,
+            guest_profiles.primary_name,
+            guest_profiles.primary_email
+        FROM coordination_group_members
+        JOIN guest_profiles
+            ON coordination_group_members.guest_profile_id = guest_profiles.id
+        WHERE coordination_group_members.coordination_group_id = ?
+          AND coordination_group_members.role = 'organizer'
+        ORDER BY coordination_group_members.id
+        LIMIT 1
+    """, (group_id,)).fetchone()
+
+    if not group or not organizer:
+        conn.close()
+        return f"""
+        {nav_links()}
+        <h1>Organizer Kickoff Not Available</h1>
+        <p>This group needs an Organizer before the kickoff email can be sent.</p>
+        <p><a href="/coordination-group/{group_id}">Back to Coordination Group</a></p>
+        """
+
+    planning_link = organizer_planning_url(coordination_member_row_id(organizer))
+
+    body = render_email_template(
+        "organizer_kickoff.txt",
+        guest_name=safe_text(organizer["primary_name"]),
+        group_title=safe_text(group["title"]),
+        planning_link=planning_link
+    )
+
+    subject = f"Strathmere group visit planning - {safe_text(group['title'])}"
+
+    if request.method == "POST":
+
+        try:
+            send_email(
+                safe_text(organizer["primary_email"]),
+                subject,
+                body
+            )
+
+            conn.execute("""
+                UPDATE coordination_group_members
+                SET organizer_kickoff_sent_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (
+                coordination_member_row_id(organizer),
+            ))
+
+            conn.commit()
+            conn.close()
+
+            return redirect(f"/coordination-group/{group_id}")
+
+        except Exception as error:
+            conn.close()
+            return f"""
+            {nav_links()}
+            <h1>Organizer Setup Email Failed</h1>
+            <p style="color:red; font-weight:bold;">{safe_text(error)}</p>
+            <p><a href="/coordination-group/{group_id}">Back to Coordination Group</a></p>
+            """
+
+    conn.close()
+
+    template_metadata = email_template_metadata_html("organizer_kickoff")
+
+    return f"""
+    {nav_links()}
+    <h1>Preview Organizer Setup Email</h1>
+    {template_metadata}
+    <p><strong>To:</strong> {safe_text(organizer['primary_name'])} &lt;{safe_text(organizer['primary_email'])}&gt;</p>
+    <p><strong>Subject:</strong> {safe_text(subject)}</p>
+    <pre style="white-space:pre-wrap; background:#f8f9fa; border:1px solid #dee2e6; padding:12px; max-width:900px;">{safe_text(body)}</pre>
+    <form method="POST" onsubmit="return confirm('Send organizer kickoff email?');">
+        <button type="submit" style="font-weight:bold; padding:8px 12px;">Send Organizer Setup Email</button>
+        &nbsp;
+        <a href="/coordination-group/{group_id}">Cancel / Back</a>
+    </form>
+    """
+
+
+def send_admin_organizer_suggestions_email(group_id, member, suggested_guests, preferred_arrival="", preferred_departure="", rooms_requested="", date_notes=""):
+
+    if not ADMIN_NOTIFICATIONS_ENABLED:
+        return
+
+    admin_email = safe_text(ADMIN_NOTIFICATION_EMAIL).strip()
+
+    if not is_valid_email_address(admin_email):
+        return
+
+    group_title = safe_text(row_value(member, "title"))
+    organizer_request_link = BASE_URL.rstrip() + f"/coordination-group-member/{row_value(member, 'id')}/request"
+
+    body = render_email_template(
+        "organizer_suggestions_admin.txt",
+        group_title=group_title,
+        organizer_name=safe_text(row_value(member, "primary_name")),
+        organizer_email=safe_text(row_value(member, "primary_email")),
+        suggested_guests=safe_text(suggested_guests) or "No suggested guests provided.",
+        preferred_dates="Organizer will submit dates on their Request Visit page.",
+        rooms_requested="Not collected on organizer setup.",
+        date_notes=safe_text(date_notes) or "No notes provided.",
+        group_link=BASE_URL.rstrip("/") + f"/coordination-group/{group_id}",
+        guest_profiles_link=BASE_URL.rstrip("/") + "/profiles",
+        organizer_request_link=organizer_request_link
+    )
+
+    send_email(
+        admin_email,
+        f"Organizer setup returned - {group_title}",
+        body
+    )
+
+
+@app.route("/coordination-group-member/<int:member_id>/organizer-planning", methods=["GET", "POST"])
+def coordination_group_member_organizer_planning(member_id):
+
+    conn = get_db_connection()
+    ensure_coordination_tables(conn)
+
+    member = conn.execute("""
+        SELECT
+            coordination_group_members.*,
+            coordination_groups.title,
+            guest_profiles.primary_name,
+            guest_profiles.primary_email
+        FROM coordination_group_members
+        JOIN coordination_groups
+            ON coordination_group_members.coordination_group_id = coordination_groups.id
+        JOIN guest_profiles
+            ON coordination_group_members.guest_profile_id = guest_profiles.id
+        WHERE coordination_group_members.id = ?
+    """, (
+        member_id,
+    )).fetchone()
+
+    if not member or safe_text(row_value(member, "role")).strip() != "organizer":
+        conn.close()
+        return f"""
+        <h1> Not Available</h1>
+        <p>This link is only available for the Organizer assigned to this coordination group.</p>
+        """
+
+    request_visit_link = f"/coordination-group-member/{member_id}/request"
+
+    if request.method == "POST":
+
+        suggested_guests = clean_text(request.form.get("suggested_guests"))
+        date_notes = clean_text(request.form.get("date_notes"))
+
+        conn.execute("""
+            UPDATE coordination_group_members
+            SET organizer_suggested_guests = ?,
+                organizer_suggested_dates_notes = ?,
+                organizer_suggestions_at = CURRENT_TIMESTAMP,
+                invitation_status = CASE
+                    WHEN invitation_status = 'draft' THEN 'viewed'
+                    ELSE invitation_status
+                END
+            WHERE id = ?
+        """, (
+            suggested_guests,
+            date_notes,
+            member_id
+        ))
+
+        conn.commit()
+
+        admin_email_error = ""
+
+        try:
+            send_admin_organizer_suggestions_email(
+                row_value(member, "coordination_group_id"),
+                member,
+                suggested_guests,
+                "",
+                "",
+                "",
+                date_notes
+            )
+        except Exception as error:
+            admin_email_error = safe_text(error)
+
+        conn.close()
+
+        admin_note = ""
+
+        if admin_email_error:
+            admin_note = "<p style='color:#856404;'>Your setup was saved, but the admin alert email could not be sent automatically. John and Mark can still see it in the app.</p>"
+
+        return f"""
+        <div style="max-width:760px; margin:0 auto; font-family:Arial, sans-serif; line-height:1.35;">
+            <h1>Group Setup Saved</h1>
+
+            <p>
+                Thanks. Your suggested group members and notes have been saved for John and Mark to review.
+            </p>
+
+            <div style="border:2px solid #0f4c81; background:#eef5ff; border-radius:10px; padding:14px; margin:12px 0;">
+                <h2 style="margin-top:0;">Next Step — Request Visit</h2>
+                <p>
+                    Please click below to set up the initial dates for this group — yes, organizers get first choice to start the planning process.
+                </p>
+                <p>
+                    <a href="{request_visit_link}"
+                       style="display:inline-block; background:#0f4c81; color:white; padding:10px 14px; border-radius:7px; text-decoration:none; font-weight:bold;">
+                        Request Visit
+                    </a>
+                </p>
+            </div>
+
+            <p>
+                After John and Mark review this information, everyone in the group, including you, will receive individual requests and future rounds to submit or confirm date options.
+            </p>
+
+            {admin_note}
+        </div>
+        """
+
+    current_suggested_guests = safe_text(row_value(member, "organizer_suggested_guests"))
+    current_date_notes = safe_text(row_value(member, "organizer_suggested_dates_notes"))
+
+    conn.close()
+
+    return f"""
+    <div style="max-width: 860px; margin: 0 auto; font-family: Arial, sans-serif; line-height: 1.35;">
+        <h1 style="margin-bottom:6px;">Set Up Your Group Visit</h1>
+
+        <div style="background:#eef5ff; border:1px solid #bfd7f1; border-radius:10px; padding:12px 14px; margin-bottom:12px;">
+            <p style="margin:0 0 6px 0;"><strong>Group:</strong> {safe_text(member['title'])}</p>
+            <p style="margin:0;"><strong>Your role:</strong> Organizer</p>
+        </div>
+
+        <div style="background:#fff3cd; border:1px solid #fd7e14; border-radius:10px; padding:12px; margin-bottom:12px;">
+            <strong>Step 1 — Setup Group</strong><br>
+            The data on this page will help initially set up the group.
+            Please suggest who should be included and then click <strong>Request Visit</strong> after saving to set up the initial dates —
+            yes, organizers get first choice to start the planning process.
+            <br><br>
+            After John and Mark review this information, everyone in the group, including you, will receive individual requests and future rounds to submit or confirm date options.
+        </div>
+
+        <div style="display:flex; gap:8px; flex-wrap:wrap; font-size:13px; margin-bottom:12px;">
+            <span style="background:#0f4c81; color:white; padding:5px 8px; border-radius:999px;">Step 1 — Setup Group</span>
+            <span style="background:#e9ecef; padding:5px 8px; border-radius:999px;">Step 2 — Request Visit</span>
+            <span style="background:#e9ecef; padding:5px 8px; border-radius:999px;">Step 3 — Invite Group</span>
+            <span style="background:#e9ecef; padding:5px 8px; border-radius:999px;">Step 4 — Review Rounds</span>
+            <span style="background:#e9ecef; padding:5px 8px; border-radius:999px;">Step 5 — Confirm Dates</span>
+        </div>
+
+        <form method="POST">
+            <div style="border:1px solid #ddd; border-radius:10px; padding:12px; margin-bottom:12px; background:#fff;">
+                <label><strong>Who should be included?</strong></label>
+                <p style="font-size:13px; color:#555; margin:4px 0 8px 0;">
+                    Add names and emails if you have them. One person per line works best.
+                </p>
+                <textarea name="suggested_guests" rows="6" style="width:100%; box-sizing:border-box; font-size:14px;" placeholder="Example:
+Kevin Smith - kevin@example.com
+Eric Jones - eric@example.com
+Judy - email unknown">{safe_text(current_suggested_guests)}</textarea>
+            </div>
+
+            <div style="border:1px solid #ddd; border-radius:10px; padding:12px; margin-bottom:12px; background:#fff;">
+                <label><strong>Notes for John and Mark</strong></label>
+                <p style="font-size:13px; color:#555; margin:4px 0 8px 0;">
+                    Include anything helpful, like who may need rooms together, flexible dates, children, or travel constraints.
+                </p>
+                <textarea name="date_notes" rows="4" style="width:100%; box-sizing:border-box; font-size:14px;">{safe_text(current_date_notes)}</textarea>
+            </div>
+
+            <button type="submit" style="font-weight:bold; padding:9px 14px; background:#0f4c81; color:white; border:0; border-radius:7px;">
+                Save Group Setup
+            </button>
+        </form>
+    </div>
+    """
 
 
 @app.errorhandler(Exception)
@@ -24414,6 +30077,14 @@ def system_health():
             if not duplicate_endpoint_names
             else f"Conflicting endpoint names: {', '.join(duplicate_endpoint_names)}"
         )
+    )
+
+    route_safety_ok, route_safety_detail = route_safety_diagnostics_summary()
+
+    rows += hardening_status_row(
+        "Route Safety",
+        "OK" if route_safety_ok else "Error",
+        route_safety_detail
     )
 
     rows += hardening_status_row(
@@ -24585,3 +30256,118 @@ def email_audit():
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, use_reloader=False, debug=False)
+
+# V28_15_GUEST_UX_MENU_FONT_WORDING_ONLY
+
+# V28_15C_EXACT_GUEST_FIELD_FONT_PATCH
+
+# 
+
+# V28_15I_INVITE_PAGE_CONFIRMED_TYPOGRAPHY
+
+# V28_15J_INVITE_PAGE_SIZE_TUNING_ONLY
+
+# V28_15K_PRODUCTION_CHECK_CALENDAR_DIAGNOSTICS_ONLY
+
+# ============================================================
+# V29A
+# Real email template file foundation.
+# Email text can now be edited in:
+#   templates/emails/*.txt
+# The app keeps DEFAULT_EMAIL_TEMPLATES as fallback only.
+# ============================================================
+
+# ============================================================
+# V29B
+# Invitation email template controls the message body.
+# Saved invitations.message is no longer injected into invitation.txt.
+# This prevents duplicate old custom message/footer text.
+# ============================================================
+
+# ============================================================
+# V29C
+# Invitation send now regenerates body from templates/emails/invitation.txt.
+# The preview textarea is display-only and is never trusted as send source.
+# ============================================================
+
+
+# ============================================================
+# V29D
+# Invitation template fallback and stale runtime invitation.txt guard.
+# If Render has an old invitation.txt containing {{ message }}, the app ignores
+# that stale file and uses the current app default invitation template instead.
+# ============================================================
+
+
+# ============================================================
+# V29E
+# Invitation email never falls back to hardcoded app.py wording.
+# If templates/emails/invitation.txt is missing, preview/send stops
+# instead of showing or sending text John did not create.
+# ============================================================
+
+
+# ============================================================
+# V29F
+# Adds a proof/edit page for the actual Render invitation.txt.
+# Invitation preview shows the exact template path and first lines.
+# This exposes stale Render template files instead of guessing.
+# ============================================================
+
+
+# ============================================================
+# V30.0
+# Hardened invitation email/template behavior.
+# - Email wording lives in templates/emails/*.txt.
+# - invitation.txt is never auto-created or overwritten by rebuild.
+# - Preview is display-only; send rebuilds from the template at send time.
+# - Optional invitations.message is restored, but only appears if
+#   invitation.txt explicitly includes {{ message }}.
+# ============================================================
+
+
+# ============================================================
+# V30.2
+# Production Check template protection relaxed to essential placeholders only.
+# Read-only diagnostics; no email preview/send behavior changes.
+# ============================================================
+
+
+# ============================================================
+# V30.4
+# Email visual header URL is always included; no local file gate.
+# above the compact blue banner for all HTML emails.
+# Plain-text email body and TXT template rendering are unchanged.
+# ============================================================
+
+# ============================================================
+# V30.7
+# Email header image URL hardening. Uses a public absolute URL
+# for shore_home_header.jpeg at repo root and keeps sizing
+# from V30.5. No template text, send, preview, or database changes.
+# ============================================================
+
+
+# ============================================================
+# V31.6
+# Admin Reset Test Data tool.
+# Preserves guest_profiles, rooms, blocked_dates.
+# Clears operational invitation/request/booking/coordination/log data after automatic backup.
+# ============================================================
+
+
+# V35.2 BUILD TARGETS
+# - Calendar availability badge: X ROOMS OPEN
+# - Tentative coordination dates consume availability
+# - Merge Next Recommended Action into Workflow
+# - Capacity action wording: Review Date / Capacity Overlap
+# - Group Previous Approved Stays by date
+# - Confirmation banner includes request additional names
+# - Organizer email cleanup
+
+# V35.2.5b capacity_review email body moved to capacity_review.txt
+
+# ACTION BANNER TEXT
+DATE_STATUS_TENTATIVE="Tentative Dates Posted for Review"
+CAPACITY_OK="✓ Capacity OK"
+CAPACITY_REVIEW="⚠ Capacity Needs Your Review"
