@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V35_2_4"
+    "app_V35_2_5"
 )
 
 BASE_URL = os.environ.get(
@@ -182,7 +182,7 @@ Looking forward to seeing everyone at the shore!
 
 Need to make a change?
 
-Change Request:
+Change Visit:
 {{ change_link }}
 
 Cancel Visit:
@@ -449,7 +449,7 @@ Your role: Organizer
 
 Please use the link below to help set up the group. You can suggest who should be included and one preferred date range to start the planning process.
 
-Organizer Planning Link:
+
 {{ planning_link }}
 
 After you submit this first setup information, John and Mark will review it. Then everyone in the group, including you, will receive individual requests to submit or confirm dates.
@@ -544,7 +544,7 @@ Please use this link to let us know if these dates work for you:
 
 Need to make a change?
 
-Change / Review Dates:
+Change Visit:
 {{ request_link }}
 
 Cancel / Cannot Make These Dates:
@@ -1168,14 +1168,14 @@ def plain_text_to_html_email(subject, body):
     ]
 
     link_label_lines = [
-        "Change Request:",
+        "Change Visit:",
         "Cancel Visit:",
         "Cancel Request:",
         "All Reservations:",
         "Request Another Visit:",
         "Request Another Visit:",
         "Request Another Visit:",
-        "Change / Review Dates:",
+        "Change Visit:",
         "Cancel / Cannot Make These Dates:",
         "Open Group:",
         "Your link:",
@@ -3923,7 +3923,7 @@ Cancel Visit:
 
 Need to make a change?
 
-Change Request:
+Change Visit:
 {change_url}
 {cancel_block}
 Request Another Visit:
@@ -21503,7 +21503,7 @@ def coordination_group_detail(group_id):
 
             member_invitation_status = safe_text(member["invitation_status"]).strip()
 
-            if member_invitation_status in ["sent", "viewed", "responded"]:
+            if member_invitation_status in ["sent", "viewed", "responded", "capacity_review"]:
 
                 invitation_sent_count += 1
                 invitation_sent_names.append(safe_text(member["primary_name"]))
@@ -21598,6 +21598,13 @@ def coordination_group_detail(group_id):
                 Go to Booking Handoff Page
             </a>
             """
+
+        if safe_text(group["status"]) == "capacity_review":
+            overlap_state = "Review Date / Capacity Overlap"
+            overlap_icon = "⚠️"
+            overlap_background = "#fff3cd"
+            step4_detail = "Capacity or date overlap needs review before booking handoff. Use the Capacity Status section below to email guests if they need to change dates or bedrooms."
+            step4_action = '<a href="#capacity-status">Review Capacity / Email Guests</a>'
 
         if planning_ready_for_booking:
             overlap_state = "Done"
@@ -22660,7 +22667,7 @@ def coordination_group_detail(group_id):
             {next_action_html}
 
             <div class="coord-card" style="background:#fff8e1; border:2px solid #fd7e14;">
-                <h2>Capacity Status</h2>
+                <h2 id="capacity-status">Capacity Status</h2>
 
                 <p style="margin-top:0;">
                     <strong>Rooms Requested:</strong> {requested_rooms}<br>
@@ -22668,7 +22675,7 @@ def coordination_group_detail(group_id):
                     <strong>Difference:</strong> {room_delta:+}
                 </p>
 
-                <h3>Your Current Preferred Dates</h3>
+                <h3>Your Current Your Current Preferred Dates</h3>
                 <table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:13px;">
                     <tr style="background:#f5f5f5;">
                         <th align="left">Guest</th>
@@ -22693,6 +22700,16 @@ def coordination_group_detail(group_id):
                 <p style="margin-bottom:0;">
                     If Difference is positive, reduce bedrooms, split the group, choose different dates, or start another round.
                 </p>
+
+                <form method="POST"
+                      action="/coordination-group/{group_id}/capacity-email"
+                      onsubmit="return confirm('Send capacity review email to all group members?');"
+                      style="margin-top:10px;">
+                    <button type="submit"
+                            style="background:#fd7e14; color:white; border:0; padding:7px 10px; border-radius:5px; font-weight:bold;">
+                        Email Guests to Change Dates / Bedrooms
+                    </button>
+                </form>
 
                 <p style="margin-top:8px;">
                     <a href="/coordination-group/{group_id}/handoff" style="font-weight:bold;">Booking Handoff</a>
@@ -24747,6 +24764,158 @@ def coordination_group_send_follow_up_unmatched(group_id):
     """
 
 
+
+@app.route("/coordination-group/<int:group_id>/capacity-email", methods=["POST"])
+def coordination_group_capacity_email(group_id):
+
+    conn = get_db_connection()
+    ensure_coordination_tables(conn)
+
+    group = conn.execute("""
+        SELECT *
+        FROM coordination_groups
+        WHERE id = ?
+    """, (group_id,)).fetchone()
+
+    if not group:
+        conn.close()
+        return f"""
+        {nav_links()}
+        <h1>Coordination Group Not Found</h1>
+        <p><a href="/coordination-groups">Back to Coordination Groups</a></p>
+        """
+
+    members = conn.execute("""
+        SELECT
+            coordination_group_members.id AS member_id,
+            coordination_group_members.role,
+            guest_profiles.primary_name,
+            guest_profiles.primary_email
+        FROM coordination_group_members
+        JOIN guest_profiles
+            ON coordination_group_members.guest_profile_id = guest_profiles.id
+        WHERE coordination_group_members.coordination_group_id = ?
+        ORDER BY guest_profiles.primary_name
+    """, (group_id,)).fetchall()
+
+    date_options = conn.execute("""
+        SELECT
+            coordination_group_members.id AS member_id,
+            guest_profiles.primary_name,
+            coordination_date_options.priority,
+            coordination_date_options.arrival_date,
+            coordination_date_options.departure_date,
+            coordination_date_options.rooms_requested
+        FROM coordination_date_options
+        JOIN coordination_group_members
+            ON coordination_date_options.coordination_group_member_id = coordination_group_members.id
+        JOIN guest_profiles
+            ON coordination_group_members.guest_profile_id = guest_profiles.id
+        WHERE coordination_group_members.coordination_group_id = ?
+        ORDER BY guest_profiles.primary_name,
+            CASE coordination_date_options.priority
+                WHEN 'preferred' THEN 1
+                WHEN 'alternate' THEN 2
+                ELSE 3
+            END
+    """, (group_id,)).fetchall()
+
+    summary_lines = []
+
+    for option in date_options:
+        summary_lines.append(
+            safe_text(option["primary_name"]) + " - " +
+            safe_text(option["priority"]).title() + ": " +
+            format_date(option["arrival_date"]) + " to " +
+            format_date(option["departure_date"]) + " / " +
+            safe_text(option["rooms_requested"] or 1) + " bedroom(s)"
+        )
+
+    if not summary_lines:
+        summary_lines.append("No date options have been submitted yet.")
+
+    summary_text = "\n".join(summary_lines)
+
+    sent_count = 0
+    skipped = []
+
+    for member in members:
+        recipient = safe_text(member["primary_email"]).strip()
+
+        if not is_valid_email_address(recipient):
+            skipped.append(safe_text(member["primary_name"]))
+            continue
+
+        request_link = BASE_URL.rstrip("/") + f"/coordination-group-member/{member['member_id']}/request"
+
+        body = f"""Hi {safe_text(member['primary_name'])},
+
+We are reviewing the group visit request for:
+
+{safe_text(group['title'])}
+
+Right now, the group may be requesting more bedrooms than are available for the dates being discussed.
+
+Current group date / bedroom information:
+
+{summary_text}
+
+What we need from you:
+- If you do not need all of the bedrooms you requested, please use the Change Visit button below and lower the number of bedrooms.
+- If you do need all of the bedrooms requested, please use the Change Visit button below and request different dates.
+- If the dates or room count cannot be adjusted, John and Mark may need to start another coordination round.
+
+Change Visit:
+{request_link}
+
+Nothing is confirmed or declined yet. We are just trying to make the dates and rooms work for everyone.
+
+Thanks!
+
+John & Mark
+302-521-5401
+"""
+
+        try:
+            send_email(
+                recipient,
+                "Strathmere group visit - room capacity review",
+                body
+            )
+            sent_count += 1
+        except Exception as error:
+            skipped.append(safe_text(member["primary_name"]) + " (" + safe_text(error) + ")")
+
+    try:
+        conn.execute("""
+            UPDATE coordination_groups
+            SET status = 'capacity_review',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (group_id,))
+        conn.commit()
+    except Exception:
+        pass
+
+    conn.close()
+
+    skipped_html = ""
+
+    if skipped:
+        skipped_html = f"""
+        <p><strong>Skipped / failed:</strong> {safe_text(", ".join(skipped))}</p>
+        """
+
+    return f"""
+    {nav_links()}
+    <h1>Capacity Review Email Sent</h1>
+    <p style="color:green; font-weight:bold;">Sent {sent_count} capacity review email(s).</p>
+    {skipped_html}
+    <p><a href="/coordination-group/{group_id}">Back to Planning Page</a></p>
+    """
+
+
+
 @app.route("/coordination-group/<int:group_id>/send-update-email", methods=["POST"])
 def coordination_group_send_update_email(group_id):
 
@@ -26100,7 +26269,7 @@ def coordination_group_member_request(member_id):
                                         border-radius: 8px;
                                     ">
                                         <h3 style="margin: 0 0 4px 0;">
-                                            Your Current Preferred Dates
+                                            Your Current Your Current Preferred Dates
                                         </h3>
             
                                         <label><strong>Preferred Arrival</strong></label><br>
@@ -26975,7 +27144,7 @@ def coordination_group_member_date_options_thanks(member_id):
         capacity_review_html = """
         <div style="max-width:760px; border:2px solid #fd7e14; background:#fff3cd; padding:14px; border-radius:10px; margin-bottom:12px;">
             <strong>Availability changed while you were completing your request.</strong><br>
-            We saved your request and John and Mark will review options and follow up with next steps.
+            We saved your request. The group may be requesting more bedrooms than are available, so John and Mark will review options and follow up with next steps. If you need all of the bedrooms requested, you may need to choose different dates and another round may be needed.
         </div>
         """
 
