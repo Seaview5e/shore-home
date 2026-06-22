@@ -10,6 +10,7 @@ import logging
 import traceback
 import re
 import hmac
+import secrets
 from werkzeug.exceptions import HTTPException
 
 
@@ -36,7 +37,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V36_0"
+    "app_V36_1"
 )
 
 BASE_URL = os.environ.get(
@@ -118,6 +119,34 @@ ADMIN_PASSWORD = os.environ.get(
 )
 
 ADMIN_AUTH_ENABLED = bool(ADMIN_PASSWORD)
+
+PRODUCTION_MODE = (
+    os.environ.get("RENDER", "").strip().lower() == "true"
+    or os.environ.get("FLASK_ENV", "").strip().lower() == "production"
+    or os.environ.get("APP_ENV", "").strip().lower() == "production"
+)
+
+if PRODUCTION_MODE:
+    missing_required_env = []
+
+    if not os.environ.get("SECRET_KEY"):
+        missing_required_env.append("SECRET_KEY")
+
+    if not ADMIN_PASSWORD:
+        missing_required_env.append("ADMIN_PASSWORD")
+
+    if not EMAIL_APP_PASSWORD:
+        missing_required_env.append("EMAIL_APP_PASSWORD")
+
+    if not BASE_URL or BASE_URL.startswith("http://127.0.0.1") or BASE_URL.startswith("http://localhost"):
+        missing_required_env.append("BASE_URL")
+
+    if missing_required_env:
+        raise RuntimeError(
+            "Production startup blocked. Missing or unsafe required environment variable(s): "
+            + ", ".join(missing_required_env)
+        )
+
 
 print("APP VERSION:", APP_VERSION)
 print("DATABASE FILE:", DATABASE_FILE)
@@ -1770,6 +1799,89 @@ def shore_home_header_image():
     )
 
 
+
+def csrf_token():
+
+    token = session.get("csrf_token")
+
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+
+    return token
+
+
+def csrf_input():
+
+    return f'<input type="hidden" name="csrf_token" value="{csrf_token()}">'
+
+
+def is_public_guest_endpoint(endpoint):
+
+    return endpoint in PUBLIC_ENDPOINTS or endpoint.startswith("static")
+
+
+def csrf_exempt_endpoint(endpoint):
+
+    return endpoint in {
+        "admin_login",
+        "shore_home_header_image",
+        "static"
+    } or endpoint in PUBLIC_ENDPOINTS
+
+
+def inject_csrf_tokens(html_text):
+
+    if not html_text or "<form" not in html_text:
+        return html_text
+
+    token_html = csrf_input()
+
+    def add_token(match):
+        form_tag = match.group(0)
+        lower_tag = form_tag.lower()
+
+        if 'method="post"' not in lower_tag and "method='post'" not in lower_tag:
+            return form_tag
+
+        return form_tag + "\n        " + token_html
+
+    return re.sub(
+        r'<form\b[^>]*>',
+        add_token,
+        html_text,
+        flags=re.IGNORECASE
+    )
+
+
+@app.after_request
+def add_csrf_to_admin_forms(response):
+
+    try:
+        endpoint = request.endpoint or ""
+
+        if (
+            admin_is_logged_in()
+            and not is_public_guest_endpoint(endpoint)
+            and response.content_type
+            and response.content_type.startswith("text/html")
+        ):
+            body = response.get_data(as_text=True)
+            new_body = inject_csrf_tokens(body)
+
+            if new_body != body:
+                response.set_data(new_body)
+                response.headers["Content-Length"] = str(len(response.get_data()))
+
+    except Exception as error:
+        try:
+            error_logger.warning("CSRF injection skipped: %s", error)
+        except Exception:
+            pass
+
+    return response
+
+
 @app.after_request
 def add_security_headers(response):
 
@@ -1830,15 +1942,6 @@ def admin_is_logged_in():
 def require_admin_login():
 
     endpoint = request.endpoint or ""
-    path = safe_text(request.path)
-
-    guest_public_prefixes = (
-        "/invite/",
-        "/new-request",
-        "/request/",
-        "/coordination-member/",
-        "/coordination-group-member/"
-    )
 
     if endpoint in PUBLIC_ENDPOINTS:
         return None
@@ -1846,16 +1949,28 @@ def require_admin_login():
     if endpoint.startswith("static"):
         return None
 
-    if any(path.startswith(prefix) for prefix in guest_public_prefixes):
-        # Guest-facing email links must stay public. Admin-only request review pages
-        # are still protected by their own non-guest routes and dashboard links.
-        if "/email-preview" not in path and "/approve" not in path and "/decline" not in path:
-            return None
-
     if not ADMIN_AUTH_ENABLED:
+        if PRODUCTION_MODE:
+            return "Admin authentication is not configured.", 503
         return None
 
     if admin_is_logged_in():
+
+        if request.method == "POST" and not csrf_exempt_endpoint(endpoint):
+            submitted_token = safe_text(request.form.get("csrf_token")).strip()
+            header_token = safe_text(request.headers.get("X-CSRF-Token")).strip()
+            session_token = safe_text(session.get("csrf_token")).strip()
+
+            if not session_token or not (
+                hmac.compare_digest(submitted_token, session_token)
+                or hmac.compare_digest(header_token, session_token)
+            ):
+                return """
+                <h1>Security Check Failed</h1>
+                <p>This action was not completed because the page security token was missing or expired.</p>
+                <p>Please go back, refresh the page, and try the action again.</p>
+                """, 400
+
         return None
 
     return redirect(
@@ -1886,6 +2001,7 @@ def admin_login():
         if username_ok and password_ok:
 
             session["admin_logged_in"] = True
+            session["csrf_token"] = secrets.token_urlsafe(32)
 
             next_path = safe_text(request.args.get("next")).strip()
 
@@ -30401,4 +30517,11 @@ CAPACITY_REVIEW_TEXT="⚠ Capacity Needs Your Review"
 # V36.0 HARDENING RELEASE
 # Production candidate based on V35.2.5h after TC1-TC6 passed.
 # No new workflows. Stability, template consistency, and safety checks only.
+# ============================================================
+
+# ============================================================
+# V36.1 SECURITY HARDENING
+# - Fail-closed production env checks
+# - Exact public endpoint allowlist; removed broad /request prefix access
+# - Basic CSRF protection for admin POST routes
 # ============================================================
