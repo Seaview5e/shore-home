@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V35_2_5c"
+    "app_V35_2_5d"
 )
 
 BASE_URL = os.environ.get(
@@ -636,6 +636,28 @@ Thanks!
 
 John & Mark
 Strathmere Visit Request System
+302-521-5401
+""",
+
+        "capacity_review.txt": """Hi {{ guest_name }},
+
+We are reviewing the group visit request for:
+
+{{ group_name }}
+
+{{ capacity_message }}
+
+Current group date / bedroom information:
+
+{{ group_summary }}
+
+Change Visit:
+{{ request_link }}
+
+Nothing is confirmed or declined yet.
+
+Thanks!
+John & Mark
 302-521-5401
 """,
 
@@ -24852,33 +24874,18 @@ def coordination_group_capacity_email(group_id):
 
         request_link = BASE_URL.rstrip("/") + f"/coordination-group-member/{member['member_id']}/request"
 
-        body = f"""Hi {safe_text(member['primary_name'])},
-
-We are reviewing the group visit request for:
-
-{safe_text(group['title'])}
-
-Right now, the group may be requesting more bedrooms than are available for the dates being discussed.
-
-Current group date / bedroom information:
-
-{summary_text}
-
-What we need from you:
-- If you do not need all of the bedrooms you requested, please use the Change Visit button below and lower the number of bedrooms.
-- If you do need all of the bedrooms requested, please use the Change Visit button below and request different dates.
-- If the dates or room count cannot be adjusted, John and Mark may need to start another coordination round.
-
-Change Visit:
-{request_link}
-
-Nothing is confirmed or declined yet. We are just trying to make the dates and rooms work for everyone.
-
-Thanks!
-
-John & Mark
-302-521-5401
-"""
+        body = render_email_template(
+            "capacity_review.txt",
+            guest_name=safe_text(member["primary_name"]),
+            group_name=safe_text(group["title"]),
+            group_summary=summary_text,
+            request_link=request_link,
+            capacity_message=(
+                "The group may currently be requesting more bedrooms than are available for these dates. "
+                "This email was sent to everyone in the group. Someone may have already updated their request, "
+                "so changes may no longer be needed. Click below and check Action Needed to see if updates are still required."
+            )
+        )
 
         try:
             send_email(
