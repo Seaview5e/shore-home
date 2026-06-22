@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V35_2_5d"
+    "app_V35_2_5e"
 )
 
 BASE_URL = os.environ.get(
@@ -28673,13 +28673,14 @@ def coordination_group_send_reminders(group_id):
         update_link = f"{BASE_URL}/coordination-group-member/{coordination_member_row_id(member)}/request"
 
         body = render_email_template(
-            "tentative_group_dates.txt",
+            "tentative_confirmation.txt",
             guest_name=safe_text(member["primary_name"]),
             group_title=safe_text(group["title"]),
             tentative_dates=f"{format_date(group['tentative_arrival_date'])} to {format_date(group['tentative_departure_date'])}",
             due_date=format_date(tentative_response_due_date),
             request_link=update_link,
-            new_request_link=standard_new_request_url()
+            new_request_link=standard_new_request_url(),
+            base_url=BASE_URL.rstrip("/")
         )
 
         try:
