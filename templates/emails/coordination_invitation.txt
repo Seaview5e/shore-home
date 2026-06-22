@@ -20,7 +20,8 @@ That means:
 • overlap is more important than perfection
 • tentative options may change as responses come in
 
-Once we hear back and compare notes, we’ll share dates that look like the best fit for the group.
+Once we hear back and compare notes, we’ll share dates that look like the best fit for the group. Not everyone maybe listed yet as the orgnazier is catching up!
+
 Group members:
 {{ group_member_text }}
 
