@@ -4,7 +4,10 @@ We are reviewing the group visit request for:
 
 {{ group_name }}
 
-Right now, the group may be requesting more bedrooms than are available for the dates being discussed.
+The group may currently be requesting more bedrooms than are available for these dates.
+This email was sent to everyone in the group. Someone may have already updated their request, so changes may no longer be needed.
+
+Click below and check Action Needed to see if updates are still required. 
 
 Current group date / bedroom information:
 
