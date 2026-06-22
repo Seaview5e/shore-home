@@ -19,7 +19,15 @@ After you submit your setup ideas, John and Mark will review everything. Then in
 
 The system will compare responses and try to find overlap before anything becomes a final visit request.
 
+click below to suggest who should be included and then click to start your request and choose the initial dates.
+
+[ Request Visit ]
+{{ organizer_link }}
+
+After John and Mark review this information, everyone in the group, including you, will receive individual requests and future rounds to submit or confirm date options.
+
 Thanks for helping get things moving — and for accepting the honorary title of Calendar Wrangler.
+
 P.S. Email us if you would rather not organize this group and we will send you a Request for Visit for yourself.
 
 John & Mark
