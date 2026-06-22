@@ -21,7 +21,6 @@ The system will compare responses and try to find overlap before anything become
 
 Click below to suggest who should be included and then click to start your request and choose the initial dates.
 
-Request Visit:
 {{ planning_link }}
 
 After John and Mark review this information, everyone in the group, including you, will receive individual requests and future rounds to submit or confirm date options.
