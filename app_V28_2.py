@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V35_2_5f"
+    "app_V35_2_5g"
 )
 
 BASE_URL = os.environ.get(
@@ -25973,7 +25973,11 @@ def coordination_group_member_request(member_id):
             <div style="font-size: 21px; font-weight: bold; color: #856404; margin-bottom: 3px;">
                 ⚠ ACTION NEEDED {safe_text(row_value(member, "current_round")) or "1"}
             </div>
-            <div>{action_instruction_text}</div>
+            <div><strong>Dates:</strong><br>
+Tentative Dates Posted for Review<br><br>
+<strong>Capacity:</strong><br>
+✓ Capacity OK<br><br>
+Please review the dates below and confirm whether they work for you.</div>
         </div>
         """
 
@@ -30367,7 +30371,5 @@ if __name__ == "__main__":
 
 # V35.2.5b capacity_review email body moved to capacity_review.txt
 
-# ACTION BANNER TEXT
-DATE_STATUS_TENTATIVE="Tentative Dates Posted for Review"
-CAPACITY_OK="✓ Capacity OK"
-CAPACITY_REVIEW="⚠ Capacity Needs Your Review"
+# Banner wording
+CAPACITY_REVIEW_TEXT="⚠ Capacity Needs Your Review"
