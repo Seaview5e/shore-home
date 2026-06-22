@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V35_2_5"
+    "app_V35_2_5a"
 )
 
 BASE_URL = os.environ.get(
@@ -255,11 +255,11 @@ EMAIL_TEMPLATE_METADATA = {
         "notes": "Initial guest invitation with request link."
     },
     "organizer_kickoff": {
-        "name": "Organizer Kickoff Email",
+        "name": "Organizer Setup Email",
         "version": "1.0",
         "last_updated": "2026-06-16",
         "updated_by": "John",
-        "notes": "Organizer-led group formation email. Stored in templates/emails/organizer_kickoff.txt."
+        "notes": "Organizer setup email. Stored in templates/emails/organizer_kickoff.txt."
     },
     "organizer_suggestions_admin": {
         "name": "Organizer Email Sent / Returned Suggestions Admin Alert",
@@ -21668,13 +21668,13 @@ def coordination_group_detail(group_id):
                         <th align="left">Initial Date Notes</th>
                     </tr>
                     <tr>
-                        <td><a href="{organizer_link}">Open Organizer Planning Page</a></td>
+                        <td><a href="{organizer_link}">Open Organizer Setup Page</a></td>
                         <td style="white-space:pre-wrap;">{safe_text(organizer_suggested_guests)}</td>
                         <td style="white-space:pre-wrap;">{safe_text(organizer_suggested_dates_notes)}</td>
                     </tr>
                 </table>
                 <p style="margin-bottom:0;">
-                    <a href="/coordination-group/{group_id}/organizer-kickoff-preview" style="font-weight:bold;">Preview / Send Organizer Kickoff Email</a>
+                    <a href="/coordination-group/{group_id}/organizer-kickoff-preview" style="font-weight:bold;">Preview / Send Organizer Setup Email</a>
                 </p>
             </div>
             """
@@ -22675,7 +22675,7 @@ def coordination_group_detail(group_id):
                     <strong>Difference:</strong> {room_delta:+}
                 </p>
 
-                <h3>Your Current Your Current Preferred Dates</h3>
+                <h3>Your Current Preferred Dates</h3>
                 <table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse; width:100%; font-size:13px;">
                     <tr style="background:#f5f5f5;">
                         <th align="left">Guest</th>
@@ -26269,7 +26269,7 @@ def coordination_group_member_request(member_id):
                                         border-radius: 8px;
                                     ">
                                         <h3 style="margin: 0 0 4px 0;">
-                                            Your Current Your Current Preferred Dates
+                                            Your Current Preferred Dates
                                         </h3>
             
                                         <label><strong>Preferred Arrival</strong></label><br>
@@ -29693,7 +29693,7 @@ def coordination_group_organizer_kickoff_preview(group_id):
             conn.close()
             return f"""
             {nav_links()}
-            <h1>Organizer Kickoff Email Failed</h1>
+            <h1>Organizer Setup Email Failed</h1>
             <p style="color:red; font-weight:bold;">{safe_text(error)}</p>
             <p><a href="/coordination-group/{group_id}">Back to Coordination Group</a></p>
             """
@@ -29704,13 +29704,13 @@ def coordination_group_organizer_kickoff_preview(group_id):
 
     return f"""
     {nav_links()}
-    <h1>Preview Organizer Kickoff Email</h1>
+    <h1>Preview Organizer Setup Email</h1>
     {template_metadata}
     <p><strong>To:</strong> {safe_text(organizer['primary_name'])} &lt;{safe_text(organizer['primary_email'])}&gt;</p>
     <p><strong>Subject:</strong> {safe_text(subject)}</p>
     <pre style="white-space:pre-wrap; background:#f8f9fa; border:1px solid #dee2e6; padding:12px; max-width:900px;">{safe_text(body)}</pre>
     <form method="POST" onsubmit="return confirm('Send organizer kickoff email?');">
-        <button type="submit" style="font-weight:bold; padding:8px 12px;">Send Organizer Kickoff Email</button>
+        <button type="submit" style="font-weight:bold; padding:8px 12px;">Send Organizer Setup Email</button>
         &nbsp;
         <a href="/coordination-group/{group_id}">Cancel / Back</a>
     </form>
@@ -29776,7 +29776,7 @@ def coordination_group_member_organizer_planning(member_id):
     if not member or safe_text(row_value(member, "role")).strip() != "organizer":
         conn.close()
         return f"""
-        <h1>Organizer Planning Link Not Available</h1>
+        <h1> Not Available</h1>
         <p>This link is only available for the Organizer assigned to this coordination group.</p>
         """
 
