@@ -36,7 +36,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V35_2_5a"
+    "app_V35_2_5c"
 )
 
 BASE_URL = os.environ.get(
@@ -7780,6 +7780,8 @@ def home():
         <span style="background-color: #cfe8ff; padding: 4px;">Coordination Hold</span>
         <span style="background-color: #f8d7da; padding: 4px;">Full / Blocked</span>
         <span style="background-color: #e9ecef; padding: 4px;">Past</span>
+    
+        <span style="border: 2px dotted #dc3545; padding: 3px;">Tentative Group Dates</span>
     </p>
     """
 
@@ -8760,6 +8762,8 @@ def invite_request(invitation_id):
         <span style="background-color: #cfe8ff; padding: 3px;">Coordination Hold</span>
         <span style="background-color: #f8d7da; padding: 3px;">Full / Blocked</span>
         <span style="background-color: #e9ecef; padding: 3px;">Past</span>
+    
+        <span style="border: 2px dotted #dc3545; padding: 3px;">Tentative Group Dates</span>
     </p>
     """
 
@@ -25615,6 +25619,8 @@ def coordination_group_member_request(member_id):
         <span style="background-color: #fff3cd; padding: 3px;">Almost Full</span>
         <span style="background-color: #f8d7da; padding: 3px;">Full / Blocked</span>
         <span style="background-color: #e9ecef; padding: 3px;">Past</span>
+    
+        <span style="border: 2px dotted #dc3545; padding: 3px;">Tentative Group Dates</span>
     </p>
     """
 
@@ -30350,3 +30356,5 @@ if __name__ == "__main__":
 # - Group Previous Approved Stays by date
 # - Confirmation banner includes request additional names
 # - Organizer email cleanup
+
+# V35.2.5b capacity_review email body moved to capacity_review.txt
