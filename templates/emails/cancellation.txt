@@ -1,0 +1,19 @@
+Hi {{ guest_name }},
+
+Your visit request has been cancelled. Sorry to see you go!! 
+
+Cancelled Visit Details:
+Arrival: {{ arrival_date }}
+Departure: {{ departure_date }}
+Nights: {{ nights }}
+Bedrooms: {{ rooms_requested }}
+
+Hope you can come visit another time, click below to submit a new request.
+
+Request Another Visit:
+{{ new_request_link }}
+
+Thanks,
+John & Mark
+Strathmere Visit Request System
+302-521-5401
