@@ -1,13 +1,12 @@
 Hi {{ guest_name }},
 
 We are reviewing the group visit request for:
-
 {{ group_name }}
 
 The group may currently be requesting more bedrooms than are available for these dates.
-This email was sent to everyone in the group. Someone may have already updated their request, so changes may no longer be needed.
+This email was sent to everyone in the group. 
 
-Click below and check Action Needed to see if updates are still required. 
+Someone may have already updated their request, so changes may no longer be needed.
 
 Current group date / bedroom information:
 
@@ -18,6 +17,8 @@ What we need from you:
 - If you need all bedrooms requested, use Change Visit and request different dates.
 - If dates or bedrooms cannot be adjusted, another coordination round may be needed.
 
+Click below and check Action Needed to see if updates are still required. 
+
 Change Visit:
 {{ request_link }}
 
@@ -25,4 +26,5 @@ Nothing is confirmed or declined yet.
 
 Thanks!
 John & Mark
+Strathmere Visit Request System
 302-521-5401
