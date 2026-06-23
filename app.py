@@ -101,7 +101,7 @@ error_logger.setLevel(logging.ERROR)
 
 APP_VERSION = os.environ.get(
     "APP_VERSION",
-    "app_V36_1"
+    "app_V36_2_RECOVERY_HARDENING"
 )
 
 BASE_URL = os.environ.get(
@@ -2210,6 +2210,8 @@ def nav_links():
         <a href="/admin-backup">Backup & Recovery</a> |
         <a href="/admin-reset-test-data">Reset Test Data</a> |
         <a href="/production-check">Production Check</a> |
+        <a href="/production-health">Production Health</a> |
+        <a href="/booking-consistency-repair">Booking Consistency Repair</a> |
         <a href="/system-health">System Health</a> |\n        <a href="/admin-logout">Logout</a>
     </div>
     <br>
@@ -7430,12 +7432,142 @@ def template_file_list():
     return files
 
 
+
+def profile_photos_folder():
+
+    return os.path.join(
+        app.root_path,
+        "static",
+        "profile_photos"
+    )
+
+
+def profile_photo_file_list():
+
+    folder = profile_photos_folder()
+    files = []
+
+    if os.path.isdir(folder):
+        for filename in sorted(os.listdir(folder)):
+            if filename.startswith("."):
+                continue
+            full_path = os.path.join(folder, filename)
+            if os.path.isfile(full_path):
+                files.append(filename)
+
+    return files
+
+
+def guest_profile_photo_references(db_path=None):
+
+    references = []
+    target_db = db_path or DATABASE_FILE
+
+    try:
+        conn = sqlite3.connect(target_db)
+        conn.row_factory = sqlite3.Row
+
+        existing_tables = set(
+            row["name"] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        )
+
+        if "guest_profiles" not in existing_tables:
+            conn.close()
+            return references
+
+        rows = conn.execute("""
+            SELECT primary_name, primary_email, photo_path
+            FROM guest_profiles
+            WHERE COALESCE(photo_path, '') <> ''
+            ORDER BY primary_name
+        """).fetchall()
+
+        for row in rows:
+            references.append({
+                "primary_name": safe_text(row["primary_name"]),
+                "primary_email": safe_text(row["primary_email"]),
+                "photo_path": safe_text(row["photo_path"]),
+            })
+
+        conn.close()
+    except Exception:
+        pass
+
+    return references
+
+
+def missing_profile_photo_references(photo_folder=None, db_path=None):
+
+    folder = photo_folder or profile_photos_folder()
+    missing = []
+
+    for reference in guest_profile_photo_references(db_path):
+        photo_path = safe_text(reference.get("photo_path")).strip()
+        if not photo_path:
+            continue
+
+        filename = os.path.basename(photo_path)
+
+        # Stored values may be either "filename.jpeg" or "profile_photos/filename.jpeg".
+        candidate_paths = [
+            os.path.join(folder, filename),
+            os.path.join(app.root_path, photo_path.lstrip("/")),
+        ]
+
+        if not any(os.path.exists(path) for path in candidate_paths):
+            missing.append(reference)
+
+    return missing
+
+
+def copy_profile_photos_to_backup(destination_folder):
+
+    copied = []
+    source_folder = profile_photos_folder()
+
+    os.makedirs(destination_folder, exist_ok=True)
+
+    if os.path.isdir(source_folder):
+        for filename in profile_photo_file_list():
+            source = os.path.join(source_folder, filename)
+            destination = os.path.join(destination_folder, filename)
+            shutil.copy2(source, destination)
+            copied.append(filename)
+
+    return copied
+
+
+def restore_profile_photos_from_backup(source_folder):
+
+    restored = []
+
+    if not os.path.isdir(source_folder):
+        return restored
+
+    destination_folder = profile_photos_folder()
+    os.makedirs(destination_folder, exist_ok=True)
+
+    for filename in sorted(os.listdir(source_folder)):
+        if filename.startswith("."):
+            continue
+        source = os.path.join(source_folder, filename)
+        if not os.path.isfile(source):
+            continue
+        shutil.copy2(source, os.path.join(destination_folder, filename))
+        restored.append(filename)
+
+    return restored
+
 def backup_preview_details():
 
     source_db = DATABASE_FILE
     db_exists = os.path.exists(source_db)
     db_size = os.path.getsize(source_db) if db_exists else 0
     templates = template_file_list()
+    photos = profile_photo_file_list()
+    missing_photos = missing_profile_photo_references()
 
     app_files = []
     for filename in ["app.py", "database.py", "requirements.txt"]:
@@ -7451,6 +7583,8 @@ def backup_preview_details():
         "database_exists": db_exists,
         "database_size": db_size,
         "templates": templates,
+        "profile_photos": photos,
+        "missing_photo_references": missing_photos,
         "app_files": app_files,
         "app_version": APP_VERSION,
         "created_preview_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -7492,11 +7626,13 @@ def create_full_recovery_backup():
 
     app_folder = os.path.join(backup_folder, "app")
     templates_folder = os.path.join(backup_folder, "templates", "emails")
+    photos_folder = os.path.join(backup_folder, "static", "profile_photos")
     data_folder = os.path.join(backup_folder, "data")
     metadata_folder = os.path.join(backup_folder, "metadata")
 
     os.makedirs(app_folder, exist_ok=True)
     os.makedirs(templates_folder, exist_ok=True)
+    os.makedirs(photos_folder, exist_ok=True)
     os.makedirs(data_folder, exist_ok=True)
     os.makedirs(metadata_folder, exist_ok=True)
 
@@ -7522,6 +7658,8 @@ def create_full_recovery_backup():
             shutil.copy2(source, destination)
             copied_templates.append(filename)
 
+    copied_profile_photos = copy_profile_photos_to_backup(photos_folder)
+
     source_db = DATABASE_FILE
     backup_db_path = os.path.join(data_folder, "shore_home.db")
 
@@ -7534,6 +7672,7 @@ def create_full_recovery_backup():
     shutil.copy2(source_db, backup_db_path)
 
     db_summary = database_backup_summary(backup_db_path)
+    backup_missing_photo_refs = missing_profile_photo_references(photos_folder, backup_db_path)
     db_checksum = file_sha256(backup_db_path)
 
     validation_errors = []
@@ -7549,6 +7688,12 @@ def create_full_recovery_backup():
 
     if not copied_templates:
         validation_errors.append("No email template TXT files were copied.")
+
+    if backup_missing_photo_refs:
+        validation_errors.append(
+            "Missing profile photo file(s): "
+            + ", ".join(safe_text(item.get("photo_path")) for item in backup_missing_photo_refs)
+        )
 
     if "app.py" not in copied_app_files:
         validation_errors.append("app.py was not copied.")
@@ -7569,6 +7714,8 @@ def create_full_recovery_backup():
         "copied_app_files": copied_app_files,
         "missing_app_files": missing_app_files,
         "copied_templates": copied_templates,
+        "copied_profile_photos": copied_profile_photos,
+        "missing_profile_photo_references": backup_missing_photo_refs,
         "required_tables": REQUIRED_BACKUP_TABLES,
         "table_counts": db_summary["tables"],
         "status": status,
@@ -7616,11 +7763,14 @@ Created: {manifest['created_at']}
 App Version: {APP_VERSION}
 Status: {status}
 
-This Phase 1 backup contains the application files, email templates, and the active SQLite database.
-Restore behavior is intentionally not implemented in Phase 1.
+This backup contains the application files, email templates, profile photos, and the active SQLite database.
+Restore supports the database, email templates, and profile photos.
 
 Database included:
 data/shore_home.db
+
+Profile photos included:
+static/profile_photos/
 
 Original database path:
 {source_db}
@@ -7642,6 +7792,8 @@ Before any future restore, create a new pre-restore backup first.
         "Database included: YES",
         "Database readable: " + ("YES" if db_summary["readable"] else "NO"),
         "Templates copied: " + str(len(copied_templates)),
+        "Profile photos copied: " + str(len(copied_profile_photos)),
+        "Missing profile photo references: " + str(len(backup_missing_photo_refs)),
         "App files copied: " + ", ".join(copied_app_files),
         "",
         "Table Counts:",
@@ -7711,6 +7863,22 @@ def admin_backup():
         if not template_rows:
             template_rows = "<li style='color:red;'>No TXT templates found.</li>"
 
+        photo_rows = "".join(
+            f"<li>✓ {safe_text(filename)}</li>"
+            for filename in details["profile_photos"]
+        )
+
+        if not photo_rows:
+            photo_rows = "<li style='color:#856404;'>No profile photo files found.</li>"
+
+        missing_photo_rows = "".join(
+            f"<li>{safe_text(item.get('primary_name'))}: {safe_text(item.get('photo_path'))}</li>"
+            for item in details["missing_photo_references"]
+        )
+
+        if not missing_photo_rows:
+            missing_photo_rows = "<li>None</li>"
+
         db_status = "✓ Found" if details["database_exists"] else "⚠ Missing"
 
         return f"""
@@ -7736,7 +7904,9 @@ def admin_backup():
                 <strong>Database:</strong> {safe_text(details['database_file'])}<br>
                 <strong>Database Status:</strong> {db_status}<br>
                 <strong>Database Size:</strong> {human_file_size(details['database_size'])}<br>
-                <strong>Email Templates:</strong> {len(details['templates'])}
+                <strong>Email Templates:</strong> {len(details['templates'])}<br>
+                <strong>Profile Photos:</strong> {len(details['profile_photos'])}<br>
+                <strong>Missing Photo References:</strong> {len(details['missing_photo_references'])}
             </p>
         </div>
 
@@ -7747,6 +7917,12 @@ def admin_backup():
 
         <h3>Email Templates</h3>
         <ul>{template_rows}</ul>
+
+        <h3>Profile Photos</h3>
+        <ul>{photo_rows}</ul>
+
+        <h3>Missing Photo References</h3>
+        <ul>{missing_photo_rows}</ul>
 
         <h3>Database</h3>
         <ul>
@@ -7828,7 +8004,9 @@ def admin_backup():
         <strong>Database Included:</strong> YES<br>
         <strong>Database Size:</strong> {human_file_size(manifest.get('database_size_bytes', 0))}<br>
         <strong>ZIP Size:</strong> {human_file_size(manifest.get('zip_size_bytes', 0))}<br>
-        <strong>Templates Copied:</strong> {len(manifest.get('copied_templates', []))}
+        <strong>Templates Copied:</strong> {len(manifest.get('copied_templates', []))}<br>
+        <strong>Profile Photos Copied:</strong> {len(manifest.get('copied_profile_photos', []))}<br>
+        <strong>Missing Photo References:</strong> {len(manifest.get('missing_profile_photo_references', []))}
     </p>
 
     <h2>Table Counts</h2>
@@ -7919,6 +8097,8 @@ def validate_restore_backup_folder(extracted_root):
         "manifest": {},
         "table_counts": {},
         "template_count": 0,
+        "profile_photo_count": 0,
+        "missing_profile_photo_references": [],
         "database_size_bytes": 0,
         "database_path": "",
         "backup_name": os.path.basename(extracted_root),
@@ -7969,6 +8149,23 @@ def validate_restore_backup_folder(extracted_root):
         if result["template_count"] == 0:
             result["errors"].append("No email TXT templates found in backup.")
 
+    if os.path.isdir(photos_path):
+        result["profile_photo_count"] = len([
+            name for name in os.listdir(photos_path)
+            if not name.startswith(".") and os.path.isfile(os.path.join(photos_path, name))
+        ])
+
+    if result.get("database_path"):
+        result["missing_profile_photo_references"] = missing_profile_photo_references(
+            photos_path,
+            result.get("database_path")
+        )
+        if result["missing_profile_photo_references"]:
+            result["errors"].append(
+                "Backup has guest profile photo references without matching files: "
+                + ", ".join(safe_text(item.get("photo_path")) for item in result["missing_profile_photo_references"])
+            )
+
     result["valid"] = not result["errors"]
     return result
 
@@ -7977,6 +8174,7 @@ def restore_from_validated_backup(extracted_root):
 
     source_db = os.path.join(extracted_root, "data", "shore_home.db")
     source_templates = os.path.join(extracted_root, "templates", "emails")
+    source_photos = os.path.join(extracted_root, "static", "profile_photos")
 
     if not os.path.exists(source_db):
         raise RuntimeError("Restore blocked: backup database is missing.")
@@ -8008,6 +8206,8 @@ def restore_from_validated_backup(extracted_root):
             )
             restored_templates.append(filename)
 
+    restored_profile_photos = restore_profile_photos_from_backup(source_photos)
+
     restored_db_summary = database_backup_summary(DATABASE_FILE)
 
     return {
@@ -8015,6 +8215,8 @@ def restore_from_validated_backup(extracted_root):
         "safety_backup_zip_name": safety_manifest.get("backup_zip_name"),
         "restored_database_size_bytes": os.path.getsize(DATABASE_FILE),
         "restored_templates": restored_templates,
+        "restored_profile_photos": restored_profile_photos,
+        "missing_profile_photo_references": missing_profile_photo_references(),
         "restored_table_counts": restored_db_summary.get("tables", {}),
     }
 
@@ -8120,7 +8322,9 @@ def admin_restore_backup():
         <strong>App Version:</strong> {safe_text(manifest.get('app_version'))}<br>
         <strong>Database Included:</strong> {'YES' if validation.get('database_path') else 'NO'}<br>
         <strong>Database Size:</strong> {human_file_size(validation.get('database_size_bytes', 0))}<br>
-        <strong>Templates:</strong> {safe_text(validation.get('template_count'))}
+        <strong>Templates:</strong> {safe_text(validation.get('template_count'))}<br>
+        <strong>Profile Photos:</strong> {safe_text(validation.get('profile_photo_count'))}<br>
+        <strong>Missing Photo References:</strong> {len(validation.get('missing_profile_photo_references', []))}
     </p>
 
     <h2>Table Counts in Backup</h2>
@@ -8199,7 +8403,9 @@ def admin_restore_backup_confirm():
 
     <p>
         <strong>Restored Database Size:</strong> {human_file_size(restore_result.get('restored_database_size_bytes', 0))}<br>
-        <strong>Templates Restored:</strong> {len(restore_result.get('restored_templates', []))}
+        <strong>Templates Restored:</strong> {len(restore_result.get('restored_templates', []))}<br>
+        <strong>Profile Photos Restored:</strong> {len(restore_result.get('restored_profile_photos', []))}<br>
+        <strong>Missing Photo References After Restore:</strong> {len(restore_result.get('missing_profile_photo_references', []))}
     </p>
 
     <h2>Restored Table Counts</h2>
@@ -31658,3 +31864,323 @@ CAPACITY_REVIEW_TEXT="⚠ Capacity Needs Your Review"
 # - Exact public endpoint allowlist; removed broad /request prefix access
 # - Basic CSRF protection for admin POST routes
 # ============================================================
+
+# -----------------------------------------------------------------------------
+# V36.2 Recovery & Production Hardening
+# Production Health Dashboard + Booking Consistency Repair
+# -----------------------------------------------------------------------------
+
+def table_exists(conn, table_name):
+
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,)
+    ).fetchone()
+
+    return row is not None
+
+
+def table_count_safe(conn, table_name):
+
+    try:
+        if not table_exists(conn, table_name):
+            return None
+        return conn.execute(f"SELECT COUNT(*) AS count FROM {table_name}").fetchone()["count"]
+    except Exception:
+        return "ERROR"
+
+
+def latest_backup_manifest_summary():
+
+    root = backup_root_folder()
+    latest = None
+
+    if os.path.isdir(root):
+        for name in os.listdir(root):
+            if not name.startswith("ShoreHome_Backup_"):
+                continue
+            folder = os.path.join(root, name)
+            if not os.path.isdir(folder):
+                continue
+            manifest_path = os.path.join(folder, "manifest.json")
+            modified = os.path.getmtime(folder)
+            if latest is None or modified > latest.get("modified", 0):
+                latest = {
+                    "name": name,
+                    "folder": folder,
+                    "manifest_path": manifest_path,
+                    "modified": modified,
+                    "manifest": {},
+                }
+
+    if latest and os.path.exists(latest["manifest_path"]):
+        try:
+            import json
+            with open(latest["manifest_path"], "r", encoding="utf-8") as handle:
+                latest["manifest"] = json.load(handle)
+        except Exception:
+            latest["manifest"] = {}
+
+    return latest
+
+
+def production_health_rows():
+
+    rows = []
+
+    def add(section, label, ok, detail):
+        rows.append({
+            "section": section,
+            "label": label,
+            "ok": ok,
+            "detail": detail,
+        })
+
+    add("System", "App Version", True, APP_VERSION)
+    add("System", "Database Path", DATABASE_FILE.startswith("/var/data/"), DATABASE_FILE)
+    add("System", "Base URL", bool(BASE_URL and not BASE_URL.startswith("http://127.0.0.1")), BASE_URL)
+    add("System", "Admin Auth", ADMIN_AUTH_ENABLED, "Configured" if ADMIN_AUTH_ENABLED else "Missing ADMIN_PASSWORD")
+
+    db_exists = os.path.exists(DATABASE_FILE)
+    add("Database", "Database File", db_exists, DATABASE_FILE if db_exists else "Missing")
+
+    try:
+        conn = get_db_connection()
+        for table_name in REQUIRED_BACKUP_TABLES:
+            count = table_count_safe(conn, table_name)
+            add("Database", table_name, count is not None and count != "ERROR", safe_text(count))
+        conn.close()
+    except Exception as error:
+        add("Database", "Connection", False, safe_text(error))
+
+    templates = template_file_list()
+    add("Assets", "Email Templates", len(templates) > 0, str(len(templates)))
+
+    photos = profile_photo_file_list()
+    missing_photos = missing_profile_photo_references()
+    add("Assets", "Profile Photos", len(photos) > 0, str(len(photos)))
+    add("Assets", "Missing Photo References", len(missing_photos) == 0, str(len(missing_photos)))
+
+    latest_backup = latest_backup_manifest_summary()
+    if latest_backup:
+        manifest = latest_backup.get("manifest", {})
+        add("Recovery", "Last Backup", True, safe_text(latest_backup.get("name")))
+        add("Recovery", "Last Backup Status", safe_text(manifest.get("status")) == "VERIFIED", safe_text(manifest.get("status", "Unknown")))
+        add("Recovery", "Backup Includes Photos", len(manifest.get("copied_profile_photos", [])) > 0, str(len(manifest.get("copied_profile_photos", []))))
+    else:
+        add("Recovery", "Last Backup", False, "No backup found")
+
+    route_ok, route_detail = route_safety_diagnostics_summary()
+    add("Security", "Route Safety", route_ok, route_detail)
+
+    schema_ok, schema_detail = database_schema_diagnostics_summary()
+    add("Security", "Database Schema", schema_ok, schema_detail)
+
+    booking_ok, booking_detail = booking_consistency_diagnostics_summary()
+    add("Launch Readiness", "Booking Consistency", booking_ok, booking_detail)
+
+    ready = all(row["ok"] for row in rows if row["section"] in {"System", "Database", "Assets", "Recovery", "Security", "Launch Readiness"})
+    add("Launch Readiness", "Soft Launch Ready", ready, "READY" if ready else "NOT READY")
+
+    return rows
+
+
+@app.route("/production-health")
+def production_health_dashboard():
+
+    rows = production_health_rows()
+
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(row["section"], []).append(row)
+
+    sections_html = ""
+    for section, section_rows in grouped.items():
+        body = "".join(
+            production_status_row(
+                item["label"],
+                item["ok"],
+                item["detail"]
+            )
+            for item in section_rows
+        )
+        sections_html += f"""
+        <h2>{safe_text(section)}</h2>
+        <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse; width:100%; max-width:1050px;">
+            <tr style="background:#f5f5f5;"><th align="left">Check</th><th align="left">Status</th><th align="left">Details</th></tr>
+            {body}
+        </table>
+        """
+
+    return f"""
+    {nav_links()}
+
+    <h1>Production Health Dashboard</h1>
+
+    <p>This combines production checks, recovery status, asset validation, and launch readiness in one read-only page.</p>
+
+    <p>
+        <a href="/admin-backup" style="font-weight:bold;">Backup & Recovery</a> |
+        <a href="/booking-consistency-repair" style="font-weight:bold;">Booking Consistency Repair</a> |
+        <a href="/production-check">Classic Production Check</a>
+    </p>
+
+    {sections_html}
+    """
+
+
+def booking_consistency_analysis():
+
+    issues = []
+    stats = {}
+
+    try:
+        conn = get_db_connection()
+
+        for table_name in REQUIRED_BACKUP_TABLES:
+            stats[table_name] = table_count_safe(conn, table_name)
+
+        if table_exists(conn, "bookings"):
+            if table_exists(conn, "booking_requests"):
+                missing_requests = conn.execute("""
+                    SELECT COUNT(*) AS count
+                    FROM bookings
+                    LEFT JOIN booking_requests
+                        ON bookings.request_id = booking_requests.id
+                    WHERE booking_requests.id IS NULL
+                """).fetchone()["count"]
+                if missing_requests:
+                    issues.append({"issue": "Bookings without request", "count": missing_requests, "repair": "Manual review required", "risk": "HIGH"})
+
+            if table_exists(conn, "rooms"):
+                missing_rooms = conn.execute("""
+                    SELECT COUNT(*) AS count
+                    FROM bookings
+                    LEFT JOIN rooms
+                        ON bookings.room_id = rooms.id
+                    WHERE rooms.id IS NULL
+                """).fetchone()["count"]
+                if missing_rooms:
+                    issues.append({"issue": "Bookings without room", "count": missing_rooms, "repair": "Manual review required", "risk": "HIGH"})
+
+        if table_exists(conn, "guest_profiles"):
+            duplicate_emails = conn.execute("""
+                SELECT primary_email, COUNT(*) AS count
+                FROM guest_profiles
+                WHERE COALESCE(primary_email, '') <> ''
+                GROUP BY LOWER(primary_email)
+                HAVING COUNT(*) > 1
+            """).fetchall()
+            if duplicate_emails:
+                issues.append({"issue": "Duplicate guest profile emails", "count": len(duplicate_emails), "repair": "Manual merge recommended", "risk": "MEDIUM"})
+
+            missing_photos = missing_profile_photo_references()
+            if missing_photos:
+                issues.append({"issue": "Broken guest photo references", "count": len(missing_photos), "repair": "Clear broken photo_path values", "risk": "LOW", "repair_key": "clear_missing_photos"})
+
+        conn.close()
+    except Exception as error:
+        issues.append({"issue": "Analysis failed", "count": 1, "repair": safe_text(error), "risk": "HIGH"})
+
+    return {
+        "stats": stats,
+        "issues": issues,
+    }
+
+
+def repair_broken_photo_references():
+
+    missing = missing_profile_photo_references()
+    if not missing:
+        return 0
+
+    conn = get_db_connection()
+    repaired = 0
+
+    for item in missing:
+        email = safe_text(item.get("primary_email")).strip()
+        photo_path = safe_text(item.get("photo_path")).strip()
+        if not email or not photo_path:
+            continue
+        conn.execute("""
+            UPDATE guest_profiles
+            SET photo_path = NULL
+            WHERE LOWER(primary_email) = LOWER(?)
+              AND photo_path = ?
+        """, (email, photo_path))
+        repaired += 1
+
+    conn.commit()
+    conn.close()
+    return repaired
+
+
+@app.route("/booking-consistency-repair", methods=["GET", "POST"])
+def booking_consistency_repair():
+
+    message = ""
+
+    if request.method == "POST":
+        repair_action = safe_text(request.form.get("repair_action")).strip()
+
+        try:
+            safety_manifest = create_full_recovery_backup()
+            if safe_text(safety_manifest.get("status")) != "VERIFIED":
+                raise RuntimeError("Safety backup failed validation. Repair stopped.")
+
+            if repair_action == "clear_missing_photos":
+                repaired = repair_broken_photo_references()
+                message = f"Created safety backup {safe_text(safety_manifest.get('backup_name'))}. Cleared {repaired} broken photo reference(s)."
+            else:
+                message = f"Created safety backup {safe_text(safety_manifest.get('backup_name'))}. No repair action selected."
+
+        except Exception as error:
+            message = "Repair stopped: " + safe_text(error)
+
+    analysis = booking_consistency_analysis()
+
+    stat_rows = "".join(
+        f"<tr><td>{safe_text(table)}</td><td>{safe_text(count)}</td></tr>"
+        for table, count in analysis.get("stats", {}).items()
+    )
+
+    issue_rows = "".join(
+        f"<tr><td>{safe_text(item.get('issue'))}</td><td>{safe_text(item.get('count'))}</td><td>{safe_text(item.get('repair'))}</td><td>{safe_text(item.get('risk'))}</td></tr>"
+        for item in analysis.get("issues", [])
+    )
+
+    if not issue_rows:
+        issue_rows = "<tr><td colspan='4' style='color:green; font-weight:bold;'>No repairable consistency issues found.</td></tr>"
+
+    return f"""
+    {nav_links()}
+
+    <h1>Booking Consistency Repair</h1>
+
+    <p>This tool analyzes booking-related data and only performs low-risk repairs after creating a verified safety backup.</p>
+
+    <p style="font-weight:bold; color:#0f4c81;">{safe_text(message)}</p>
+
+    <h2>Table Counts</h2>
+    <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse; max-width:900px; width:100%;">
+        <tr><th align="left">Table</th><th align="left">Rows</th></tr>
+        {stat_rows}
+    </table>
+
+    <h2>Issues</h2>
+    <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse; max-width:1100px; width:100%;">
+        <tr><th align="left">Issue</th><th align="left">Count</th><th align="left">Repair</th><th align="left">Risk</th></tr>
+        {issue_rows}
+    </table>
+
+    <h2>Repair Actions</h2>
+    <form method="POST">
+        {csrf_input()}
+        <input type="hidden" name="repair_action" value="clear_missing_photos">
+        <button type="submit" style="font-weight:bold; padding:10px 16px; background:#fd7e14; color:white; border:0; border-radius:8px;">
+            Create Safety Backup + Clear Broken Photo References
+        </button>
+    </form>
+
+    <p><a href="/production-health">Back to Production Health</a></p>
+    """
