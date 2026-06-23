@@ -3,6 +3,7 @@ from datetime import date, datetime, timedelta
 from database import get_db_connection, DATABASE_FILE, init_db
 import smtplib
 from email.message import EmailMessage
+import sqlite3
 import os
 import shutil
 import html as html_escape_module
