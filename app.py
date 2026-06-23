@@ -17,6 +17,24 @@ from werkzeug.exceptions import HTTPException
 
 app = Flask(__name__)
 
+with app.app_context():
+    init_db()
+
+    conn = get_db_connection()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            action TEXT,
+            details TEXT,
+            actor TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+    ensure_production_schema()
+
 
 def ensure_production_schema():
     """Safely upgrade the persistent SQLite DB without deleting data."""
@@ -48,22 +66,6 @@ def ensure_production_schema():
         conn.close()
 
 
-with app.app_context():
-    init_db()
-    ensure_production_schema()
-
-    conn = get_db_connection()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS activity_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            action TEXT,
-            details TEXT,
-            actor TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
 
 app.secret_key = os.environ.get(
     "SECRET_KEY",
