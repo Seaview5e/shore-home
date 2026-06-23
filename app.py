@@ -7233,248 +7233,570 @@ def production_checklist():
     """
 
 
+
+# -----------------------------------------------------------------------------
+# Phase 1 Backup & Recovery Hardening
+# Full Recovery Backup creation + validation only.
+# No restore behavior is included in Phase 1.
+# -----------------------------------------------------------------------------
+
+REQUIRED_BACKUP_TABLES = [
+    "guest_profiles",
+    "booking_requests",
+    "bookings",
+    "invitations",
+    "coordination_groups",
+    "coordination_group_members",
+    "rooms",
+    "blocked_dates",
+]
+
+
+def backup_root_folder():
+
+    return os.path.join(
+        app.root_path,
+        "backups"
+    )
+
+
+def backup_display_path(backup_name=""):
+
+    if backup_name:
+        return os.path.join(
+            "shore_home_app",
+            "backups",
+            backup_name
+        )
+
+    return os.path.join(
+        "shore_home_app",
+        "backups"
+    )
+
+
+def file_sha256(path):
+
+    import hashlib
+
+    digest = hashlib.sha256()
+
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+
+    return digest.hexdigest()
+
+
+def directory_size_bytes(path):
+
+    total = 0
+
+    if not os.path.exists(path):
+        return total
+
+    for folder, _dirs, files in os.walk(path):
+        for filename in files:
+            full_path = os.path.join(folder, filename)
+            try:
+                total += os.path.getsize(full_path)
+            except Exception:
+                pass
+
+    return total
+
+
+def human_file_size(size_bytes):
+
+    try:
+        size = float(size_bytes)
+    except Exception:
+        return "0 B"
+
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size < 1024 or unit == "GB":
+            if unit == "B":
+                return f"{int(size)} {unit}"
+            return f"{size:.1f} {unit}"
+        size = size / 1024
+
+    return f"{size_bytes} B"
+
+
+def database_backup_summary(db_path):
+
+    summary = {
+        "readable": False,
+        "tables": {},
+        "missing_tables": [],
+        "error": ""
+    }
+
+    try:
+        db_conn = sqlite3.connect(db_path)
+        db_conn.row_factory = sqlite3.Row
+
+        existing_tables = set(
+            row["name"] for row in db_conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        )
+
+        for table_name in REQUIRED_BACKUP_TABLES:
+            if table_name not in existing_tables:
+                summary["missing_tables"].append(table_name)
+                summary["tables"][table_name] = None
+                continue
+
+            try:
+                count = db_conn.execute(
+                    f"SELECT COUNT(*) AS count FROM {table_name}"
+                ).fetchone()["count"]
+                summary["tables"][table_name] = count
+            except Exception as table_error:
+                summary["tables"][table_name] = f"ERROR: {safe_text(table_error)}"
+
+        db_conn.close()
+        summary["readable"] = True
+
+    except Exception as error:
+        summary["error"] = safe_text(error)
+
+    return summary
+
+
+def template_file_list():
+
+    template_folder = EMAIL_TEMPLATE_FOLDER
+    files = []
+
+    if os.path.isdir(template_folder):
+        for filename in sorted(os.listdir(template_folder)):
+            if filename.endswith(".txt"):
+                files.append(filename)
+
+    return files
+
+
+def backup_preview_details():
+
+    source_db = DATABASE_FILE
+    db_exists = os.path.exists(source_db)
+    db_size = os.path.getsize(source_db) if db_exists else 0
+    templates = template_file_list()
+
+    app_files = []
+    for filename in ["app.py", "database.py", "requirements.txt"]:
+        app_files.append({
+            "name": filename,
+            "exists": os.path.exists(os.path.join(app.root_path, filename))
+        })
+
+    return {
+        "backup_root": backup_root_folder(),
+        "display_root": backup_display_path(),
+        "database_file": source_db,
+        "database_exists": db_exists,
+        "database_size": db_size,
+        "templates": templates,
+        "app_files": app_files,
+        "app_version": APP_VERSION,
+        "created_preview_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def write_text_file(path, text):
+
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
+def copy_if_exists(source, destination):
+
+    if os.path.exists(source):
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        shutil.copy2(source, destination)
+        return True
+
+    return False
+
+
+def create_full_recovery_backup():
+
+    import json
+    import zipfile
+
+    timestamp = datetime.now().strftime("%Y_%m_%d_%H%M")
+    backup_name = f"ShoreHome_Backup_{timestamp}"
+    root_folder = backup_root_folder()
+    backup_folder = os.path.join(root_folder, backup_name)
+
+    if os.path.exists(backup_folder):
+        timestamp = datetime.now().strftime("%Y_%m_%d_%H%M_%S")
+        backup_name = f"ShoreHome_Backup_{timestamp}"
+        backup_folder = os.path.join(root_folder, backup_name)
+
+    os.makedirs(backup_folder, exist_ok=False)
+
+    app_folder = os.path.join(backup_folder, "app")
+    templates_folder = os.path.join(backup_folder, "templates", "emails")
+    data_folder = os.path.join(backup_folder, "data")
+    metadata_folder = os.path.join(backup_folder, "metadata")
+
+    os.makedirs(app_folder, exist_ok=True)
+    os.makedirs(templates_folder, exist_ok=True)
+    os.makedirs(data_folder, exist_ok=True)
+    os.makedirs(metadata_folder, exist_ok=True)
+
+    copied_app_files = []
+    missing_app_files = []
+
+    for filename in ["app.py", "database.py", "requirements.txt"]:
+        source = os.path.join(app.root_path, filename)
+        destination = os.path.join(app_folder, filename)
+        if copy_if_exists(source, destination):
+            copied_app_files.append(filename)
+        else:
+            missing_app_files.append(filename)
+
+    copied_templates = []
+
+    if os.path.isdir(EMAIL_TEMPLATE_FOLDER):
+        for filename in sorted(os.listdir(EMAIL_TEMPLATE_FOLDER)):
+            if not filename.endswith(".txt"):
+                continue
+            source = os.path.join(EMAIL_TEMPLATE_FOLDER, filename)
+            destination = os.path.join(templates_folder, filename)
+            shutil.copy2(source, destination)
+            copied_templates.append(filename)
+
+    source_db = DATABASE_FILE
+    backup_db_path = os.path.join(data_folder, "shore_home.db")
+
+    if not os.path.exists(source_db):
+        raise RuntimeError(
+            "Full backup failed because the active database file does not exist: "
+            + safe_text(source_db)
+        )
+
+    shutil.copy2(source_db, backup_db_path)
+
+    db_summary = database_backup_summary(backup_db_path)
+    db_checksum = file_sha256(backup_db_path)
+
+    validation_errors = []
+
+    if not os.path.exists(backup_db_path):
+        validation_errors.append("Database was not copied.")
+
+    if not db_summary["readable"]:
+        validation_errors.append("Database backup is not readable: " + safe_text(db_summary.get("error")))
+
+    for missing_table in db_summary["missing_tables"]:
+        validation_errors.append("Missing required table: " + safe_text(missing_table))
+
+    if not copied_templates:
+        validation_errors.append("No email template TXT files were copied.")
+
+    if "app.py" not in copied_app_files:
+        validation_errors.append("app.py was not copied.")
+
+    if "database.py" not in copied_app_files:
+        validation_errors.append("database.py was not copied.")
+
+    status = "VERIFIED" if not validation_errors else "FAILED"
+
+    manifest = {
+        "backup_name": backup_name,
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "app_version": APP_VERSION,
+        "database_source": source_db,
+        "database_backup_path": os.path.join("data", "shore_home.db"),
+        "database_sha256": db_checksum,
+        "database_size_bytes": os.path.getsize(backup_db_path),
+        "copied_app_files": copied_app_files,
+        "missing_app_files": missing_app_files,
+        "copied_templates": copied_templates,
+        "required_tables": REQUIRED_BACKUP_TABLES,
+        "table_counts": db_summary["tables"],
+        "status": status,
+        "validation_errors": validation_errors,
+    }
+
+    write_text_file(
+        os.path.join(metadata_folder, "app_version.txt"),
+        APP_VERSION + "\n"
+    )
+
+    write_text_file(
+        os.path.join(metadata_folder, "created_at.txt"),
+        manifest["created_at"] + "\n"
+    )
+
+    db_summary_lines = [
+        "Database Summary",
+        "================",
+        "Source: " + safe_text(source_db),
+        "Backup: data/shore_home.db",
+        "SHA256: " + safe_text(db_checksum),
+        "Size: " + human_file_size(manifest["database_size_bytes"]),
+        "",
+        "Table Counts:",
+    ]
+
+    for table_name in REQUIRED_BACKUP_TABLES:
+        db_summary_lines.append(
+            f"- {table_name}: {db_summary['tables'].get(table_name)}"
+        )
+
+    write_text_file(
+        os.path.join(metadata_folder, "database_summary.txt"),
+        "\n".join(db_summary_lines) + "\n"
+    )
+
+    write_text_file(
+        os.path.join(metadata_folder, "checksum.sha256"),
+        db_checksum + "  data/shore_home.db\n"
+    )
+
+    restore_notes = f"""Shore Home Full Recovery Backup
+Created: {manifest['created_at']}
+App Version: {APP_VERSION}
+Status: {status}
+
+This Phase 1 backup contains the application files, email templates, and the active SQLite database.
+Restore behavior is intentionally not implemented in Phase 1.
+
+Database included:
+data/shore_home.db
+
+Original database path:
+{source_db}
+
+Before any future restore, create a new pre-restore backup first.
+"""
+
+    write_text_file(
+        os.path.join(backup_folder, "restore_notes.txt"),
+        restore_notes
+    )
+
+    validation_report_lines = [
+        "Shore Home Backup Validation Report",
+        "===================================",
+        "Status: " + status,
+        "Created: " + manifest["created_at"],
+        "Backup: " + backup_name,
+        "Database included: YES",
+        "Database readable: " + ("YES" if db_summary["readable"] else "NO"),
+        "Templates copied: " + str(len(copied_templates)),
+        "App files copied: " + ", ".join(copied_app_files),
+        "",
+        "Table Counts:",
+    ]
+
+    for table_name in REQUIRED_BACKUP_TABLES:
+        validation_report_lines.append(
+            f"- {table_name}: {db_summary['tables'].get(table_name)}"
+        )
+
+    if validation_errors:
+        validation_report_lines.extend(["", "Validation Errors:"])
+        validation_report_lines.extend("- " + error for error in validation_errors)
+    else:
+        validation_report_lines.extend(["", "Validation Errors: none"])
+
+    write_text_file(
+        os.path.join(backup_folder, "validation_report.txt"),
+        "\n".join(validation_report_lines) + "\n"
+    )
+
+    write_text_file(
+        os.path.join(backup_folder, "manifest.json"),
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    )
+
+    zip_path = os.path.join(root_folder, backup_name + ".zip")
+
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for folder, _dirs, files in os.walk(backup_folder):
+            for filename in files:
+                full_path = os.path.join(folder, filename)
+                archive_name = os.path.relpath(full_path, root_folder)
+                archive.write(full_path, archive_name)
+
+    manifest["backup_folder"] = backup_folder
+    manifest["backup_zip"] = zip_path
+    manifest["backup_zip_name"] = backup_name + ".zip"
+    manifest["folder_size_bytes"] = directory_size_bytes(backup_folder)
+    manifest["zip_size_bytes"] = os.path.getsize(zip_path)
+
+    # Update manifest after ZIP details are known.
+    write_text_file(
+        os.path.join(backup_folder, "manifest.json"),
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    )
+
+    return manifest
+
+
 @app.route("/admin-backup", methods=["GET", "POST"])
 def admin_backup():
 
     if request.method != "POST":
-        return action_confirmation_page(
-            "Create Admin Backup",
-            "Create a timestamped copy of the current database in the backups folder.",
-            "/admin-backup",
-            "/dashboard"
+        details = backup_preview_details()
+
+        app_file_rows = "".join(
+            f"<li>{'✓' if item['exists'] else '⚠'} {safe_text(item['name'])}</li>"
+            for item in details["app_files"]
         )
 
-    import shutil
-
-    backup_folder = "backups"
-
-    os.makedirs(
-        backup_folder,
-        exist_ok=True
-    )
-
-    timestamp = datetime.now().strftime(
-        "%Y_%m_%d__%H_%M_%S"
-    )
-
-    backup_filename = (
-        f"shore_backup_{timestamp}.db"
-    )
-
-    source_db = DATABASE_FILE
-
-    backup_path = os.path.join(
-        backup_folder,
-        backup_filename
-    )
-
-    shutil.copy2(
-        source_db,
-        backup_path
-    )
-
-    html = nav_links() + f"""
-
-    <h1>Admin Backup</h1>
-
-    <p style="
-        color: green;
-        font-weight: bold;
-    ">
-        Backup created successfully.
-    </p>
-
-    <p>
-        <strong>Backup File:</strong><br>
-        {backup_filename}
-    </p>
-
-    <p>
-        <strong>Location:</strong><br>
-        {backup_path}
-    </p>
-
-    <p>
-        <a href="/">
-            Return Home
-        </a>
-    </p>
-    """
-
-
-    return html
-
-
-def admin_reset_test_data_counts(conn):
-
-    table_names = [
-        "guest_profiles",
-        "rooms",
-        "blocked_dates",
-        "invitations",
-        "booking_requests",
-        "bookings",
-        "coordination_groups",
-        "coordination_group_members",
-        "coordination_date_options",
-        "activity_log",
-        "email_log"
-    ]
-
-    counts = []
-
-    for table_name in table_names:
-
-        try:
-            row = conn.execute(
-                f"SELECT COUNT(*) AS count, MAX(id) AS max_id FROM {table_name}"
-            ).fetchone()
-            count = row["count"]
-            max_id = row["max_id"]
-        except Exception:
-            count = "missing"
-            max_id = "missing"
-
-        counts.append({
-            "table_name": table_name,
-            "count": count,
-            "max_id": max_id
-        })
-
-    return counts
-
-
-def admin_reset_test_data_snapshot(counts):
-
-    snapshot = {}
-
-    for row in counts:
-
-        snapshot[row["table_name"]] = (
-            safe_text(row["count"]),
-            safe_text(row["max_id"])
+        template_rows = "".join(
+            f"<li>✓ {safe_text(filename)}</li>"
+            for filename in details["templates"]
         )
 
-    return snapshot
+        if not template_rows:
+            template_rows = "<li style='color:red;'>No TXT templates found.</li>"
 
+        db_status = "✓ Found" if details["database_exists"] else "⚠ Missing"
 
-def admin_reset_preserved_rows_snapshot(conn):
+        return f"""
+        {nav_links()}
 
-    preserved_tables = [
-        "guest_profiles",
-        "rooms",
-        "blocked_dates"
-    ]
+        <h1>Phase 1 — Full Recovery Backup</h1>
 
-    snapshot = {}
+        <div style="border:2px solid #0f4c81; background:#f8fbff; padding:14px; border-radius:10px; max-width:900px;">
+            <p style="font-weight:bold; margin-top:0;">
+                This creates a full recovery backup folder under <code>{safe_text(details['display_root'])}</code>.
+            </p>
 
-    for table_name in preserved_tables:
+            <p>
+                <strong>App Version:</strong> {safe_text(details['app_version'])}<br>
+                <strong>Database:</strong> {safe_text(details['database_file'])}<br>
+                <strong>Database Status:</strong> {db_status}<br>
+                <strong>Database Size:</strong> {human_file_size(details['database_size'])}<br>
+                <strong>Email Templates:</strong> {len(details['templates'])}
+            </p>
+        </div>
 
-        columns = [
-            row["name"]
-            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-        ]
+        <h2>Preview Contents</h2>
 
-        rows = [
-            dict(row)
-            for row in conn.execute(f"SELECT * FROM {table_name} ORDER BY id").fetchall()
-        ]
+        <h3>Application Files</h3>
+        <ul>{app_file_rows}</ul>
 
-        snapshot[table_name] = {
-            "columns": columns,
-            "rows": rows
-        }
+        <h3>Email Templates</h3>
+        <ul>{template_rows}</ul>
 
-    return snapshot
+        <h3>Database</h3>
+        <ul>
+            <li>{db_status} active SQLite database</li>
+            <li>Backup copy name: <code>data/shore_home.db</code></li>
+        </ul>
 
+        <h3>Metadata</h3>
+        <ul>
+            <li>manifest.json</li>
+            <li>restore_notes.txt</li>
+            <li>validation_report.txt</li>
+            <li>metadata/checksum.sha256</li>
+            <li>metadata/database_summary.txt</li>
+        </ul>
 
-def admin_reset_restore_preserved_rows(conn, snapshot):
-
-    # Preserve current master data even if reset logic or future seed/init logic
-    # accidentally changes one of these tables. This intentionally restores the
-    # rows that existed immediately before the reset began.
-    for table_name, table_snapshot in snapshot.items():
-
-        columns = table_snapshot["columns"]
-        rows = table_snapshot["rows"]
-
-        conn.execute(f"DELETE FROM {table_name}")
-
-        if not rows:
-            continue
-
-        column_sql = ", ".join(columns)
-        placeholder_sql = ", ".join(["?"] * len(columns))
-
-        for row in rows:
-            conn.execute(
-                f"INSERT INTO {table_name} ({column_sql}) VALUES ({placeholder_sql})",
-                [row.get(column) for column in columns]
-            )
-
-
-def admin_reset_test_data_preserved_ok(before_counts, after_counts):
-
-    preserved_tables = [
-        "guest_profiles",
-        "rooms",
-        "blocked_dates"
-    ]
-
-    before_snapshot = admin_reset_test_data_snapshot(before_counts)
-    after_snapshot = admin_reset_test_data_snapshot(after_counts)
-    problems = []
-
-    for table_name in preserved_tables:
-
-        if before_snapshot.get(table_name) != after_snapshot.get(table_name):
-            problems.append(
-                f"{table_name} changed from {before_snapshot.get(table_name)} to {after_snapshot.get(table_name)}"
-            )
-
-    return (
-        len(problems) == 0,
-        problems
-    )
-
-
-def admin_reset_test_data_counts_html(counts):
-
-    rows = ""
-
-    preserved_tables = {
-        "guest_profiles",
-        "rooms",
-        "blocked_dates"
-    }
-
-    for row in counts:
-
-        table_name = row["table_name"]
-        count = row["count"]
-        max_id = row["max_id"]
-        role = "Preserved" if table_name in preserved_tables else "Cleared"
-
-        rows += f"""
-        <tr>
-            <td>{safe_text(table_name)}</td>
-            <td>{safe_text(role)}</td>
-            <td>{safe_text(count)}</td>
-            <td>{safe_text(max_id)}</td>
-        </tr>
+        <form method="POST">
+            <button type="submit" style="font-weight:bold; padding:10px 16px; background:#198754; color:white; border:0; border-radius:8px;">
+                Create Full Recovery Backup
+            </button>
+            &nbsp;
+            <a href="/dashboard">Cancel</a>
+        </form>
         """
 
+    try:
+        manifest = create_full_recovery_backup()
+    except Exception as error:
+        return f"""
+        {nav_links()}
+
+        <h1>Backup Failed</h1>
+
+        <p style="color:red; font-weight:bold;">
+            {safe_text(error)}
+        </p>
+
+        <p><a href="/admin-backup">Back to Backup Preview</a></p>
+        """, 500
+
+    status = safe_text(manifest.get("status"))
+    status_color = "green" if status == "VERIFIED" else "red"
+
+    table_rows = "".join(
+        f"<tr><td>{safe_text(table)}</td><td>{safe_text(count)}</td></tr>"
+        for table, count in manifest.get("table_counts", {}).items()
+    )
+
+    error_rows = "".join(
+        f"<li>{safe_text(error)}</li>"
+        for error in manifest.get("validation_errors", [])
+    )
+
+    if not error_rows:
+        error_rows = "<li>None</li>"
+
+    download_name = safe_text(manifest.get("backup_zip_name"))
+
     return f"""
-    <table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse; max-width: 760px; width: 100%;">
-        <tr style="background-color: #f5f5f5;">
-            <th align="left">Table</th>
-            <th align="left">Reset Role</th>
-            <th align="left">Rows</th>
-            <th align="left">Max ID</th>
-        </tr>
-        {rows}
+    {nav_links()}
+
+    <h1>Backup Complete</h1>
+
+    <p style="color:{status_color}; font-weight:bold; font-size:18px;">
+        Status: {status}
+    </p>
+
+    <p>
+        <strong>Backup Folder:</strong><br>
+        <code>{safe_text(backup_display_path(manifest.get('backup_name', '')))}</code>
+    </p>
+
+    <p>
+        <strong>Download ZIP:</strong><br>
+        <a href="/admin-backup/download/{download_name}">{download_name}</a>
+    </p>
+
+    <p>
+        <strong>Database Included:</strong> YES<br>
+        <strong>Database Size:</strong> {human_file_size(manifest.get('database_size_bytes', 0))}<br>
+        <strong>ZIP Size:</strong> {human_file_size(manifest.get('zip_size_bytes', 0))}<br>
+        <strong>Templates Copied:</strong> {len(manifest.get('copied_templates', []))}
+    </p>
+
+    <h2>Table Counts</h2>
+    <table border="1" cellpadding="6" cellspacing="0">
+        <tr><th>Table</th><th>Rows</th></tr>
+        {table_rows}
     </table>
+
+    <h2>Validation Errors</h2>
+    <ul>{error_rows}</ul>
+
+    <p><a href="/dashboard">Back to Dashboard</a></p>
     """
+
+
+@app.route("/admin-backup/download/<backup_zip_name>")
+def admin_backup_download(backup_zip_name):
+
+    safe_name = os.path.basename(safe_text(backup_zip_name))
+
+    if not safe_name.startswith("ShoreHome_Backup_") or not safe_name.endswith(".zip"):
+        return "Invalid backup file.", 400
+
+    return send_from_directory(
+        backup_root_folder(),
+        safe_name,
+        as_attachment=True
+    )
 
 
 @app.route("/admin-reset-test-data", methods=["GET", "POST"])
@@ -30109,8 +30431,10 @@ Judy - email unknown">{safe_text(current_suggested_guests)}</textarea>
 @app.errorhandler(Exception)
 def production_error_handler(error):
 
-    print("UNHANDLED EXCEPTION DEBUG", flush=True)
-    traceback.print_exc()
+    try:
+        error_logger.exception("Unhandled exception")
+    except Exception:
+        pass
 
     if isinstance(error, HTTPException):
 
