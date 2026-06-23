@@ -34,6 +34,26 @@ with app.app_context():
             )
         """)
 
+        activity_columns = {
+            row["name"]
+            for row in schema_conn.execute("PRAGMA table_info(activity_log)").fetchall()
+        }
+
+        required_activity_columns = {
+            "request_id": "INTEGER",
+            "action_type": "TEXT NOT NULL DEFAULT ''",
+            "old_status": "TEXT",
+            "new_status": "TEXT",
+            "notes": "TEXT",
+            "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        }
+
+        for column_name, column_definition in required_activity_columns.items():
+            if column_name not in activity_columns:
+                schema_conn.execute(
+                    f"ALTER TABLE activity_log ADD COLUMN {column_name} {column_definition}"
+                )
+
         booking_columns = {
             row["name"]
             for row in schema_conn.execute("PRAGMA table_info(booking_requests)").fetchall()
@@ -4438,13 +4458,36 @@ def ensure_activity_log_table(conn):
         CREATE TABLE IF NOT EXISTS activity_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             request_id INTEGER,
-            action_type TEXT NOT NULL,
+            action_type TEXT NOT NULL DEFAULT '',
             old_status TEXT,
             new_status TEXT,
             notes TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    try:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(activity_log)").fetchall()
+        }
+
+        required_columns = {
+            "request_id": "INTEGER",
+            "action_type": "TEXT NOT NULL DEFAULT ''",
+            "old_status": "TEXT",
+            "new_status": "TEXT",
+            "notes": "TEXT",
+            "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        }
+
+        for column_name, column_definition in required_columns.items():
+            if column_name not in columns:
+                conn.execute(
+                    f"ALTER TABLE activity_log ADD COLUMN {column_name} {column_definition}"
+                )
+    except Exception:
+        pass
 
 
 def write_activity_log(conn, request_id, action_type, old_status, new_status, notes):
