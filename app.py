@@ -3,9 +3,9 @@ from datetime import date, datetime, timedelta
 from database import get_db_connection, DATABASE_FILE, init_db
 import smtplib
 from email.message import EmailMessage
-import sqlite3
 import os
 import shutil
+import sqlite3
 import html as html_escape_module
 import logging
 import traceback
@@ -2179,7 +2179,7 @@ def nav_links():
         <a href="/activity-log">Activity Log</a> |
         <a href="/blocked">House Blocks</a> |
         <a href="/manual-request">Manual Request</a> |
-        <a href="/admin-backup">Admin Backup</a> |
+        <a href="/admin-backup">Backup & Recovery</a> |
         <a href="/admin-reset-test-data">Reset Test Data</a> |
         <a href="/production-check">Production Check</a> |
         <a href="/system-health">System Health</a> |\n        <a href="/admin-logout">Logout</a>
@@ -7236,9 +7236,9 @@ def production_checklist():
 
 
 # -----------------------------------------------------------------------------
-# Phase 1 Backup & Recovery Hardening
-# Full Recovery Backup creation + validation only.
-# No restore behavior is included in Phase 1.
+# Backup & Recovery Hardening
+# Phase 1: Full Recovery Backup creation + validation.
+# Phase 2: Restore Wizard with validation and pre-restore safety backup.
 # -----------------------------------------------------------------------------
 
 REQUIRED_BACKUP_TABLES = [
@@ -7665,7 +7665,11 @@ def admin_backup():
         return f"""
         {nav_links()}
 
-        <h1>Phase 1 — Full Recovery Backup</h1>
+        <h1>Backup & Recovery</h1>
+
+        <p><a href="/admin-restore-backup" style="font-weight:bold;">Restore Backup</a></p>
+
+        <h2>Phase 1 — Full Recovery Backup</h2>
 
         <div style="border:2px solid #0f4c81; background:#f8fbff; padding:14px; border-radius:10px; max-width:900px;">
             <p style="font-weight:bold; margin-top:0;">
@@ -7781,7 +7785,7 @@ def admin_backup():
     <h2>Validation Errors</h2>
     <ul>{error_rows}</ul>
 
-    <p><a href="/dashboard">Back to Dashboard</a></p>
+    <p><a href="/admin-restore-backup">Restore Backup</a> | <a href="/dashboard">Back to Dashboard</a></p>
     """
 
 
@@ -7798,6 +7802,360 @@ def admin_backup_download(backup_zip_name):
         safe_name,
         as_attachment=True
     )
+
+
+# -----------------------------------------------------------------------------
+# Phase 2 Backup & Recovery Hardening
+# Restore Wizard: upload backup ZIP, validate, preview, pre-restore backup, restore.
+# -----------------------------------------------------------------------------
+
+
+def restore_work_root():
+
+    return os.path.join(
+        backup_root_folder(),
+        "restore_uploads"
+    )
+
+
+def safe_restore_token():
+
+    return secrets.token_urlsafe(16).replace("-", "_").replace(".", "_")
+
+
+def extract_backup_zip_for_restore(zip_path, token):
+
+    import zipfile
+
+    work_root = restore_work_root()
+    os.makedirs(work_root, exist_ok=True)
+
+    restore_folder = os.path.join(work_root, token)
+
+    if os.path.exists(restore_folder):
+        shutil.rmtree(restore_folder)
+
+    os.makedirs(restore_folder, exist_ok=False)
+
+    with zipfile.ZipFile(zip_path, "r") as archive:
+        archive.extractall(restore_folder)
+
+    # Phase 1 zips store everything under ShoreHome_Backup_.../
+    candidates = []
+
+    for name in os.listdir(restore_folder):
+        full_path = os.path.join(restore_folder, name)
+        if os.path.isdir(full_path) and name.startswith("ShoreHome_Backup_"):
+            candidates.append(full_path)
+
+    if candidates:
+        return candidates[0]
+
+    return restore_folder
+
+
+def validate_restore_backup_folder(extracted_root):
+
+    import json
+
+    result = {
+        "valid": False,
+        "errors": [],
+        "manifest": {},
+        "table_counts": {},
+        "template_count": 0,
+        "database_size_bytes": 0,
+        "database_path": "",
+        "backup_name": os.path.basename(extracted_root),
+    }
+
+    manifest_path = os.path.join(extracted_root, "manifest.json")
+    restore_notes_path = os.path.join(extracted_root, "restore_notes.txt")
+    validation_report_path = os.path.join(extracted_root, "validation_report.txt")
+    db_path = os.path.join(extracted_root, "data", "shore_home.db")
+    templates_path = os.path.join(extracted_root, "templates", "emails")
+
+    if not os.path.exists(manifest_path):
+        result["errors"].append("manifest.json is missing.")
+    else:
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as handle:
+                result["manifest"] = json.load(handle)
+        except Exception as error:
+            result["errors"].append("manifest.json is not readable: " + safe_text(error))
+
+    if not os.path.exists(restore_notes_path):
+        result["errors"].append("restore_notes.txt is missing.")
+
+    if not os.path.exists(validation_report_path):
+        result["errors"].append("validation_report.txt is missing.")
+
+    if not os.path.exists(db_path):
+        result["errors"].append("data/shore_home.db is missing.")
+    else:
+        result["database_path"] = db_path
+        result["database_size_bytes"] = os.path.getsize(db_path)
+        db_summary = database_backup_summary(db_path)
+        result["table_counts"] = db_summary.get("tables", {})
+
+        if not db_summary.get("readable"):
+            result["errors"].append("Backup database is not readable: " + safe_text(db_summary.get("error")))
+
+        for missing_table in db_summary.get("missing_tables", []):
+            result["errors"].append("Backup database missing required table: " + safe_text(missing_table))
+
+    if not os.path.isdir(templates_path):
+        result["errors"].append("templates/emails folder is missing.")
+    else:
+        result["template_count"] = len([
+            name for name in os.listdir(templates_path)
+            if name.endswith(".txt")
+        ])
+        if result["template_count"] == 0:
+            result["errors"].append("No email TXT templates found in backup.")
+
+    result["valid"] = not result["errors"]
+    return result
+
+
+def restore_from_validated_backup(extracted_root):
+
+    source_db = os.path.join(extracted_root, "data", "shore_home.db")
+    source_templates = os.path.join(extracted_root, "templates", "emails")
+
+    if not os.path.exists(source_db):
+        raise RuntimeError("Restore blocked: backup database is missing.")
+
+    validation = validate_restore_backup_folder(extracted_root)
+
+    if not validation["valid"]:
+        raise RuntimeError("Restore blocked: backup validation failed.")
+
+    # Create a full safety backup before touching production data.
+    safety_manifest = create_full_recovery_backup()
+
+    if safe_text(safety_manifest.get("status")) != "VERIFIED":
+        raise RuntimeError("Restore blocked: pre-restore safety backup failed validation.")
+
+    os.makedirs(os.path.dirname(DATABASE_FILE), exist_ok=True)
+    shutil.copy2(source_db, DATABASE_FILE)
+
+    restored_templates = []
+
+    if os.path.isdir(source_templates):
+        os.makedirs(EMAIL_TEMPLATE_FOLDER, exist_ok=True)
+        for filename in sorted(os.listdir(source_templates)):
+            if not filename.endswith(".txt"):
+                continue
+            shutil.copy2(
+                os.path.join(source_templates, filename),
+                os.path.join(EMAIL_TEMPLATE_FOLDER, filename)
+            )
+            restored_templates.append(filename)
+
+    restored_db_summary = database_backup_summary(DATABASE_FILE)
+
+    return {
+        "safety_backup_name": safety_manifest.get("backup_name"),
+        "safety_backup_zip_name": safety_manifest.get("backup_zip_name"),
+        "restored_database_size_bytes": os.path.getsize(DATABASE_FILE),
+        "restored_templates": restored_templates,
+        "restored_table_counts": restored_db_summary.get("tables", {}),
+    }
+
+
+@app.route("/admin-restore-backup", methods=["GET", "POST"])
+def admin_restore_backup():
+
+    if request.method != "POST":
+        return f"""
+        {nav_links()}
+
+        <h1>Phase 2 — Restore Backup</h1>
+
+        <div style="border:2px solid #fd7e14; background:#fff8ef; padding:14px; border-radius:10px; max-width:900px;">
+            <p style="font-weight:bold; margin-top:0;">
+                Restore is guarded. A backup ZIP must validate before restore is available.
+            </p>
+            <p>
+                Before restore runs, Shore Home automatically creates a new full pre-restore safety backup.
+            </p>
+        </div>
+
+        <h2>Select Backup ZIP</h2>
+
+        <form method="POST" enctype="multipart/form-data">
+            <p>
+                <input type="file" name="backup_zip" accept=".zip" required>
+            </p>
+            <button type="submit" style="font-weight:bold; padding:10px 16px; background:#0f4c81; color:white; border:0; border-radius:8px;">
+                Upload and Validate Backup
+            </button>
+            &nbsp;
+            <a href="/admin-backup">Cancel</a>
+        </form>
+        """
+
+    upload = request.files.get("backup_zip")
+
+    if not upload or not safe_text(upload.filename).lower().endswith(".zip"):
+        return "Backup ZIP is required.", 400
+
+    token = safe_restore_token()
+    upload_folder = restore_work_root()
+    os.makedirs(upload_folder, exist_ok=True)
+
+    safe_filename = os.path.basename(safe_text(upload.filename))
+    saved_zip_path = os.path.join(upload_folder, token + "_" + safe_filename)
+    upload.save(saved_zip_path)
+
+    try:
+        extracted_root = extract_backup_zip_for_restore(saved_zip_path, token)
+        validation = validate_restore_backup_folder(extracted_root)
+    except Exception as error:
+        return f"""
+        {nav_links()}
+        <h1>Restore Validation Failed</h1>
+        <p style="color:red; font-weight:bold;">{safe_text(error)}</p>
+        <p><a href="/admin-restore-backup">Back to Restore</a></p>
+        """, 500
+
+    table_rows = "".join(
+        f"<tr><td>{safe_text(table)}</td><td>{safe_text(count)}</td></tr>"
+        for table, count in validation.get("table_counts", {}).items()
+    )
+
+    error_rows = "".join(
+        f"<li>{safe_text(error)}</li>"
+        for error in validation.get("errors", [])
+    )
+
+    if not error_rows:
+        error_rows = "<li>None</li>"
+
+    manifest = validation.get("manifest", {})
+    status = "VERIFIED" if validation.get("valid") else "FAILED"
+    status_color = "green" if validation.get("valid") else "red"
+    restore_button = ""
+
+    if validation.get("valid"):
+        restore_button = f"""
+        <form method="POST" action="/admin-restore-backup/confirm">
+            <input type="hidden" name="restore_token" value="{safe_text(token)}">
+            <button type="submit" style="font-weight:bold; padding:10px 16px; background:#dc3545; color:white; border:0; border-radius:8px;">
+                Create Safety Backup and Restore
+            </button>
+            &nbsp;
+            <a href="/admin-restore-backup">Cancel</a>
+        </form>
+        """
+
+    return f"""
+    {nav_links()}
+
+    <h1>Restore Preview</h1>
+
+    <p style="color:{status_color}; font-weight:bold; font-size:18px;">
+        Validation Status: {status}
+    </p>
+
+    <p>
+        <strong>Backup Name:</strong> {safe_text(validation.get('backup_name'))}<br>
+        <strong>Created:</strong> {safe_text(manifest.get('created_at'))}<br>
+        <strong>App Version:</strong> {safe_text(manifest.get('app_version'))}<br>
+        <strong>Database Included:</strong> {'YES' if validation.get('database_path') else 'NO'}<br>
+        <strong>Database Size:</strong> {human_file_size(validation.get('database_size_bytes', 0))}<br>
+        <strong>Templates:</strong> {safe_text(validation.get('template_count'))}
+    </p>
+
+    <h2>Table Counts in Backup</h2>
+    <table border="1" cellpadding="6" cellspacing="0">
+        <tr><th>Table</th><th>Rows</th></tr>
+        {table_rows}
+    </table>
+
+    <h2>Validation Errors</h2>
+    <ul>{error_rows}</ul>
+
+    <div style="border:2px solid #dc3545; background:#fff5f5; padding:12px; border-radius:8px; max-width:900px; margin-top:16px;">
+        <strong>Restore will replace the active database and email templates.</strong><br>
+        A full safety backup will be created first. Restore will not continue if that safety backup fails.
+    </div>
+
+    <br>
+    {restore_button}
+    <p><a href="/admin-backup">Back to Backup & Recovery</a></p>
+    """
+
+
+@app.route("/admin-restore-backup/confirm", methods=["POST"])
+def admin_restore_backup_confirm():
+
+    token = safe_text(request.form.get("restore_token")).strip()
+
+    if not token or "/" in token or ".." in token:
+        return "Invalid restore token.", 400
+
+    extracted_root = None
+    token_folder = os.path.join(restore_work_root(), token)
+
+    if os.path.isdir(token_folder):
+        for name in os.listdir(token_folder):
+            candidate = os.path.join(token_folder, name)
+            if os.path.isdir(candidate) and name.startswith("ShoreHome_Backup_"):
+                extracted_root = candidate
+                break
+        if not extracted_root:
+            extracted_root = token_folder
+
+    if not extracted_root or not os.path.isdir(extracted_root):
+        return "Restore package not found. Please upload and validate the backup again.", 400
+
+    try:
+        restore_result = restore_from_validated_backup(extracted_root)
+    except Exception as error:
+        return f"""
+        {nav_links()}
+        <h1>Restore Failed</h1>
+        <p style="color:red; font-weight:bold;">{safe_text(error)}</p>
+        <p>No restore should be trusted unless the completion screen appears.</p>
+        <p><a href="/admin-restore-backup">Back to Restore</a></p>
+        """, 500
+
+    table_rows = "".join(
+        f"<tr><td>{safe_text(table)}</td><td>{safe_text(count)}</td></tr>"
+        for table, count in restore_result.get("restored_table_counts", {}).items()
+    )
+
+    return f"""
+    {nav_links()}
+
+    <h1>Restore Complete</h1>
+
+    <p style="color:green; font-weight:bold; font-size:18px;">
+        Status: RESTORED
+    </p>
+
+    <p>
+        <strong>Pre-Restore Safety Backup:</strong><br>
+        {safe_text(restore_result.get('safety_backup_name'))}<br>
+        <a href="/admin-backup/download/{safe_text(restore_result.get('safety_backup_zip_name'))}">{safe_text(restore_result.get('safety_backup_zip_name'))}</a>
+    </p>
+
+    <p>
+        <strong>Restored Database Size:</strong> {human_file_size(restore_result.get('restored_database_size_bytes', 0))}<br>
+        <strong>Templates Restored:</strong> {len(restore_result.get('restored_templates', []))}
+    </p>
+
+    <h2>Restored Table Counts</h2>
+    <table border="1" cellpadding="6" cellspacing="0">
+        <tr><th>Table</th><th>Rows</th></tr>
+        {table_rows}
+    </table>
+
+    <p><a href="/dashboard">Open Dashboard</a></p>
+    <p><a href="/admin-backup">Back to Backup & Recovery</a></p>
+    """
 
 
 @app.route("/admin-reset-test-data", methods=["GET", "POST"])
