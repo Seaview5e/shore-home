@@ -8069,6 +8069,14 @@ def extract_backup_zip_for_restore(zip_path, token):
     os.makedirs(restore_folder, exist_ok=False)
 
     with zipfile.ZipFile(zip_path, "r") as archive:
+        # Safe extraction: block zip-slip/path traversal entries.
+        restore_folder_abs = os.path.abspath(restore_folder)
+
+        for member in archive.infolist():
+            member_path = os.path.abspath(os.path.join(restore_folder, member.filename))
+            if not (member_path == restore_folder_abs or member_path.startswith(restore_folder_abs + os.sep)):
+                raise RuntimeError("Unsafe backup ZIP path blocked: " + safe_text(member.filename))
+
         archive.extractall(restore_folder)
 
     # Phase 1 zips store everything under ShoreHome_Backup_.../
@@ -8107,6 +8115,7 @@ def validate_restore_backup_folder(extracted_root):
     validation_report_path = os.path.join(extracted_root, "validation_report.txt")
     db_path = os.path.join(extracted_root, "data", "shore_home.db")
     templates_path = os.path.join(extracted_root, "templates", "emails")
+    photos_path = os.path.join(extracted_root, "static", "profile_photos")
 
     if not os.path.exists(manifest_path):
         result["errors"].append("manifest.json is missing.")
