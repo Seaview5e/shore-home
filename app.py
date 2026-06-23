@@ -30071,9 +30071,10 @@ Judy - email unknown">{safe_text(current_suggested_guests)}</textarea>
     </div>
     """
 
-
 @app.errorhandler(Exception)
 def production_error_handler(error):
+
+    app.logger.exception("Unhandled exception")
 
     if isinstance(error, HTTPException):
 
