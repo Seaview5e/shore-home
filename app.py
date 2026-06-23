@@ -8158,6 +8158,364 @@ def admin_restore_backup_confirm():
     """
 
 
+
+
+# -----------------------------------------------------------------------------
+# Phase 3: Selective Data Recovery (rooms + guest_profiles only).
+# -----------------------------------------------------------------------------
+
+SELECTIVE_RECOVERY_TABLES = [
+    "rooms",
+    "guest_profiles",
+]
+
+
+def selective_restore_work_root():
+
+    return os.path.join(
+        app.root_path,
+        "selective_restore_uploads"
+    )
+
+
+def validate_selective_recovery_db(db_path):
+
+    result = {
+        "valid": False,
+        "errors": [],
+        "database_size_bytes": 0,
+        "table_counts": {},
+        "columns": {},
+    }
+
+    if not os.path.exists(db_path):
+        result["errors"].append("Uploaded database file is missing.")
+        return result
+
+    result["database_size_bytes"] = os.path.getsize(db_path)
+
+    try:
+        source_conn = sqlite3.connect(db_path)
+        source_conn.row_factory = sqlite3.Row
+
+        existing_tables = set(
+            row["name"] for row in source_conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        )
+
+        for table_name in SELECTIVE_RECOVERY_TABLES:
+
+            if table_name not in existing_tables:
+                result["errors"].append("Source database missing required table: " + table_name)
+                result["table_counts"][table_name] = None
+                result["columns"][table_name] = []
+                continue
+
+            result["table_counts"][table_name] = source_conn.execute(
+                f"SELECT COUNT(*) AS count FROM {table_name}"
+            ).fetchone()["count"]
+
+            result["columns"][table_name] = [
+                row["name"] for row in source_conn.execute(
+                    f"PRAGMA table_info({table_name})"
+                ).fetchall()
+            ]
+
+        source_conn.close()
+
+    except Exception as error:
+        result["errors"].append("Uploaded database is not readable: " + safe_text(error))
+
+    result["valid"] = not result["errors"]
+    return result
+
+
+def table_column_names(conn, table_name):
+
+    return [
+        row["name"] for row in conn.execute(
+            f"PRAGMA table_info({table_name})"
+        ).fetchall()
+    ]
+
+
+def restore_table_from_source_db(source_conn, target_conn, table_name):
+
+    source_columns = table_column_names(source_conn, table_name)
+    target_columns = table_column_names(target_conn, table_name)
+
+    common_columns = [
+        column for column in target_columns
+        if column in source_columns
+    ]
+
+    if not common_columns:
+        raise RuntimeError("No matching columns found for table: " + table_name)
+
+    rows = source_conn.execute(
+        f"SELECT {', '.join(common_columns)} FROM {table_name}"
+    ).fetchall()
+
+    target_conn.execute(f"DELETE FROM {table_name}")
+
+    if rows:
+        placeholders = ", ".join(["?"] * len(common_columns))
+        column_list = ", ".join(common_columns)
+
+        target_conn.executemany(
+            f"INSERT INTO {table_name} ({column_list}) VALUES ({placeholders})",
+            [tuple(row[column] for column in common_columns) for row in rows]
+        )
+
+    return {
+        "table": table_name,
+        "rows_restored": len(rows),
+        "columns_restored": common_columns,
+    }
+
+
+def selective_restore_rooms_and_guest_profiles(source_db_path):
+
+    validation = validate_selective_recovery_db(source_db_path)
+
+    if not validation.get("valid"):
+        raise RuntimeError("Selective recovery blocked: source database validation failed.")
+
+    safety_manifest = create_full_recovery_backup()
+
+    if safe_text(safety_manifest.get("status")) != "VERIFIED":
+        raise RuntimeError("Selective recovery blocked: pre-restore safety backup failed validation.")
+
+    source_conn = sqlite3.connect(source_db_path)
+    source_conn.row_factory = sqlite3.Row
+
+    target_conn = get_db_connection()
+
+    restored_tables = []
+
+    try:
+        for table_name in SELECTIVE_RECOVERY_TABLES:
+            restored_tables.append(
+                restore_table_from_source_db(
+                    source_conn,
+                    target_conn,
+                    table_name
+                )
+            )
+
+        target_conn.commit()
+
+    except Exception:
+        target_conn.rollback()
+        raise
+
+    finally:
+        source_conn.close()
+        target_conn.close()
+
+    current_summary = database_backup_summary(DATABASE_FILE)
+
+    return {
+        "safety_backup_name": safety_manifest.get("backup_name"),
+        "safety_backup_zip_name": safety_manifest.get("backup_zip_name"),
+        "restored_tables": restored_tables,
+        "current_table_counts": current_summary.get("tables", {}),
+    }
+
+
+@app.route("/admin-selective-data-recovery", methods=["GET", "POST"])
+def admin_selective_data_recovery():
+
+    if request.method != "POST":
+        return f"""
+        {nav_links()}
+
+        <h1>Phase 3 — Selective Data Recovery</h1>
+
+        <div style="border:2px solid #fd7e14; background:#fff8ef; padding:14px; border-radius:10px; max-width:900px;">
+            <p style="font-weight:bold; margin-top:0;">
+                This restores only rooms and guest profiles from an uploaded SQLite database.
+            </p>
+            <p>
+                It does not restore requests, bookings, invitations, coordination groups, blocked dates, templates, or app files.
+            </p>
+            <p>
+                A full pre-restore safety backup is created before anything is changed.
+            </p>
+        </div>
+
+        <h2>Select Source Database</h2>
+
+        <form method="POST" enctype="multipart/form-data">
+            <p>
+                <input type="file" name="source_db" accept=".db,.sqlite,.sqlite3" required>
+            </p>
+            <button type="submit" style="font-weight:bold; padding:10px 16px; background:#0f4c81; color:white; border:0; border-radius:8px;">
+                Upload and Preview
+            </button>
+            &nbsp;
+            <a href="/admin-backup">Cancel</a>
+        </form>
+        """
+
+    upload = request.files.get("source_db")
+
+    filename = safe_text(upload.filename if upload else "").strip()
+
+    if not upload or not filename.lower().endswith((".db", ".sqlite", ".sqlite3")):
+        return "SQLite .db file is required.", 400
+
+    token = safe_restore_token()
+    upload_folder = selective_restore_work_root()
+    os.makedirs(upload_folder, exist_ok=True)
+
+    safe_filename = os.path.basename(filename)
+    saved_db_path = os.path.join(upload_folder, token + "_" + safe_filename)
+    upload.save(saved_db_path)
+
+    validation = validate_selective_recovery_db(saved_db_path)
+
+    table_rows = "".join(
+        f"<tr><td>{safe_text(table)}</td><td>{safe_text(count)}</td></tr>"
+        for table, count in validation.get("table_counts", {}).items()
+    )
+
+    error_rows = "".join(
+        f"<li>{safe_text(error)}</li>"
+        for error in validation.get("errors", [])
+    )
+
+    if not error_rows:
+        error_rows = "<li>None</li>"
+
+    status = "VERIFIED" if validation.get("valid") else "FAILED"
+    status_color = "green" if validation.get("valid") else "red"
+
+    restore_button = ""
+
+    if validation.get("valid"):
+        restore_button = f"""
+        <form method="POST" action="/admin-selective-data-recovery/confirm">
+            <input type="hidden" name="restore_token" value="{safe_text(token)}">
+            <input type="hidden" name="source_filename" value="{safe_text(safe_filename)}">
+            <button type="submit" style="font-weight:bold; padding:10px 16px; background:#dc3545; color:white; border:0; border-radius:8px;">
+                Create Safety Backup and Restore Rooms + Guest Profiles
+            </button>
+            &nbsp;
+            <a href="/admin-selective-data-recovery">Cancel</a>
+        </form>
+        """
+
+    return f"""
+    {nav_links()}
+
+    <h1>Selective Data Recovery Preview</h1>
+
+    <p style="color:{status_color}; font-weight:bold; font-size:18px;">
+        Validation Status: {status}
+    </p>
+
+    <p>
+        <strong>Source DB:</strong> {safe_text(safe_filename)}<br>
+        <strong>Database Size:</strong> {human_file_size(validation.get('database_size_bytes', 0))}<br>
+        <strong>Restore Scope:</strong> rooms + guest_profiles only
+    </p>
+
+    <h2>Rows Available to Restore</h2>
+    <table border="1" cellpadding="6" cellspacing="0">
+        <tr><th>Table</th><th>Rows</th></tr>
+        {table_rows}
+    </table>
+
+    <h2>Validation Errors</h2>
+    <ul>{error_rows}</ul>
+
+    <div style="border:2px solid #dc3545; background:#fff5f5; padding:12px; border-radius:8px; max-width:900px; margin-top:16px;">
+        <strong>This will replace only the current rooms and guest_profiles tables.</strong><br>
+        It will not touch booking requests, bookings, invitations, coordination groups, blocked dates, email templates, or app files.
+    </div>
+
+    <br>
+    {restore_button}
+    <p><a href="/admin-backup">Back to Backup & Recovery</a></p>
+    """
+
+
+@app.route("/admin-selective-data-recovery/confirm", methods=["POST"])
+def admin_selective_data_recovery_confirm():
+
+    token = safe_text(request.form.get("restore_token")).strip()
+    source_filename = safe_text(request.form.get("source_filename")).strip()
+
+    if not token or "/" in token or ".." in token:
+        return "Invalid restore token.", 400
+
+    if not source_filename or "/" in source_filename or ".." in source_filename:
+        return "Invalid source filename.", 400
+
+    source_db_path = os.path.join(
+        selective_restore_work_root(),
+        token + "_" + source_filename
+    )
+
+    if not os.path.exists(source_db_path):
+        return "Source database not found. Please upload and preview it again.", 400
+
+    try:
+        restore_result = selective_restore_rooms_and_guest_profiles(source_db_path)
+    except Exception as error:
+        return f"""
+        {nav_links()}
+        <h1>Selective Data Recovery Failed</h1>
+        <p style="color:red; font-weight:bold;">{safe_text(error)}</p>
+        <p>No selective restore should be trusted unless the completion screen appears.</p>
+        <p><a href="/admin-selective-data-recovery">Back to Selective Data Recovery</a></p>
+        """, 500
+
+    restored_rows = "".join(
+        f"<tr><td>{safe_text(item.get('table'))}</td><td>{safe_text(item.get('rows_restored'))}</td><td>{safe_text(', '.join(item.get('columns_restored', [])))}</td></tr>"
+        for item in restore_result.get("restored_tables", [])
+    )
+
+    table_rows = "".join(
+        f"<tr><td>{safe_text(table)}</td><td>{safe_text(count)}</td></tr>"
+        for table, count in restore_result.get("current_table_counts", {}).items()
+    )
+
+    return f"""
+    {nav_links()}
+
+    <h1>Selective Data Recovery Complete</h1>
+
+    <p style="color:green; font-weight:bold; font-size:18px;">
+        Status: RESTORED
+    </p>
+
+    <p>
+        <strong>Pre-Restore Safety Backup:</strong><br>
+        {safe_text(restore_result.get('safety_backup_name'))}<br>
+        <a href="/admin-backup/download/{safe_text(restore_result.get('safety_backup_zip_name'))}">{safe_text(restore_result.get('safety_backup_zip_name'))}</a>
+    </p>
+
+    <h2>Tables Restored</h2>
+    <table border="1" cellpadding="6" cellspacing="0">
+        <tr><th>Table</th><th>Rows Restored</th><th>Columns Restored</th></tr>
+        {restored_rows}
+    </table>
+
+    <h2>Current Table Counts After Restore</h2>
+    <table border="1" cellpadding="6" cellspacing="0">
+        <tr><th>Table</th><th>Rows</th></tr>
+        {table_rows}
+    </table>
+
+    <p><a href="/profiles">Open Guest Profiles</a></p>
+    <p><a href="/dashboard">Open Dashboard</a></p>
+    <p><a href="/admin-backup">Back to Backup & Recovery</a></p>
+    """
+
+
 @app.route("/admin-reset-test-data", methods=["GET", "POST"])
 def admin_reset_test_data():
 
