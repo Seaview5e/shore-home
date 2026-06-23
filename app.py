@@ -1,6 +1,6 @@
 from flask import Flask, request, redirect, render_template, render_template_string, session, send_from_directory
 from datetime import date, datetime, timedelta
-from database import get_db_connection, DATABASE_FILE
+from database import get_db_connection, DATABASE_FILE, init_db
 import smtplib
 from email.message import EmailMessage
 import os
@@ -15,6 +15,9 @@ from werkzeug.exceptions import HTTPException
 
 
 app = Flask(__name__)
+
+with app.app_context():
+    init_db()
 app.secret_key = os.environ.get(
     "SECRET_KEY",
     "shore-home-local-dev-key-change-in-production"
