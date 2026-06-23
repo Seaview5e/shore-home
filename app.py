@@ -51,6 +51,20 @@ def ensure_production_schema():
 with app.app_context():
     init_db()
     ensure_production_schema()
+
+    conn = get_db_connection()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            action TEXT,
+            details TEXT,
+            actor TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
 app.secret_key = os.environ.get(
     "SECRET_KEY",
     "shore-home-local-dev-key-change-in-production"
