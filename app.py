@@ -20,32 +20,26 @@ app = Flask(__name__)
 with app.app_context():
     init_db()
 
-    conn = get_db_connection()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS activity_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            action TEXT,
-            details TEXT,
-            actor TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-    ensure_production_schema()
-
-
-def ensure_production_schema():
-    """Safely upgrade the persistent SQLite DB without deleting data."""
-    conn = get_db_connection()
+    schema_conn = get_db_connection()
     try:
-        columns = {
+        schema_conn.execute("""
+            CREATE TABLE IF NOT EXISTS activity_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id INTEGER,
+                action_type TEXT NOT NULL DEFAULT '',
+                old_status TEXT,
+                new_status TEXT,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        booking_columns = {
             row["name"]
-            for row in conn.execute("PRAGMA table_info(booking_requests)").fetchall()
+            for row in schema_conn.execute("PRAGMA table_info(booking_requests)").fetchall()
         }
 
-        required_columns = {
+        required_booking_columns = {
             "additional_names": "TEXT",
             "rooms_requested": "INTEGER DEFAULT 1",
             "response_message": "TEXT",
@@ -54,18 +48,16 @@ def ensure_production_schema():
             "coordination_notes": "TEXT",
         }
 
-        for column_name, column_definition in required_columns.items():
-            if column_name not in columns:
-                conn.execute(
+        for column_name, column_definition in required_booking_columns.items():
+            if column_name not in booking_columns:
+                schema_conn.execute(
                     f"ALTER TABLE booking_requests ADD COLUMN {column_name} {column_definition}"
                 )
 
-        conn.commit()
+        schema_conn.commit()
         print("DATABASE SCHEMA CHECK COMPLETE", flush=True)
     finally:
-        conn.close()
-
-
+        schema_conn.close()
 
 app.secret_key = os.environ.get(
     "SECRET_KEY",
