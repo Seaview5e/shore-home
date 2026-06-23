@@ -2208,11 +2208,9 @@ def nav_links():
         <a href="/blocked">House Blocks</a> |
         <a href="/manual-request">Manual Request</a> |
         <a href="/admin-backup">Backup & Recovery</a> |
-        <a href="/admin-reset-test-data">Reset Test Data</a> |
-        <a href="/production-check">Production Check</a> |
         <a href="/production-health">Production Health</a> |
         <a href="/booking-consistency-repair">Booking Consistency Repair</a> |
-        <a href="/system-health">System Health</a> |\n        <a href="/admin-logout">Logout</a>
+        <a href="/admin-reset-test-data">Reset Test Data</a> |\n        <a href="/admin-logout">Logout</a>
     </div>
     <br>
     <small style="color: gray;">Version: {APP_VERSION}</small>
@@ -32021,8 +32019,7 @@ def production_health_dashboard():
 
     <p>
         <a href="/admin-backup" style="font-weight:bold;">Backup & Recovery</a> |
-        <a href="/booking-consistency-repair" style="font-weight:bold;">Booking Consistency Repair</a> |
-        <a href="/production-check">Classic Production Check</a>
+        <a href="/booking-consistency-repair" style="font-weight:bold;">Booking Consistency Repair</a>
     </p>
 
     {sections_html}
