@@ -16,8 +16,40 @@ from werkzeug.exceptions import HTTPException
 
 app = Flask(__name__)
 
+
+def ensure_production_schema():
+    """Safely upgrade the persistent SQLite DB without deleting data."""
+    conn = get_db_connection()
+    try:
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(booking_requests)").fetchall()
+        }
+
+        required_columns = {
+            "additional_names": "TEXT",
+            "rooms_requested": "INTEGER DEFAULT 1",
+            "response_message": "TEXT",
+            "email_status": "TEXT DEFAULT 'not_needed'",
+            "email_needed_type": "TEXT",
+            "coordination_notes": "TEXT",
+        }
+
+        for column_name, column_definition in required_columns.items():
+            if column_name not in columns:
+                conn.execute(
+                    f"ALTER TABLE booking_requests ADD COLUMN {column_name} {column_definition}"
+                )
+
+        conn.commit()
+        print("DATABASE SCHEMA CHECK COMPLETE", flush=True)
+    finally:
+        conn.close()
+
+
 with app.app_context():
     init_db()
+    ensure_production_schema()
 app.secret_key = os.environ.get(
     "SECRET_KEY",
     "shore-home-local-dev-key-change-in-production"
