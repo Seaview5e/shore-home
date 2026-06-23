@@ -7667,7 +7667,11 @@ def admin_backup():
 
         <h1>Backup & Recovery</h1>
 
-        <p><a href="/admin-restore-backup" style="font-weight:bold;">Restore Backup</a></p>
+        <div style="border:2px solid #d8e6f3; background:#f8fbff; padding:12px; border-radius:10px; max-width:900px; margin-bottom:16px;">
+            <h2 style="margin-top:0;">Recovery Actions</h2>
+            <p><a href="/admin-restore-backup" style="font-weight:bold;">Restore Full Backup</a></p>
+            <p><a href="/admin-selective-data-recovery" style="font-weight:bold; color:#0f4c81;">Restore Guest Profiles & Rooms</a></p>
+        </div>
 
         <h2>Phase 1 — Full Recovery Backup</h2>
 
