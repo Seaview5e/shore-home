@@ -2,7 +2,7 @@ Hi {{ guest_name }},
 
 You’ve officially been added to this season’s highly sophisticated, mildly experimental, AI-assisted visit planning system.
 
-Translation: I’ve been having way too much fun building something to make planning visits easier… and hopefully slightly more entertaining.
+Translation: I’ve been having way too much fun building something to make planning visits easier… and hopefully slightly more entertaining. But always very late getting these invitations out!
 
 Like any beta, there may still be a few rough edges. If something feels confusing, awkward, or unexpectedly robotic, please let me know so I can keep improving it. Any mistakes are probably AI-generated, but customer support is still delightfully human. Email and phone calls still work too — we haven’t handed full control over to the robots… yet.
 
@@ -12,12 +12,12 @@ Soon you may receive an invitation to request a visit or to coordinate dates wit
 
 A Request a Visit invitation is for planning a stay for yourself or for people traveling with you. That could mean your family, children, relatives, friends, or anyone you are helping organize for the same dates.
 
-A Coordination invitation is for a group trying to coordinate dated with each other before anything is finalized. Everyone shares dates that work best, and we try to find overlap without creating seventeen separate text chains. Based on previous visits we will attempt to create the group intially. 
+A Coordination invitation is for a group trying to coordinate dated with each other before anything is finalized. Everyone shares dates that work best, and we try to find overlap without creating seventeen separate text chains. Based on previous visits we will attempt to create the group intially. This app can still most likely use help so set low expecations and Request a Visit is a capable fallback.  
 
 A few helpful notes:
 
 • Each visit date range needs its own request.
-• You can request multiple rooms when everyone is staying the same dates.
+• You can request multiple rooms for othes when everyone is staying the same dates.
 • Please include everyone’s names so we can plan accommodations accurately.
 • Nothing is confirmed until you receive approval.
 
@@ -25,7 +25,7 @@ Once invitations begin, the system will walk you through the rest and send follo
 
 Looking forward to seeing everyone this season.
 
-P.S. EMail me if you rather I use a diffferent email and I will make the change.
+P.S. EMail me if you rather we use a diffferent email and we will make the change.
 
 John & Mark
 Strathmere Visit Request System
