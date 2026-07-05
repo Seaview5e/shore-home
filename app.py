@@ -11898,18 +11898,18 @@ def approve_request(request_id):
                 "accepted",
                 invitation_id
             ))
-
-       write_activity_log(
-           conn,
-           request_id,
-           activity_action_type,
-           request_row["status"],
-           "approved",
-           f"Rooms assigned: {', '.join(selected_room_names)}. Backup: {backup_path}"
-       )
+        
+        write_activity_log(
+            conn,
+            request_id,
+            activity_action_type,
+            request_row["status"],
+            "approved",
+            f"Rooms assigned: {', '.join(selected_room_names)}. Backup: {backup_path}"
+        )
 
         conn.commit()
-
+        
         recipient_email = resolve_request_recipient_email(
             conn,
             request_row
