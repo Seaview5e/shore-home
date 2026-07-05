@@ -1976,7 +1976,7 @@ PUBLIC_ENDPOINTS = {
     "invitation_request",
     "guest_invitation_request",
     "request_form",
-    "new_request",
+    "home",
     "public_request",
     "guest_request",
     "submit",
