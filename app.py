@@ -18357,24 +18357,7 @@ def room_assignments_page():
             <a href="/request/{row['id']}">View</a><br>
             <a href="/request/{row['id']}/edit">Edit</a>
             """
-        else:
-            assigned_rooms = assigned_rooms_by_request.get(row["id"], [])
-
-            if assigned_rooms:
-                room_display = "<ul style='margin: 0; padding-left: 16px;'>"
-
-                for assigned_room in assigned_rooms:
-                    room_display += f"<li>{assigned_room}</li>"
-
-                room_display += "</ul>"
-            else:
-                room_display = "None"
-
-            action_display = f"""
-            <a href="/request/{row['id']}">View</a><br>
-            <a href="/request/{row['id']}/edit">Edit</a>
-            """
-
+       
         additional_guests = row["additional_names"]
 
         if not additional_guests:
