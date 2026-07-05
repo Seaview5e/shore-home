@@ -31576,6 +31576,9 @@ def production_error_handler(error):
 
     <p>Shore Home App hit an unexpected error, and the details were written to logs/errors.log.</p>
 
+    <pre style="white-space: pre-wrap; background:#f8f9fa; border:1px solid #ccc; padding:10px;">
+{safe_text(traceback.format_exc())}
+    </pre>
     <p>Nothing on this page should be treated as saved unless the previous action showed a confirmation.</p>
 
     <p><a href="/dashboard">Back to Dashboard</a></p>
