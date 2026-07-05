@@ -11909,7 +11909,32 @@ def approve_request(request_id):
         )
 
         conn.commit()
-        
+                if was_already_approved:
+            conn.close()
+
+            return f"""
+            {nav_links()}
+
+            <h1>Room Assignment Updated</h1>
+
+            <p style="color: green; font-weight: bold;">
+                The room assignment was updated.
+            </p>
+
+            <p>
+                No email was sent automatically.
+            </p>
+
+            <p>
+                This reservation is now marked for an update email.
+            </p>
+
+            <p>
+                <a href="/room-assignments">Back to Room Assignments</a> |
+                <a href="/request/{request_id}/email-preview">Preview / Send Update Email</a>
+            </p>
+            """
+
         recipient_email = resolve_request_recipient_email(
             conn,
             request_row
