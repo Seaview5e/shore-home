@@ -11,7 +11,7 @@ import logging
 import traceback
 import re
 import hmac
-import secrets
+import secretsƒ
 from werkzeug.exceptions import HTTPException
 
 
@@ -11906,7 +11906,7 @@ def approve_request(request_id):
            request_row["status"],
            "approved",
            f"Rooms assigned: {', '.join(selected_room_names)}. Backup: {backup_path}"
-      )
+       )
 
         conn.commit()
 
