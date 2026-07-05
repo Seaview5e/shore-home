@@ -21536,7 +21536,7 @@ def cancel_request(request_id):
     if not rooms_requested:
         rooms_requested = 1
 
-    new_request_link = "/new-request"
+    new_request_link = repeat_visit_request_url_for_row(request_row)
 
     if request.method == "POST":
 
@@ -21730,8 +21730,8 @@ Cancellation Reason:
                     nights=safe_text(nights),
                     rooms_requested=safe_text(rooms_requested),
                     additional_names=safe_text(row_value(request_row, "additional_names")) or "None listed",
-                    request_link=standard_new_request_url(),
-                    new_request_link=standard_new_request_url()
+                    request_link=repeat_visit_request_url_for_row(request_row),
+                    new_request_link=repeat_visit_request_url_for_row(request_row)
                 )
 
                 send_email(
