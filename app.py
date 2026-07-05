@@ -13767,7 +13767,7 @@ def profiles_page():
 
             conn.commit()
 
-            if request.form.get("send_welcome_email", "yes") == "yes":
+            if request.form.get("send_welcome_email", "no") == "yes":
 
                 try:
                     send_profile_welcome_email(
@@ -13864,7 +13864,25 @@ def profiles_page():
 
     <h2>Add Guest Profile</h2>
 
-    <form method="POST" action="/profiles">
+        <form method="POST" action="/profiles">
+
+        <div style="
+            border: 2px solid #0d6efd;
+            background-color: #f8fbff;
+            padding: 10px 12px;
+            margin: 8px 0 14px 0;
+            max-width: 700px;
+            border-radius: 6px;
+        ">
+            <label style="font-weight: bold;">
+                <input type="checkbox" name="send_welcome_email" value="yes">
+                Send Welcome Email
+            </label><br>
+            <small style="color: #555;">
+                Uses templates/emails/profile_welcome.txt. No invitation is sent yet.
+            </small>
+        </div>
+
         <label>Primary First Name:</label><br>
         <input type="text" name="primary_name" required><br>
 
@@ -13900,16 +13918,8 @@ def profiles_page():
             <option value="archived">Archived</option>
         </select><br><br>
 
-        <label>
-            <input type="checkbox" name="send_welcome_email" value="yes" checked>
-            Send Welcome Email
-        </label><br>
-        <small style="color: #555;">
-            Uses templates/emails/profile_welcome.txt. No invitation is sent yet.
-        </small><br><br>
-
         <button type="submit">Add Profile</button>
-    </form>
+    </form><
 
     <h2>Existing Profiles</h2>
     """
