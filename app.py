@@ -4,6 +4,7 @@ from database import get_db_connection, DATABASE_FILE, init_db
 import smtplib
 from email.message import EmailMessage
 import os
+import shutil
 import sqlite3
 import html as html_escape_module
 import logging
