@@ -11,7 +11,7 @@ import logging
 import traceback
 import re
 import hmac
-import secretsƒ
+import secrets
 from werkzeug.exceptions import HTTPException
 
 
