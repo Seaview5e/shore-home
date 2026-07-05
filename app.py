@@ -11430,6 +11430,7 @@ def approve_request(request_id):
         </p>
         """
 
+    was_already_approved = safe_text(request_row["status"]).strip() == "approved"
     is_coordination_converted_request = False
 
     try:
@@ -11836,6 +11837,12 @@ def approve_request(request_id):
 
         approval_email_status = "needs_email"
         approval_email_needed_type = "approval"
+        activity_action_type = "request_approved"
+
+        if was_already_approved:
+            approval_email_status = "needs_update"
+            approval_email_needed_type = "date_change"
+            activity_action_type = "room_reassigned"
 
         if is_coordination_converted_request:
             approval_email_status = "not_needed"
@@ -11892,14 +11899,14 @@ def approve_request(request_id):
                 invitation_id
             ))
 
-        write_activity_log(
-            conn,
-            request_id,
-            "request_approved",
-            request_row["status"],
-            "approved",
-            f"Rooms assigned: {', '.join(selected_room_names)}. Backup: {backup_path}"
-        )
+       write_activity_log(
+           conn,
+           request_id,
+           activity_action_type,
+           request_row["status"],
+           "approved",
+           f"Rooms assigned: {', '.join(selected_room_names)}. Backup: {backup_path}"
+      )
 
         conn.commit()
 
@@ -18110,6 +18117,7 @@ def room_assignments_page():
     """).fetchall()
 
     assigned_rooms_by_request = {}
+    assigned_room_ids_by_request = {}
 
     for booking in existing_bookings:
         request_id = booking["request_id"]
@@ -18117,8 +18125,11 @@ def room_assignments_page():
         if request_id not in assigned_rooms_by_request:
             assigned_rooms_by_request[request_id] = []
 
-        assigned_rooms_by_request[request_id].append(booking["room_name"])
+        if request_id not in assigned_room_ids_by_request:
+            assigned_room_ids_by_request[request_id] = []
 
+        assigned_rooms_by_request[request_id].append(booking["room_name"])
+        assigned_room_ids_by_request[request_id].append(booking["room_id"])
     conn.close()
 
     html = nav_links() + """
@@ -18274,6 +18285,78 @@ def room_assignments_page():
             <a href="/decline/{row['id']}">Decline</a>
             """
 
+        else:
+            assigned_rooms = assigned_rooms_by_request.get(row["id"], [])
+            assigned_room_ids = assigned_room_ids_by_request.get(row["id"], [])
+
+            current_room_display = "None"
+
+            if assigned_rooms:
+                current_room_display = "<ul style='margin: 0; padding-left: 16px;'>"
+
+                for assigned_room in assigned_rooms:
+                    current_room_display += f"<li>{assigned_room}</li>"
+
+                current_room_display += "</ul>"
+
+            room_selects_html = ""
+
+            for i in range(1, rooms_requested + 1):
+                current_room_id = ""
+
+                if len(assigned_room_ids) >= i:
+                    current_room_id = str(assigned_room_ids[i - 1])
+
+                room_options = ""
+
+                for room in rooms:
+                    room_id_text = str(room["id"])
+                    selected_attr = ""
+                    disabled_attr = ""
+                    availability_label = "Available"
+
+                    if room_id_text == current_room_id:
+                        selected_attr = "selected"
+                        availability_label = "Current Room"
+                    elif room["id"] in booked_room_ids:
+                        disabled_attr = "disabled"
+                        availability_label = "BOOKED"
+
+                    room_options += f"""
+                    <option value="{room['id']}" {selected_attr} {disabled_attr}>
+                        {room['name']} - {availability_label}
+                    </option>
+                    """
+
+                room_selects_html += f"""
+                <label><strong>Room {i}:</strong></label><br>
+                <select name="room_id_{i}" style="width: 170px;">
+                    {room_options}
+                </select><br>
+                """
+
+            room_display = f"""
+            <strong>Current:</strong>
+            {current_room_display}
+
+            <form method="POST" action="/approve/{row['id']}" style="margin-top: 8px;">
+                {room_selects_html}
+
+                <label><strong>Update Note:</strong></label><br>
+                <textarea name="response_message"
+                          rows="2"
+                          style="width: 170px;">Room assignment updated.</textarea><br>
+
+                <button type="submit">
+                    Save Room Change
+                </button>
+            </form>
+            """
+
+            action_display = f"""
+            <a href="/request/{row['id']}">View</a><br>
+            <a href="/request/{row['id']}/edit">Edit</a>
+            """
         else:
             assigned_rooms = assigned_rooms_by_request.get(row["id"], [])
 
