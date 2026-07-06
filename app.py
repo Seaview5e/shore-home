@@ -19102,11 +19102,12 @@ def preview_invitation_email(invitation_id):
         WHERE invitations.id = ?
     """, (
         invitation_id,
+        
     )).fetchone()
 
-    conn.close()
-
     if not invite:
+
+        conn.close()
 
         return """
         <h2>
@@ -19198,7 +19199,7 @@ def preview_invitation_email(invitation_id):
         conn,
         row_value(invite, "guest_profile_id")
     )
-
+    conn.close()
     body = render_email_template(
         "invitation.txt",
         guest_name=safe_text(invite["primary_name"]),
