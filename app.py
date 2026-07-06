@@ -13,8 +13,8 @@ import re
 import hmac
 import secrets
 from werkzeug.exceptions import HTTPException
-
-
+ 
+ 
 app = Flask(__name__)
 
 with app.app_context():
@@ -1976,7 +1976,7 @@ PUBLIC_ENDPOINTS = {
     "invitation_request",
     "guest_invitation_request",
     "request_form",
-    "new_request",
+    "home",
     "public_request",
     "guest_request",
     "submit",
@@ -1987,6 +1987,7 @@ PUBLIC_ENDPOINTS = {
     "change_request_bad_link",
     "cancel_request",
     "coordination_group_member_request",
+    "coordination_group_member_organizer_planning",
     "coordination_group_member_date_options",
     "coordination_group_member_date_options_thanks",
     "coordination_group_member_cannot_change_dates",
@@ -2209,6 +2210,7 @@ def nav_links():
         <a href="/manual-request">Manual Request</a> |
         <a href="/admin-backup">Backup & Recovery</a> |
         <a href="/production-health">Production Health</a> |
+        <a href="/production-check">Production Check</a> |
         <a href="/booking-consistency-repair">Booking Consistency Repair</a> |
         <a href="/admin-reset-test-data">Reset Test Data</a> |\n        <a href="/admin-logout">Logout</a>
     </div>
@@ -6945,10 +6947,23 @@ def critical_guest_route_diagnostics_summary():
         "/invitation/<int:invitation_id>/request",
         "/new-request",
         "/submit",
+        "/request/<int:request_id>/submitted",
+        "/request-submitted/complete",
+        "/request/<int:request_id>/all-reservations",
         "/request/<request_id>/change",
+        "/request/<int:request_id>/change/",
+        "/request/<int:request_id>/change",
+        "/request/<int:request_id>/cancel/",
         "/request/<int:request_id>/cancel",
         "/coordination-group-member/<int:member_id>/request",
-        "/coordination-group-member/<int:member_id>/tentative-response"
+        "/coordination-group-member/<int:member_id>/organizer-planning",
+        "/coordination-group-member/<int:member_id>/date-options",
+        "/coordination-group-member/<int:member_id>/date-options/thanks",
+        "/coordination-group-member/<int:member_id>/cannot-change-dates",
+        "/coordination-group-member/<int:member_id>/clear-date-options",
+        "/coordination-group-member/<int:member_id>/follow-up-dates-work",
+        "/coordination-group-member/<int:member_id>/tentative-response",
+        "/coordination-group-member/<int:member_id>/tentative-response/thanks"
     ]
 
     try:
@@ -11430,6 +11445,7 @@ def approve_request(request_id):
         </p>
         """
 
+    was_already_approved = safe_text(request_row["status"]).strip() == "approved"
     is_coordination_converted_request = False
 
     try:
@@ -11836,6 +11852,12 @@ def approve_request(request_id):
 
         approval_email_status = "needs_email"
         approval_email_needed_type = "approval"
+        activity_action_type = "request_approved"
+
+        if was_already_approved:
+            approval_email_status = "needs_update"
+            approval_email_needed_type = "date_change"
+            activity_action_type = "room_reassigned"
 
         if is_coordination_converted_request:
             approval_email_status = "not_needed"
@@ -11891,17 +11913,42 @@ def approve_request(request_id):
                 "accepted",
                 invitation_id
             ))
-
+        
         write_activity_log(
             conn,
             request_id,
-            "request_approved",
+            activity_action_type,
             request_row["status"],
             "approved",
             f"Rooms assigned: {', '.join(selected_room_names)}. Backup: {backup_path}"
         )
 
         conn.commit()
+        if was_already_approved:
+            conn.close()
+
+            return f"""
+            {nav_links()}
+
+            <h1>Room Assignment Updated</h1>
+
+            <p style="color: green; font-weight: bold;">
+                The room assignment was updated.
+            </p>
+
+            <p>
+                No email was sent automatically.
+            </p>
+
+            <p>
+                This reservation is now marked for an update email.
+            </p>
+
+            <p>
+                <a href="/room-assignments">Back to Room Assignments</a> |
+                <a href="/request/{request_id}/email-preview">Preview / Send Update Email</a>
+            </p>
+            """
 
         recipient_email = resolve_request_recipient_email(
             conn,
@@ -11922,8 +11969,6 @@ def approve_request(request_id):
             "/requests"
         )
 
-    conn.close()
-
     if is_coordination_converted_request:
 
         coordination_group_id = ""
@@ -11932,8 +11977,12 @@ def approve_request(request_id):
             coordination_group_id = request_row["coordination_group_id"]
         except:
             coordination_group_id = ""
+        
+        conn.close()
 
         return nav_links() + f"""
+  
+    
         <h1>Coordination Request Approved</h1>
 
         <p>
@@ -13379,6 +13428,23 @@ def requests_page():
                 row["id"]
             )
 
+            next_step = "No action needed."
+
+            if row["status"] == "pending":
+                next_step = "Assign room and approve, or decline."
+
+            elif row["status"] == "change_requested":
+                next_step = "Review the requested changes."
+
+            elif row["status"] == "cancel_requested":
+                next_step = "Review the cancellation request."
+
+            elif row["email_status"] == "needs_email":
+                next_step = "Approval email is ready to send."
+
+            elif row["email_status"] == "needs_update":
+                next_step = "Room update email is ready to send."
+                
             rooms_requested = row["rooms_requested"] or 1
 
             rooms_requested = int(rooms_requested)
@@ -13767,7 +13833,7 @@ def profiles_page():
 
             conn.commit()
 
-            if request.form.get("send_welcome_email", "yes") == "yes":
+            if request.form.get("send_welcome_email", "no") == "yes":
 
                 try:
                     send_profile_welcome_email(
@@ -13864,7 +13930,25 @@ def profiles_page():
 
     <h2>Add Guest Profile</h2>
 
-    <form method="POST" action="/profiles">
+        <form method="POST" action="/profiles">
+
+        <div style="
+            border: 2px solid #0d6efd;
+            background-color: #f8fbff;
+            padding: 10px 12px;
+            margin: 8px 0 14px 0;
+            max-width: 700px;
+            border-radius: 6px;
+        ">
+            <label style="font-weight: bold;">
+                <input type="checkbox" name="send_welcome_email" value="yes">
+                Send Welcome Email
+            </label><br>
+            <small style="color: #555;">
+                Uses templates/emails/profile_welcome.txt. No invitation is sent yet.
+            </small>
+        </div>
+
         <label>Primary First Name:</label><br>
         <input type="text" name="primary_name" required><br>
 
@@ -13899,14 +13983,6 @@ def profiles_page():
             <option value="needs_review">Needs Review</option>
             <option value="archived">Archived</option>
         </select><br><br>
-
-        <label>
-            <input type="checkbox" name="send_welcome_email" value="yes" checked>
-            Send Welcome Email
-        </label><br>
-        <small style="color: #555;">
-            Uses templates/emails/profile_welcome.txt. No invitation is sent yet.
-        </small><br><br>
 
         <button type="submit">Add Profile</button>
     </form>
@@ -18100,6 +18176,7 @@ def room_assignments_page():
     """).fetchall()
 
     assigned_rooms_by_request = {}
+    assigned_room_ids_by_request = {}
 
     for booking in existing_bookings:
         request_id = booking["request_id"]
@@ -18107,8 +18184,11 @@ def room_assignments_page():
         if request_id not in assigned_rooms_by_request:
             assigned_rooms_by_request[request_id] = []
 
-        assigned_rooms_by_request[request_id].append(booking["room_name"])
+        if request_id not in assigned_room_ids_by_request:
+            assigned_room_ids_by_request[request_id] = []
 
+        assigned_rooms_by_request[request_id].append(booking["room_name"])
+        assigned_room_ids_by_request[request_id].append(booking["room_id"])
     conn.close()
 
     html = nav_links() + """
@@ -18266,22 +18346,77 @@ def room_assignments_page():
 
         else:
             assigned_rooms = assigned_rooms_by_request.get(row["id"], [])
+            assigned_room_ids = assigned_room_ids_by_request.get(row["id"], [])
+
+            current_room_display = "None"
 
             if assigned_rooms:
-                room_display = "<ul style='margin: 0; padding-left: 16px;'>"
+                current_room_display = "<ul style='margin: 0; padding-left: 16px;'>"
 
                 for assigned_room in assigned_rooms:
-                    room_display += f"<li>{assigned_room}</li>"
+                    current_room_display += f"<li>{assigned_room}</li>"
 
-                room_display += "</ul>"
-            else:
-                room_display = "None"
+                current_room_display += "</ul>"
+
+            room_selects_html = ""
+
+            for i in range(1, rooms_requested + 1):
+                current_room_id = ""
+
+                if len(assigned_room_ids) >= i:
+                    current_room_id = str(assigned_room_ids[i - 1])
+
+                room_options = ""
+
+                for room in rooms:
+                    room_id_text = str(room["id"])
+                    selected_attr = ""
+                    disabled_attr = ""
+                    availability_label = "Available"
+
+                    if room_id_text == current_room_id:
+                        selected_attr = "selected"
+                        availability_label = "Current Room"
+                    elif room["id"] in booked_room_ids:
+                        disabled_attr = "disabled"
+                        availability_label = "BOOKED"
+
+                    room_options += f"""
+                    <option value="{room['id']}" {selected_attr} {disabled_attr}>
+                        {room['name']} - {availability_label}
+                    </option>
+                    """
+
+                room_selects_html += f"""
+                <label><strong>Room {i}:</strong></label><br>
+                <select name="room_id_{i}" style="width: 170px;">
+                    {room_options}
+                </select><br>
+                """
+
+            room_display = f"""
+            <strong>Current:</strong>
+            {current_room_display}
+
+            <form method="POST" action="/approve/{row['id']}" style="margin-top: 8px;">
+                {room_selects_html}
+
+                <label><strong>Update Note:</strong></label><br>
+                <textarea name="response_message"
+                          rows="2"
+                          style="width: 170px;">Room assignment updated.</textarea><br>
+
+                <button type="submit">
+                    Save Room Change
+                </button>
+            </form>
+            """
 
             action_display = f"""
             <a href="/request/{row['id']}">View</a><br>
             <a href="/request/{row['id']}/edit">Edit</a>
             """
-
+       
         additional_guests = row["additional_names"]
 
         if not additional_guests:
@@ -21526,7 +21661,7 @@ def cancel_request(request_id):
     if not rooms_requested:
         rooms_requested = 1
 
-    new_request_link = "/new-request"
+    new_request_link = repeat_visit_request_url_for_row(request_row)
 
     if request.method == "POST":
 
@@ -21720,8 +21855,8 @@ Cancellation Reason:
                     nights=safe_text(nights),
                     rooms_requested=safe_text(rooms_requested),
                     additional_names=safe_text(row_value(request_row, "additional_names")) or "None listed",
-                    request_link=standard_new_request_url(),
-                    new_request_link=standard_new_request_url()
+                    request_link=repeat_visit_request_url_for_row(request_row),
+                    new_request_link=repeat_visit_request_url_for_row(request_row)
                 )
 
                 send_email(
@@ -31476,6 +31611,9 @@ def production_error_handler(error):
 
     <p>Shore Home App hit an unexpected error, and the details were written to logs/errors.log.</p>
 
+    <pre style="white-space: pre-wrap; background:#f8f9fa; border:1px solid #ccc; padding:10px;">
+{safe_text(traceback.format_exc())}
+    </pre>
     <p>Nothing on this page should be treated as saved unless the previous action showed a confirmation.</p>
 
     <p><a href="/dashboard">Back to Dashboard</a></p>
