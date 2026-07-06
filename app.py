@@ -14859,6 +14859,11 @@ def invitations_page():
                     <a href="/coordinate/{invite['id']}">
                         Open Coordination Request Form
                     </a>
+                    <br>
+
+                    <a href='/invitation/{invite["id"]}/status/closed'>
+                        Close Invitation
+                    </a>
 
                 </div>
                 """
@@ -14874,8 +14879,14 @@ def invitations_page():
                 status_actions = f"""
                 <div style="margin-top: 10px;">
 
+                                       <a href='/invitation/{invite["id"]}/edit'>
+                        Edit Invitation
+                    </a>
+
+                    <br>
+
                     <a href='/preview-invitation-email/{invite["id"]}'>
-                        Resend Invite
+                        Preview / Send Invite
                     </a>
 
                     <br>
@@ -14898,15 +14909,6 @@ def invitations_page():
 
                 </div>
                 """
-
-            elif status == "responded" or status == "replied":
-
-                status_display = """
-                <strong style='color: purple; font-size: 14px;'>
-                    RESPONDED
-                </strong>
-                """
-
                 status_actions = f"""
                 <div style="margin-top: 10px;">
 
