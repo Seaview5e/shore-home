@@ -11954,8 +11954,6 @@ def approve_request(request_id):
             "/requests"
         )
 
-    conn.close()
-
     if is_coordination_converted_request:
 
         coordination_group_id = ""
@@ -11964,8 +11962,12 @@ def approve_request(request_id):
             coordination_group_id = request_row["coordination_group_id"]
         except:
             coordination_group_id = ""
+        
+        conn.close()
 
         return nav_links() + f"""
+  
+    
         <h1>Coordination Request Approved</h1>
 
         <p>
@@ -13968,7 +13970,7 @@ def profiles_page():
         </select><br><br>
 
         <button type="submit">Add Profile</button>
-    </form><
+    </form>
 
     <h2>Existing Profiles</h2>
     """
