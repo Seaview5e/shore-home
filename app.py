@@ -6946,10 +6946,23 @@ def critical_guest_route_diagnostics_summary():
         "/invitation/<int:invitation_id>/request",
         "/new-request",
         "/submit",
+        "/request/<int:request_id>/submitted",
+        "/request-submitted/complete",
+        "/request/<int:request_id>/all-reservations",
         "/request/<request_id>/change",
+        "/request/<int:request_id>/change/",
+        "/request/<int:request_id>/change",
+        "/request/<int:request_id>/cancel/",
         "/request/<int:request_id>/cancel",
         "/coordination-group-member/<int:member_id>/request",
-        "/coordination-group-member/<int:member_id>/tentative-response"
+        "/coordination-group-member/<int:member_id>/organizer-planning",
+        "/coordination-group-member/<int:member_id>/date-options",
+        "/coordination-group-member/<int:member_id>/date-options/thanks",
+        "/coordination-group-member/<int:member_id>/cannot-change-dates",
+        "/coordination-group-member/<int:member_id>/clear-date-options",
+        "/coordination-group-member/<int:member_id>/follow-up-dates-work",
+        "/coordination-group-member/<int:member_id>/tentative-response",
+        "/coordination-group-member/<int:member_id>/tentative-response/thanks"
     ]
 
     try:
