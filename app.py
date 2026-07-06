@@ -139,6 +139,15 @@ def repeat_visit_request_url_for_row(request_row):
 
 
 def organizer_planning_url(member_id):
+
+    member_id_text = safe_text(member_id).strip()
+
+    if member_id_text.isdigit():
+        return BASE_URL.rstrip("/") + "/coordination-group-member/" + member_id_text + "/organizer-planning"
+
+    return BASE_URL.rstrip("/") + "/coordination-groups"
+
+
 def existing_reservations_section_for_guest(conn, guest_profile_id):
 
     guest_profile_id_text = safe_text(guest_profile_id).strip()
