@@ -14912,8 +14912,14 @@ def invitations_page():
                 status_actions = f"""
                 <div style="margin-top: 10px;">
 
+                    <a href='/invitation/{invite["id"]}/edit'>
+                        Edit Invitation
+                    </a>
+
+                    <br>
+
                     <a href='/preview-invitation-email/{invite["id"]}'>
-                        Resend Invite
+                        Preview / Send Invite
                     </a>
 
                     <br>
@@ -14948,8 +14954,14 @@ def invitations_page():
                 status_actions = f"""
                 <div style="margin-top: 10px;">
 
+                    <a href='/invitation/{invite["id"]}/edit'>
+                        Edit Invitation
+                    </a>
+
+                    <br>
+
                     <a href='/preview-invitation-email/{invite["id"]}'>
-                        Resend Invite
+                        Preview / Send Invite
                     </a>
 
                     <br>
