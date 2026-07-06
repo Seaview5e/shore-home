@@ -139,6 +139,35 @@ def repeat_visit_request_url_for_row(request_row):
 
 
 def organizer_planning_url(member_id):
+def existing_reservations_section_for_guest(conn, guest_profile_id):
+
+    guest_profile_id_text = safe_text(guest_profile_id).strip()
+
+    if not guest_profile_id_text.isdigit():
+        return ""
+
+    request_row = conn.execute("""
+        SELECT id
+        FROM booking_requests
+        WHERE guest_profile_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+    """, (
+        guest_profile_id_text,
+    )).fetchone()
+
+    if not request_row:
+        return ""
+
+    all_reservations_link = BASE_URL + "/request/" + safe_text(request_row["id"]) + "/all-reservations"
+
+    return (
+        "Already have a visit scheduled?\n\n"
+        "View or Change Your Reservations:\n"
+        + all_reservations_link
+        + "\n"
+    )
+ 
 
     member_id_text = safe_text(member_id).strip()
 
@@ -19155,12 +19184,19 @@ def preview_invitation_email(invitation_id):
     # The optional saved invitation message is available ONLY if the template
     # explicitly includes {{ message }}. This prevents hidden/automatic leakage
     # while restoring your ability to add a custom invite note.
+        
+    existing_reservations_section = existing_reservations_section_for_guest(
+        conn,
+        row_value(invite, "guest_profile_id")
+    )
+
     body = render_email_template(
         "invitation.txt",
         guest_name=safe_text(invite["primary_name"]),
         message=safe_text(row_value(invite, "message")),
         request_link=request_link,
-        coordination_link=coordination_link
+        coordination_link=coordination_link,
+        existing_reservations_section=existing_reservations_section
     )
 
     template_metadata = email_template_metadata_html("invitation")
@@ -19326,12 +19362,19 @@ def send_invitation_email():
     # Rebuild the final email from the current invitation.txt template at send time.
     # The optional saved invitation message is available only where the template
     # explicitly includes {{ message }}.
+    
+    existing_reservations_section = existing_reservations_section_for_guest(
+        conn,
+        row_value(invite, "guest_profile_id")
+    )
+
     body = render_email_template(
         "invitation.txt",
         guest_name=safe_text(invite["primary_name"]),
         message=safe_text(row_value(invite, "message")),
         request_link=request_link,
-        coordination_link=coordination_link
+        coordination_link=coordination_link,
+        existing_reservations_section=existing_reservations_section
     )
 
     send_email(to_email, subject, body)
