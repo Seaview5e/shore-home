@@ -1987,6 +1987,7 @@ PUBLIC_ENDPOINTS = {
     "change_request_bad_link",
     "cancel_request",
     "coordination_group_member_request",
+    "coordination_group_member_organizer_planning",
     "coordination_group_member_date_options",
     "coordination_group_member_date_options_thanks",
     "coordination_group_member_cannot_change_dates",
