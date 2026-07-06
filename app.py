@@ -13,7 +13,7 @@ import re
 import hmac
 import secrets
 from werkzeug.exceptions import HTTPException
-
+ 
  
 app = Flask(__name__)
 
@@ -13411,6 +13411,23 @@ def requests_page():
                 row["id"]
             )
 
+            next_step = "No action needed."
+
+            if row["status"] == "pending":
+                next_step = "Assign room and approve, or decline."
+
+            elif row["status"] == "change_requested":
+                next_step = "Review the requested changes."
+
+            elif row["status"] == "cancel_requested":
+                next_step = "Review the cancellation request."
+
+            elif row["email_status"] == "needs_email":
+                next_step = "Approval email is ready to send."
+
+            elif row["email_status"] == "needs_update":
+                next_step = "Room update email is ready to send."
+                
             rooms_requested = row["rooms_requested"] or 1
 
             rooms_requested = int(rooms_requested)
