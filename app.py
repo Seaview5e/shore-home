@@ -2210,6 +2210,7 @@ def nav_links():
         <a href="/manual-request">Manual Request</a> |
         <a href="/admin-backup">Backup & Recovery</a> |
         <a href="/production-health">Production Health</a> |
+        <a href="/production-check">Production Check</a> |
         <a href="/booking-consistency-repair">Booking Consistency Repair</a> |
         <a href="/admin-reset-test-data">Reset Test Data</a> |\n        <a href="/admin-logout">Logout</a>
     </div>
