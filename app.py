@@ -7237,14 +7237,6 @@ def admin_dashboard():
    
 
     cards += admin_dashboard_card(
-        "Email Template Files",
-        admin_dashboard_status_icon(template_ok),
-        template_detail,
-        "/production-check",
-        "Review Email Templates"
-    )
-
-    cards += admin_dashboard_card(
         "Email Audit",
         "✅ Open",
         "Review the last email send attempts and failures.",
