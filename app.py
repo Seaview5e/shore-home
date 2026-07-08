@@ -2236,6 +2236,7 @@ def nav_links():
         <span style="color: #666;">Planning / Booking Handoff opens from each group</span>
         <br>
         <strong>Admin Tools:</strong>
+        <a href="/admin-dashboard">System/Admin Dashboard</a> |
         <a href="/booking-audit">Booking Audit</a> |
         <a href="/status-sanity">Status Sanity</a> |
         <a href="/activity-log">Activity Log</a> |
