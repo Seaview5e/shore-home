@@ -6274,6 +6274,7 @@ def dashboard():
         "Follow Up",
         "warning" if invitations_no_reply > 0 else "normal"
     )
+    html += calendar_html
 
     html += f"""
     <h2 style="
@@ -6364,7 +6365,6 @@ def dashboard():
     </table>
     """
 
-    html += calendar_html
     return html
 
 
