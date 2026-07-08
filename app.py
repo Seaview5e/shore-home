@@ -6239,14 +6239,6 @@ def dashboard():
         "critical" if cancel_requests > 0 else "normal"
     )
 
-    action_needed_rows += dashboard_action_row(
-        "Booking Audit Warnings",
-        audit_problem_count,
-        f"{critical_audit_count} critical issue(s). Review before major approvals.",
-        "/booking-audit",
-        "Open Booking Audit",
-        "critical" if critical_audit_count > 0 else ("warning" if audit_problem_count > 0 else "normal")
-    )
 
     action_needed_rows += dashboard_action_row(
         "Profiles Needing Review",
