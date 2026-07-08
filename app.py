@@ -147,6 +147,39 @@ def organizer_planning_url(member_id):
 
     return BASE_URL.rstrip("/") + "/coordination-groups"
 
+
+def existing_reservations_section_for_guest(conn, guest_profile_id):
+
+    guest_profile_id_text = safe_text(guest_profile_id).strip()
+
+    if not guest_profile_id_text.isdigit():
+        return ""
+
+    request_row = conn.execute("""
+        SELECT id
+        FROM booking_requests
+        WHERE guest_profile_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+    """, (
+        guest_profile_id_text,
+    )).fetchone()
+
+    if not request_row:
+        return ""
+
+    all_reservations_link = BASE_URL + "/request/" + safe_text(request_row["id"]) + "/all-reservations"
+
+    return (
+        "Already have a visit scheduled?\n\n"
+        "View or Change Your Reservations:\n"
+        + all_reservations_link
+        + "\n"
+    )
+ 
+
+    return BASE_URL.rstrip("/") + "/coordination-groups"
+
 EMAIL_ADDRESS = os.environ.get(
     "EMAIL_ADDRESS",
     "strathmere.visits@gmail.com"
@@ -2202,17 +2235,15 @@ def nav_links():
         <a href="/coordination-group/new">Create New Group</a> |
         <span style="color: #666;">Planning / Booking Handoff opens from each group</span>
         <br>
+        
         <strong>Admin Tools:</strong>
-        <a href="/booking-audit">Booking Audit</a> |
-        <a href="/status-sanity">Status Sanity</a> |
+        <a href="/admin-dashboard">System/Admin Dashboard</a> |
         <a href="/activity-log">Activity Log</a> |
         <a href="/blocked">House Blocks</a> |
         <a href="/manual-request">Manual Request</a> |
         <a href="/admin-backup">Backup & Recovery</a> |
-        <a href="/production-health">Production Health</a> |
-        <a href="/production-check">Production Check</a> |
-        <a href="/booking-consistency-repair">Booking Consistency Repair</a> |
-        <a href="/admin-reset-test-data">Reset Test Data</a> |\n        <a href="/admin-logout">Logout</a>
+        <a href="/admin-reset-test-data">Reset Test Data</a> |
+        <a href="/admin-logout">Logout</a>
     </div>
     <br>
     <small style="color: gray;">Version: {APP_VERSION}</small>
@@ -6208,14 +6239,6 @@ def dashboard():
         "critical" if cancel_requests > 0 else "normal"
     )
 
-    action_needed_rows += dashboard_action_row(
-        "Booking Audit Warnings",
-        audit_problem_count,
-        f"{critical_audit_count} critical issue(s). Review before major approvals.",
-        "/booking-audit",
-        "Open Booking Audit",
-        "critical" if critical_audit_count > 0 else ("warning" if audit_problem_count > 0 else "normal")
-    )
 
     action_needed_rows += dashboard_action_row(
         "Profiles Needing Review",
@@ -6243,12 +6266,28 @@ def dashboard():
         "Follow Up",
         "warning" if invitations_no_reply > 0 else "normal"
     )
+    html += calendar_html
 
     html += f"""
-    <h2 style="
+    <div style="
+        display: flex;
+        gap: 16px;
+        align-items: flex-start;
+        margin-top: 18px;
+        flex-wrap: wrap;
+    ">
+
+    <div style="
+        flex: 2;
+        min-width: 520px;
+    ">
+
+        <h2 style="
+        margin-top: 0;
         margin-bottom: 8px;
     ">
         Action Needed Now
+
     </h2>
 
     <table border="1"
@@ -6265,124 +6304,24 @@ def dashboard():
             <th align="center">Count</th>
             <th align="left">Next Step</th>
         </tr>
+
+
         {action_needed_rows}
     </table>
 
-    <h2 style="
-        margin-bottom: 8px;
+    </div>
+
+    <div style="
+        flex: 1;
+        min-width: 280px;
     ">
-        Coordination Workflow Status
-    </h2>
-    """
 
-    if not coordination_dashboard_rows:
-
-        html += """
-        <p>
-            No active coordination groups.
-        </p>
-        """
-
-    else:
-
-        html += """
-        <table border="1"
-               cellpadding="5"
-               cellspacing="0"
-               style="
-                   border-collapse: collapse;
-                   width: 100%;
-                   font-size: 13px;
-                   margin-bottom: 10px;
-               ">
-
-            <tr style="background-color: #f5f5f5;">
-                <th align="left">Group</th>
-                <th align="left">Status</th>
-                <th align="center">Responses</th>
-                <th align="left">Best Match</th>
-                <th align="center">Unmatched</th>
-                <th align="left">Capacity</th>
-                <th align="left">Tentative</th>
-                <th align="left">Confirmations</th>
-                <th align="left">Booking Requests</th>
-                <th align="left">Action</th>
-            </tr>
-        """
-
-        for coordination_row in coordination_dashboard_rows:
-
-            if coordination_row["needs_attention"]:
-
-                row_background = "#fff3cd"
-
-            else:
-
-                row_background = "#e8f7ea"
-
-            html += f"""
-            <tr style="background-color: {row_background};">
-
-                <td>
-                    <strong>
-                        {coordination_row['title']}
-                    </strong>
-                </td>
-
-                <td>
-                    {coordination_row['status']}
-                </td>
-
-                <td align="center">
-                    {coordination_row['responded_count']}
-                    /
-                    {coordination_row['member_count']}
-                </td>
-
-                <td>
-                    {'<br>'.join(coordination_row['top_match_options']) if coordination_row['top_match_options'] else coordination_row['best_match_text']}
-                </td>
-
-                <td align="center">
-                    {coordination_row['unmatched_count']}
-                </td>
-
-                <td>
-                    {coordination_row['capacity_status']}
-                </td>
-
-                <td>
-                    {coordination_row['tentative_status']}
-                </td>
-
-                <td>
-                    {coordination_row['confirmation_status']}
-                </td>
-
-                <td>
-                    {coordination_row['booking_handoff_status']}
-                </td>
-
-                <td>
-                    <a href="/coordination-group/{coordination_row['group_id']}">
-                        Review Group
-                    </a>
-                </td>
-
-            </tr>
-            """
-
-        html += """
-        </table>
-        """
-
-
-    html += f"""
     <h2 style="
-        margin-top: 12px;
+        margin-top: 0;
         margin-bottom: 8px;
     ">
         Summary Counts
+
     </h2>
 
     <table border="1"
@@ -6438,139 +6377,10 @@ def dashboard():
         </tr>
 
     </table>
+    
+    </div>
+    </div>
     """
-
-    html += calendar_html
-
-    html += """
-    <h2 style="
-        margin-top: 28px;
-        margin-bottom: 8px;
-    ">
-        Upcoming Arrivals
-    </h2>
-    """
-
-    if not upcoming_arrivals:
-
-        html += """
-        <p>No upcoming arrivals.</p>
-        """
-
-    else:
-
-        html += """
-        <table border="1"
-               cellpadding="5"
-               cellspacing="0"
-               style="
-                   border-collapse: collapse;
-                   width: 100%;
-                   font-size: 13px;
-               ">
-
-            <tr style="background-color: #f5f5f5;">
-
-                <th align="left">Guest</th>
-                <th align="left">Additional Guests</th>
-                <th align="left">Arrive</th>
-                <th align="left">Depart</th>
-                <th align="center">Nights</th>
-                <th align="left">Room</th>
-                <th align="left">View</th>
-
-            </tr>
-        """
-
-        previous_group = ""
-
-        for arrival in upcoming_arrivals:
-
-            nights = (
-                datetime.strptime(
-                    arrival["departure_date"],
-                    "%Y-%m-%d"
-                )
-                - datetime.strptime(
-                    arrival["arrival_date"],
-                    "%Y-%m-%d"
-                )
-            ).days
-
-            arrival_short = datetime.strptime(
-                arrival["arrival_date"],
-                "%Y-%m-%d"
-            ).strftime("%m/%d")
-
-            departure_short = datetime.strptime(
-                arrival["departure_date"],
-                "%Y-%m-%d"
-            ).strftime("%m/%d")
-
-            additional_names = safe_text(
-                arrival["additional_names"]
-            )
-
-            current_group = (
-                f"{arrival['name']}"
-                f"{arrival['arrival_date']}"
-            )
-
-            show_guest = True
-
-            if current_group == previous_group:
-
-                show_guest = False
-
-            if show_guest:
-
-                guest_display = arrival["name"]
-
-                arrival_display = arrival_short
-
-                departure_display = departure_short
-
-                nights_display = nights
-
-            else:
-
-                guest_display = ""
-
-                arrival_display = ""
-
-                departure_display = ""
-
-                nights_display = ""
-
-            previous_group = current_group
-
-            html += f"""
-            <tr>
-
-                <td>{guest_display}</td>
-
-                <td>{additional_names}</td>
-
-                <td>{arrival_display}</td>
-
-                <td>{departure_display}</td>
-
-                <td align="center">
-                    {nights_display}
-                </td>
-
-                <td>{arrival['room_name']}</td>
-
-                <td>
-                    <a href="/request/{arrival['request_id']}">
-                        View
-                    </a>
-                </td>
-
-            </tr>
-            """
-
-        html += "</table>"
 
     return html
 
@@ -7086,6 +6896,160 @@ def reset_tool_contract_diagnostics_summary():
 
     except Exception as error:
         return False, "Reset tool diagnostics failed: " + safe_text(error)
+
+
+def admin_dashboard_status_icon(ok):
+
+    if ok:
+        return "✅ OK"
+
+    return "⚠️ Needs Attention"
+
+
+def admin_dashboard_card(title, status_text, detail, link_url, link_label):
+
+    return f"""
+    <div style="
+        border: 1px solid #d5e0ea;
+        background: #ffffff;
+        border-radius: 10px;
+        padding: 14px;
+        margin-bottom: 12px;
+        max-width: 920px;
+    ">
+        <div style="
+            font-size: 16px;
+            font-weight: bold;
+            margin-bottom: 6px;
+        ">
+            {safe_text(status_text)} — {safe_text(title)}
+        </div>
+
+        <div style="
+            color: #555;
+            font-size: 13px;
+            line-height: 1.4;
+            margin-bottom: 8px;
+        ">
+            {safe_text(detail)}
+        </div>
+
+        <a href="{safe_text(link_url)}"
+           style="
+               display: inline-block;
+               background: #0f4c81;
+               color: white;
+               padding: 7px 10px;
+               border-radius: 6px;
+               text-decoration: none;
+               font-weight: bold;
+               font-size: 13px;
+           ">
+            {safe_text(link_label)}
+        </a>
+    </div>
+    """
+
+
+@app.route("/admin-dashboard")
+def admin_dashboard():
+
+    cards = ""
+
+    try:
+        route_safety = route_safety_diagnostics()
+        route_ok = route_safety.get("ok", False)
+        route_detail = "Route safety check passed." if route_ok else "; ".join(route_safety.get("problems", []))
+    except Exception as error:
+        route_ok = False
+        route_detail = "Route safety check failed: " + safe_text(error)
+
+    try:
+        booking_ok, booking_detail = booking_consistency_diagnostics_summary()
+    except Exception as error:
+        booking_ok = False
+        booking_detail = "Booking consistency check failed: " + safe_text(error)
+
+    try:
+        calendar_ok, calendar_detail = calendar_diagnostics_summary()
+    except Exception as error:
+        calendar_ok = False
+        calendar_detail = "Calendar diagnostics failed: " + safe_text(error)
+
+    try:
+        template_ok, template_detail = email_template_files_diagnostics_summary()
+    except Exception as error:
+        template_ok = False
+        template_detail = "Email template check failed: " + safe_text(error)
+
+    try:
+        reset_ok, reset_detail = reset_tool_contract_diagnostics_summary()
+    except Exception as error:
+        reset_ok = False
+        reset_detail = "Reset tool check failed: " + safe_text(error)
+
+    cards += admin_dashboard_card(
+        "Production Check",
+        "✅ Open",
+        "Full production readiness checklist with database, guest route, calendar, template, and workflow diagnostics.",
+        "/production-check",
+        "Open Production Check"
+    )
+
+    cards += admin_dashboard_card(
+        "System Health",
+        "✅ Open",
+        "Application health, version, route, file, and runtime checks.",
+        "/system-health",
+        "Open System Health"
+    )
+
+
+    cards += admin_dashboard_card(
+        "Booking Consistency",
+        admin_dashboard_status_icon(booking_ok),
+        booking_detail,
+        "/booking-audit",
+        "Open Booking Audit"
+    )
+
+   
+
+    cards += admin_dashboard_card(
+        "Email Audit",
+        "✅ Open",
+        "Review the last email send attempts and failures.",
+        "/email-audit",
+        "Open Email Audit"
+    )
+
+    cards += admin_dashboard_card(
+        "Backup & Recovery",
+        "✅ Open",
+        "Create admin backups and confirm recovery readiness.",
+        "/admin-backup",
+        "Open Backup & Recovery"
+    )
+
+  
+
+    return f"""
+    {nav_links()}
+
+    <h1>System / Admin Dashboard</h1>
+
+    <p style="max-width: 920px; line-height: 1.45;">
+        This page gathers system checks, diagnostics, backups, and audit tools in one place.
+        The daily Operations Dashboard should stay focused on calendar and workflow actions.
+    </p>
+
+    {cards}
+
+    <p>
+        <a href="/dashboard">Back to Operations Dashboard</a>
+    </p>
+    """
+    
 
 
 @app.route("/production-check")
@@ -14821,6 +14785,11 @@ def invitations_page():
                     <a href="/coordinate/{invite['id']}">
                         Open Coordination Request Form
                     </a>
+                    <br>
+
+                    <a href='/invitation/{invite["id"]}/status/closed'>
+                        Close Invitation
+                    </a>
 
                 </div>
                 """
@@ -14836,8 +14805,14 @@ def invitations_page():
                 status_actions = f"""
                 <div style="margin-top: 10px;">
 
+                                       <a href='/invitation/{invite["id"]}/edit'>
+                        Edit Invitation
+                    </a>
+
+                    <br>
+
                     <a href='/preview-invitation-email/{invite["id"]}'>
-                        Resend Invite
+                        Preview / Send Invite
                     </a>
 
                     <br>
@@ -14860,20 +14835,17 @@ def invitations_page():
 
                 </div>
                 """
-
-            elif status == "responded" or status == "replied":
-
-                status_display = """
-                <strong style='color: purple; font-size: 14px;'>
-                    RESPONDED
-                </strong>
-                """
-
                 status_actions = f"""
                 <div style="margin-top: 10px;">
 
+                    <a href='/invitation/{invite["id"]}/edit'>
+                        Edit Invitation
+                    </a>
+
+                    <br>
+
                     <a href='/preview-invitation-email/{invite["id"]}'>
-                        Resend Invite
+                        Preview / Send Invite
                     </a>
 
                     <br>
@@ -14908,8 +14880,14 @@ def invitations_page():
                 status_actions = f"""
                 <div style="margin-top: 10px;">
 
+                    <a href='/invitation/{invite["id"]}/edit'>
+                        Edit Invitation
+                    </a>
+
+                    <br>
+
                     <a href='/preview-invitation-email/{invite["id"]}'>
-                        Resend Invite
+                        Preview / Send Invite
                     </a>
 
                     <br>
@@ -19064,11 +19042,12 @@ def preview_invitation_email(invitation_id):
         WHERE invitations.id = ?
     """, (
         invitation_id,
+        
     )).fetchone()
 
-    conn.close()
-
     if not invite:
+
+        conn.close()
 
         return """
         <h2>
@@ -19155,12 +19134,19 @@ def preview_invitation_email(invitation_id):
     # The optional saved invitation message is available ONLY if the template
     # explicitly includes {{ message }}. This prevents hidden/automatic leakage
     # while restoring your ability to add a custom invite note.
+        
+    existing_reservations_section = existing_reservations_section_for_guest(
+        conn,
+        row_value(invite, "guest_profile_id")
+    )
+    conn.close()
     body = render_email_template(
         "invitation.txt",
         guest_name=safe_text(invite["primary_name"]),
         message=safe_text(row_value(invite, "message")),
         request_link=request_link,
-        coordination_link=coordination_link
+        coordination_link=coordination_link,
+        existing_reservations_section=existing_reservations_section
     )
 
     template_metadata = email_template_metadata_html("invitation")
@@ -19326,12 +19312,19 @@ def send_invitation_email():
     # Rebuild the final email from the current invitation.txt template at send time.
     # The optional saved invitation message is available only where the template
     # explicitly includes {{ message }}.
+    
+    existing_reservations_section = existing_reservations_section_for_guest(
+        conn,
+        row_value(invite, "guest_profile_id")
+    )
+
     body = render_email_template(
         "invitation.txt",
         guest_name=safe_text(invite["primary_name"]),
         message=safe_text(row_value(invite, "message")),
         request_link=request_link,
-        coordination_link=coordination_link
+        coordination_link=coordination_link,
+        existing_reservations_section=existing_reservations_section
     )
 
     send_email(to_email, subject, body)
