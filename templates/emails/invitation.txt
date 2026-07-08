@@ -21,7 +21,11 @@ After submitting, you’ll receive a confirmation email with options to view res
 
 Use the link below whenever you’re ready.
 
+Request a Visit:
+
 {{ request_link }}
+
+{{ existing_reservations_section }}
 
 Thanks — and may your preferred dates survive the planning process.
 
