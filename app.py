@@ -6276,7 +6276,7 @@ def dashboard():
     )
     html += calendar_html
 
-        html += f"""
+    html += f"""
     <div style="
         display: flex;
         gap: 16px;
