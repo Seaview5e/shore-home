@@ -6276,11 +6276,25 @@ def dashboard():
     )
     html += calendar_html
 
-    html += f"""
+        html += f"""
+    <div style="
+        display: flex;
+        gap: 16px;
+        align-items: flex-start;
+        margin-top: 18px;
+        flex-wrap: wrap;
+    ">
+
+    <div style="
+        flex: 2;
+        min-width: 520px;
+    ">
+
     <h2 style="
         margin-bottom: 8px;
     ">
         Action Needed Now
+
     </h2>
 
     <table border="1"
@@ -6297,17 +6311,24 @@ def dashboard():
             <th align="center">Count</th>
             <th align="left">Next Step</th>
         </tr>
+
+
         {action_needed_rows}
     </table>
-    """
 
- 
-    html += f"""
+    </div>
+
+    <div style="
+        flex: 1;
+        min-width: 280px;
+    ">
+
     <h2 style="
-        margin-top: 12px;
+        margin-top: 0;
         margin-bottom: 8px;
     ">
         Summary Counts
+
     </h2>
 
     <table border="1"
@@ -6363,6 +6384,9 @@ def dashboard():
         </tr>
 
     </table>
+    
+    </div>
+    </div>
     """
 
     return html
