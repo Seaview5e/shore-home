@@ -7121,6 +7121,187 @@ def reset_tool_contract_diagnostics_summary():
         return False, "Reset tool diagnostics failed: " + safe_text(error)
 
 
+def admin_dashboard_status_icon(ok):
+
+    if ok:
+        return "✅ OK"
+
+    return "⚠️ Needs Attention"
+
+
+def admin_dashboard_card(title, status_text, detail, link_url, link_label):
+
+    return f"""
+    <div style="
+        border: 1px solid #d5e0ea;
+        background: #ffffff;
+        border-radius: 10px;
+        padding: 14px;
+        margin-bottom: 12px;
+        max-width: 920px;
+    ">
+        <div style="
+            font-size: 16px;
+            font-weight: bold;
+            margin-bottom: 6px;
+        ">
+            {safe_text(status_text)} — {safe_text(title)}
+        </div>
+
+        <div style="
+            color: #555;
+            font-size: 13px;
+            line-height: 1.4;
+            margin-bottom: 8px;
+        ">
+            {safe_text(detail)}
+        </div>
+
+        <a href="{safe_text(link_url)}"
+           style="
+               display: inline-block;
+               background: #0f4c81;
+               color: white;
+               padding: 7px 10px;
+               border-radius: 6px;
+               text-decoration: none;
+               font-weight: bold;
+               font-size: 13px;
+           ">
+            {safe_text(link_label)}
+        </a>
+    </div>
+    """
+
+
+@app.route("/admin-dashboard")
+def admin_dashboard():
+
+    cards = ""
+
+    try:
+        route_safety = route_safety_diagnostics()
+        route_ok = route_safety.get("ok", False)
+        route_detail = "Route safety check passed." if route_ok else "; ".join(route_safety.get("problems", []))
+    except Exception as error:
+        route_ok = False
+        route_detail = "Route safety check failed: " + safe_text(error)
+
+    try:
+        booking_ok, booking_detail = booking_consistency_diagnostics_summary()
+    except Exception as error:
+        booking_ok = False
+        booking_detail = "Booking consistency check failed: " + safe_text(error)
+
+    try:
+        calendar_ok, calendar_detail = calendar_diagnostics_summary()
+    except Exception as error:
+        calendar_ok = False
+        calendar_detail = "Calendar diagnostics failed: " + safe_text(error)
+
+    try:
+        template_ok, template_detail = email_template_files_diagnostics_summary()
+    except Exception as error:
+        template_ok = False
+        template_detail = "Email template check failed: " + safe_text(error)
+
+    try:
+        reset_ok, reset_detail = reset_tool_contract_diagnostics_summary()
+    except Exception as error:
+        reset_ok = False
+        reset_detail = "Reset tool check failed: " + safe_text(error)
+
+    cards += admin_dashboard_card(
+        "Production Check",
+        "✅ Open",
+        "Full production readiness checklist with database, guest route, calendar, template, and workflow diagnostics.",
+        "/production-check",
+        "Open Production Check"
+    )
+
+    cards += admin_dashboard_card(
+        "System Health",
+        "✅ Open",
+        "Application health, version, route, file, and runtime checks.",
+        "/system-health",
+        "Open System Health"
+    )
+
+    cards += admin_dashboard_card(
+        "Route Safety",
+        admin_dashboard_status_icon(route_ok),
+        route_detail,
+        "/production-check",
+        "Review Route Safety"
+    )
+
+    cards += admin_dashboard_card(
+        "Booking Consistency",
+        admin_dashboard_status_icon(booking_ok),
+        booking_detail,
+        "/booking-audit",
+        "Open Booking Audit"
+    )
+
+    cards += admin_dashboard_card(
+        "Calendar Diagnostics",
+        admin_dashboard_status_icon(calendar_ok),
+        calendar_detail,
+        "/production-check",
+        "Review Calendar Diagnostics"
+    )
+
+    cards += admin_dashboard_card(
+        "Email Template Files",
+        admin_dashboard_status_icon(template_ok),
+        template_detail,
+        "/production-check",
+        "Review Email Templates"
+    )
+
+    cards += admin_dashboard_card(
+        "Email Audit",
+        "✅ Open",
+        "Review the last email send attempts and failures.",
+        "/email-audit",
+        "Open Email Audit"
+    )
+
+    cards += admin_dashboard_card(
+        "Backup & Recovery",
+        "✅ Open",
+        "Create admin backups and confirm recovery readiness.",
+        "/admin-backup",
+        "Open Backup & Recovery"
+    )
+
+    cards += admin_dashboard_card(
+        "Reset Test Data Contract",
+        admin_dashboard_status_icon(reset_ok),
+        reset_detail,
+        "/admin-reset-test-data",
+        "Open Reset Test Data"
+    )
+
+    return f"""
+    {nav_links()}
+
+    <h1>System / Admin Dashboard</h1>
+
+    <p style="max-width: 920px; line-height: 1.45;">
+        This page gathers system checks, diagnostics, backups, and audit tools in one place.
+        The daily Operations Dashboard should stay focused on calendar and workflow actions.
+    </p>
+
+    {cards}
+
+    <p>
+        <a href="/dashboard">Back to Operations Dashboard</a>
+    </p>
+    """
+    
+
+
 @app.route("/production-check")
 def production_check():
 
