@@ -6290,7 +6290,8 @@ def dashboard():
         min-width: 520px;
     ">
 
-    <h2 style="
+        <h2 style="
+        margin-top: 0;
         margin-bottom: 8px;
     ">
         Action Needed Now
