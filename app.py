@@ -178,11 +178,6 @@ def existing_reservations_section_for_guest(conn, guest_profile_id):
     )
  
 
-    member_id_text = safe_text(member_id).strip()
-
-    if member_id_text.isdigit():
-        return BASE_URL.rstrip("/") + "/coordination-group-member/" + member_id_text + "/organizer-planning"
-
     return BASE_URL.rstrip("/") + "/coordination-groups"
 
 EMAIL_ADDRESS = os.environ.get(
