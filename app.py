@@ -2235,18 +2235,15 @@ def nav_links():
         <a href="/coordination-group/new">Create New Group</a> |
         <span style="color: #666;">Planning / Booking Handoff opens from each group</span>
         <br>
+        
         <strong>Admin Tools:</strong>
         <a href="/admin-dashboard">System/Admin Dashboard</a> |
-        <a href="/booking-audit">Booking Audit</a> |
-        <a href="/status-sanity">Status Sanity</a> |
         <a href="/activity-log">Activity Log</a> |
         <a href="/blocked">House Blocks</a> |
         <a href="/manual-request">Manual Request</a> |
         <a href="/admin-backup">Backup & Recovery</a> |
-        <a href="/production-health">Production Health</a> |
-        <a href="/production-check">Production Check</a> |
-        <a href="/booking-consistency-repair">Booking Consistency Repair</a> |
-        <a href="/admin-reset-test-data">Reset Test Data</a> |\n        <a href="/admin-logout">Logout</a>
+        <a href="/admin-reset-test-data">Reset Test Data</a> |
+        <a href="/admin-logout">Logout</a>
     </div>
     <br>
     <small style="color: gray;">Version: {APP_VERSION}</small>
