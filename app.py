@@ -7225,13 +7225,6 @@ def admin_dashboard():
         "Open System Health"
     )
 
-    cards += admin_dashboard_card(
-        "Route Safety",
-        admin_dashboard_status_icon(route_ok),
-        route_detail,
-        "/production-check",
-        "Review Route Safety"
-    )
 
     cards += admin_dashboard_card(
         "Booking Consistency",
@@ -7241,13 +7234,7 @@ def admin_dashboard():
         "Open Booking Audit"
     )
 
-    cards += admin_dashboard_card(
-        "Calendar Diagnostics",
-        admin_dashboard_status_icon(calendar_ok),
-        calendar_detail,
-        "/production-check",
-        "Review Calendar Diagnostics"
-    )
+   
 
     cards += admin_dashboard_card(
         "Email Template Files",
@@ -7273,13 +7260,7 @@ def admin_dashboard():
         "Open Backup & Recovery"
     )
 
-    cards += admin_dashboard_card(
-        "Reset Test Data Contract",
-        admin_dashboard_status_icon(reset_ok),
-        reset_detail,
-        "/admin-reset-test-data",
-        "Open Reset Test Data"
-    )
+  
 
     return f"""
     {nav_links()}
