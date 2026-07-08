@@ -6298,6 +6298,7 @@ def dashboard():
         </tr>
         {action_needed_rows}
     </table>
+    """
 
  
     html += f"""
