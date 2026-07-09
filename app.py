@@ -19479,6 +19479,13 @@ def send_invitation_email():
 
     if email_type == "approval" and request_row:
 
+        write_email_audit(
+            ADMIN_NOTIFICATION_EMAIL,
+            "ICS entered",
+            "ICS_ENTERED",
+            "request_id=" + safe_text(clean_request_id)
+        )
+
         try:
             admin_calendar_email = safe_text(ADMIN_NOTIFICATION_EMAIL).strip()
 
