@@ -31066,6 +31066,50 @@ def coordination_group_close(group_id):
             sent_count += 1
             sent_member_ids.append(final_request["member_id"])
 
+            try:
+                admin_calendar_email = safe_text(ADMIN_NOTIFICATION_EMAIL).strip()
+
+                if is_valid_email_address(admin_calendar_email):
+
+                    ics_text = build_admin_visit_ics(
+                        guest_names=safe_text(final_request["name"]),
+                        room_names=room_list,
+                        arrival_date=safe_text(final_request["arrival_date"]),
+                        departure_date=safe_text(final_request["departure_date"]),
+                        location_text=group_member_list_text
+                    )
+
+                    safe_filename_name = re.sub(
+                        r"[^A-Za-z0-9_-]+",
+                        "_",
+                        safe_text(final_request["name"]).strip()
+                    ).strip("_")
+
+                    if not safe_filename_name:
+                        safe_filename_name = "visit"
+
+                    send_email(
+                        admin_calendar_email,
+                        "Calendar: " + safe_text(final_request["name"]) + " Strathmere Visit",
+                        "Attached is the Apple Calendar file for this confirmed Strathmere visit.",
+                        attachments=[
+                            {
+                                "filename": safe_filename_name + "_strathmere_visit.ics",
+                                "content": ics_text,
+                                "maintype": "text",
+                                "subtype": "calendar"
+                            }
+                        ]
+                    )
+
+            except Exception as calendar_error:
+                write_email_audit(
+                    ADMIN_NOTIFICATION_EMAIL,
+                    "Calendar attachment failed",
+                    "ICS_FAILED",
+                    calendar_error
+                )
+
         except Exception as error:
 
             failed_sends.append(
