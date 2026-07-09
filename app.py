@@ -19470,6 +19470,81 @@ def send_invitation_email():
 
     send_email(to_email, subject, body)
 
+    if email_type == "approval" and request_row:
+
+        try:
+            admin_calendar_email = safe_text(ADMIN_NOTIFICATION_EMAIL).strip()
+
+            if is_valid_email_address(admin_calendar_email):
+
+                room_rows = conn.execute("""
+                    SELECT rooms.name
+                    FROM bookings
+                    JOIN rooms
+                        ON bookings.room_id = rooms.id
+                    WHERE bookings.request_id = ?
+                      AND bookings.status = 'approved'
+                    ORDER BY rooms.name
+                """, (
+                    clean_request_id,
+                )).fetchall()
+
+                room_names = ", ".join(
+                    display_room_name(row["name"])
+                    for row in room_rows
+                )
+
+                if not room_names:
+                    room_names = "Room assignment not listed"
+
+                additional_names = safe_text(
+                    row_value(request_row, "additional_names")
+                ).strip()
+
+                location_text = additional_names
+
+                if not location_text:
+                    location_text = safe_text(request_row["name"])
+
+                ics_text = build_admin_visit_ics(
+                    guest_names=safe_text(request_row["name"]),
+                    room_names=room_names,
+                    arrival_date=safe_text(request_row["arrival_date"]),
+                    departure_date=safe_text(request_row["departure_date"]),
+                    location_text=location_text
+                )
+
+                safe_filename_name = re.sub(
+                    r"[^A-Za-z0-9_-]+",
+                    "_",
+                    safe_text(request_row["name"]).strip()
+                ).strip("_")
+
+                if not safe_filename_name:
+                    safe_filename_name = "visit"
+
+                send_email(
+                    admin_calendar_email,
+                    "Calendar: " + safe_text(request_row["name"]) + " Strathmere Visit",
+                    "Attached is the Apple Calendar file for this confirmed Strathmere visit.",
+                    attachments=[
+                        {
+                            "filename": safe_filename_name + "_strathmere_visit.ics",
+                            "content": ics_text,
+                            "maintype": "text",
+                            "subtype": "calendar"
+                        }
+                    ]
+                )
+
+        except Exception as calendar_error:
+            write_email_audit(
+                ADMIN_NOTIFICATION_EMAIL,
+                "Calendar attachment failed",
+                "ICS_FAILED",
+                calendar_error
+            )
+
     conn.execute("""
         UPDATE invitations
         SET status = ?
