@@ -19477,7 +19477,7 @@ def send_invitation_email():
 
     send_email(to_email, subject, body)
 
-    if email_type == "approval" and request_row:
+    if email_type == "approval" and clean_request_id:
 
         write_email_audit(
             ADMIN_NOTIFICATION_EMAIL,
