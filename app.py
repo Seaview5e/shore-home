@@ -19409,7 +19409,9 @@ def preview_invitation_email(invitation_id):
     """
 
     return html
-   
+
+
+
 @app.route("/send-invitation-email", methods=["POST"])
 def send_invitation_email():
     invitation_id = request.form.get("invitation_id")
@@ -19455,12 +19457,6 @@ def send_invitation_email():
     request_link = f"{BASE_URL}/invite/{invitation_id}"
     coordination_link = f"{BASE_URL}/coordinate/{invitation_id}"
 
-    # V30.0:
-    # Never send a posted preview textarea body.
-    # Rebuild the final email from the current invitation.txt template at send time.
-    # The optional saved invitation message is available only where the template
-    # explicitly includes {{ message }}.
-    
     existing_reservations_section = existing_reservations_section_for_guest(
         conn,
         row_value(invite, "guest_profile_id")
@@ -19476,88 +19472,6 @@ def send_invitation_email():
     )
 
     send_email(to_email, subject, body)
-
-    if email_type == "approval" and clean_request_id:
-
-        write_email_audit(
-            ADMIN_NOTIFICATION_EMAIL,
-            "ICS entered",
-            "ICS_ENTERED",
-            "request_id=" + safe_text(clean_request_id)
-        )
-
-        try:
-            admin_calendar_email = safe_text(ADMIN_NOTIFICATION_EMAIL).strip()
-
-            if is_valid_email_address(admin_calendar_email):
-
-                room_rows = conn.execute("""
-                    SELECT rooms.name
-                    FROM bookings
-                    JOIN rooms
-                        ON bookings.room_id = rooms.id
-                    WHERE bookings.request_id = ?
-                      AND bookings.status = 'approved'
-                    ORDER BY rooms.name
-                """, (
-                    clean_request_id,
-                )).fetchall()
-
-                room_names = ", ".join(
-                    display_room_name(row["name"])
-                    for row in room_rows
-                )
-
-                if not room_names:
-                    room_names = "Room assignment not listed"
-
-                additional_names = safe_text(
-                    row_value(request_row, "additional_names")
-                ).strip()
-
-                location_text = additional_names
-
-                if not location_text:
-                    location_text = safe_text(request_row["name"])
-
-                ics_text = build_admin_visit_ics(
-                    guest_names=safe_text(request_row["name"]),
-                    room_names=room_names,
-                    arrival_date=safe_text(request_row["arrival_date"]),
-                    departure_date=safe_text(request_row["departure_date"]),
-                    location_text=location_text
-                )
-
-                safe_filename_name = re.sub(
-                    r"[^A-Za-z0-9_-]+",
-                    "_",
-                    safe_text(request_row["name"]).strip()
-                ).strip("_")
-
-                if not safe_filename_name:
-                    safe_filename_name = "visit"
-
-                send_email(
-                    admin_calendar_email,
-                    "Calendar: " + safe_text(request_row["name"]) + " Strathmere Visit",
-                    "Attached is the Apple Calendar file for this confirmed Strathmere visit.",
-                    attachments=[
-                        {
-                            "filename": safe_filename_name + "_strathmere_visit.ics",
-                            "content": ics_text,
-                            "maintype": "text",
-                            "subtype": "calendar"
-                        }
-                    ]
-                )
-
-        except Exception as calendar_error:
-            write_email_audit(
-                ADMIN_NOTIFICATION_EMAIL,
-                "Calendar attachment failed",
-                "ICS_FAILED",
-                calendar_error
-            )
 
     conn.execute("""
         UPDATE invitations
@@ -19582,6 +19496,10 @@ def send_invitation_email():
         <a href="/invitations">Back to Invitations</a>
     </p>
     """
+
+
+
+
 
 @app.route("/coordinate/<int:invitation_id>", methods=["GET", "POST"])
 def coordinate_request(invitation_id):
