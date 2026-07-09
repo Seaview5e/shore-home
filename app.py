@@ -1729,14 +1729,6 @@ def build_admin_visit_ics(
     location_text=""
 ):
 
-    # all the ICS code I gave you
-
-    return ics_text
-
-
-def notify_admin(action_title, details, review_path="/dashboard"):
-
-
 
 def notify_admin(action_title, details, review_path="/dashboard"):
 
