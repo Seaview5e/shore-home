@@ -12,6 +12,7 @@ import traceback
 import re
 import hmac
 import secrets
+import uuid
 from werkzeug.exceptions import HTTPException
  
  
@@ -1823,6 +1824,71 @@ def notify_admin_coordination_response(conn, group_id, guest_name, action_title=
             f"Group: {group_title}\nResponses: {responded_count} of {total_count}\nReady to review date matches.",
             f"/coordination-group/{group_id}"
         )
+
+def build_admin_visit_ics(
+    guest_names,
+    room_names,
+    arrival_date,
+    departure_date,
+    location_text=""
+):
+
+    def ics_escape(value):
+
+        value = safe_text(value)
+
+        value = value.replace("\\", "\\\\")
+        value = value.replace(";", "\\;")
+        value = value.replace(",", "\\,")
+        value = value.replace("\r\n", "\\n")
+        value = value.replace("\n", "\\n")
+
+        return value
+
+    guest_names = safe_text(guest_names).strip()
+    room_names = safe_text(room_names).strip()
+    location_text = safe_text(location_text).strip()
+
+    summary = guest_names
+
+    if room_names:
+        summary += f": {room_names}"
+
+    description = "\\n".join([
+        f"Guest(s): {guest_names}",
+        f"Room(s): {room_names}",
+        f"Arrival: {arrival_date}",
+        f"Departure: {departure_date}"
+    ])
+
+    event_uid = (
+        f"strathmere-visit-"
+        f"{arrival_date}-"
+        f"{departure_date}-"
+        f"{uuid.uuid4()}@shore-home"
+    )
+
+    ics_text = "\r\n".join([
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Strathmere Visit Request System//EN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        "BEGIN:VEVENT",
+        f"UID:{event_uid}",
+        f"DTSTAMP:{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}",
+        f"DTSTART;VALUE=DATE:{safe_text(arrival_date).replace('-', '')}",
+        f"DTEND;VALUE=DATE:{safe_text(departure_date).replace('-', '')}",
+        f"SUMMARY:{ics_escape(summary)}",
+        f"LOCATION:{ics_escape(location_text)}",
+        f"DESCRIPTION:{ics_escape(description)}",
+        "END:VEVENT",
+        "END:VCALENDAR",
+        ""
+    ])
+
+    return ics_text
+
 
 def format_date(date_string):
     try:
