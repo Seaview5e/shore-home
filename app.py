@@ -1649,7 +1649,7 @@ def add_email_header_image_if_available(msg):
         )
 
 
-def send_email(to_email, subject, body, html_body=None):
+def send_email(to_email, subject, body, html_body=None, attachments=None):
 
     if not EMAIL_APP_PASSWORD:
         write_email_audit(to_email, subject, "FAILED", "EMAIL_APP_PASSWORD missing")
@@ -1661,9 +1661,34 @@ def send_email(to_email, subject, body, html_body=None):
     msg["From"] = EMAIL_ADDRESS
     msg["To"] = to_email
     msg["Subject"] = subject
+
     msg.set_content(body)
 
+    if attachments:
+
+        for attachment in attachments:
+
+            filename = safe_text(attachment.get("filename")).strip()
+            content = attachment.get("content", "")
+            maintype = safe_text(attachment.get("maintype")).strip() or "text"
+            subtype = safe_text(attachment.get("subtype")).strip() or "calendar"
+
+            if not filename:
+                filename = "visit.ics"
+
+            if isinstance(content, str):
+                content = content.encode("utf-8")
+
+            msg.add_attachment(
+                content,
+                maintype=maintype,
+                subtype=subtype,
+                filename=filename
+            )
+
     if HTML_EMAILS_ENABLED:
+
+
 
         try:
             if html_body is None:
