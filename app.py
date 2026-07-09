@@ -14262,7 +14262,40 @@ def invitations_page():
         "closed"
     ]
 
+    all_year_invitations = conn.execute("""
+        SELECT
+            invitations.id,
+            invitations.guest_profile_id,
+            invitations.invitation_title,
+            invitations.message,
+            invitations.status,
+            invitations.response_notes,
+            invitations.created_at,
+            guest_profiles.primary_name,
+            guest_profiles.primary_email,
+            COUNT(booking_requests.id) AS request_count
+        FROM invitations
+
+        JOIN guest_profiles
+            ON invitations.guest_profile_id = guest_profiles.id
+
+        LEFT JOIN booking_requests
+            ON booking_requests.invitation_id = invitations.id
+
+        WHERE strftime('%Y', invitations.created_at) = ?
+
+        GROUP BY invitations.id
+
+        ORDER BY
+            guest_profiles.primary_email,
+            invitations.created_at DESC
+    """, (
+        str(selected_year),
+    )).fetchall()
+
     if filter_status in valid_filters:
+
+    
 
         invitations = conn.execute("""
             SELECT
@@ -14354,7 +14387,8 @@ def invitations_page():
 
     invited_profile_ids = set()
 
-    for invite in invitations:
+
+    for invite in all_year_invitations:
 
         invited_profile_ids.add(
             invite["guest_profile_id"]
@@ -14365,10 +14399,11 @@ def invitations_page():
         profile_id = profile["id"]
 
         matching_invites = [
-            i for i in invitations
+            i for i in all_year_invitations
             if i["guest_profile_id"] == profile_id
         ]
 
+        
         if not matching_invites:
 
             not_invited.append(profile)
