@@ -14262,8 +14262,7 @@ valid_filters = [
     "closed"
 ]
 
-
-    all_year_invitations = conn.execute("""
+all_year_invitations = conn.execute("""
         SELECT
             invitations.id,
             invitations.guest_profile_id,
