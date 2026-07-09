@@ -5,7 +5,7 @@ import smtplib
 from email.message import EmailMessage
 import os
 import shutil
-import sqlite3
+import sqlite3All | Draft | Sent | Responded | Closed
 import html as html_escape_module
 import logging
 import traceback
@@ -14255,12 +14255,13 @@ def invitations_page():
         ORDER BY primary_name
     """).fetchall()
 
-    valid_filters = [
-        "draft",
-        "sent",
-        "responded",
-        "closed"
-    ]
+valid_filters = [
+    "draft",
+    "no_reply",
+    "replied",
+    "closed"
+]
+
 
     all_year_invitations = conn.execute("""
         SELECT
@@ -14293,11 +14294,27 @@ def invitations_page():
         str(selected_year),
     )).fetchall()
 
+
+
     if filter_status in valid_filters:
 
-    
+        if filter_status == "draft":
 
-        invitations = conn.execute("""
+            filter_where = "invitations.status = 'draft'"
+
+        elif filter_status == "no_reply":
+
+            filter_where = "invitations.status = 'sent' AND COUNT(booking_requests.id) = 0"
+
+        elif filter_status == "replied":
+
+            filter_where = "COUNT(booking_requests.id) > 0"
+
+        elif filter_status == "closed":
+
+            filter_where = "invitations.status = 'closed'"
+
+        invitations = conn.execute(f"""
             SELECT
                 invitations.id,
                 invitations.guest_profile_id,
@@ -14317,19 +14334,20 @@ def invitations_page():
             LEFT JOIN booking_requests
                 ON booking_requests.invitation_id = invitations.id
 
-            WHERE invitations.status = ?
-              AND strftime('%Y', invitations.created_at) = ?
+            WHERE strftime('%Y', invitations.created_at) = ?
 
             GROUP BY invitations.id
+
+            HAVING {filter_where}
 
             ORDER BY
                 guest_profiles.primary_email,
                 invitations.created_at DESC
         """, (
-            filter_status,
-            str(selected_year)
+            str(selected_year),
         )).fetchall()
 
+  
     else:
 
         invitations = conn.execute("""
@@ -14470,14 +14488,19 @@ def invitations_page():
         </a>
     </p>
 
+
     <p>
-        {link("All", "all")} |
-        {link("Draft", "draft")} |
-        {link("Sent", "sent")} |
-        {link("Responded", "responded")} |
+
+        {link("All Invitations", "all")} |
+        {link("Draft / Not Sent", "draft")} |
+        {link("Sent / No Reply", "no_reply")} |
+        {link("Replied", "replied")} |
         {link("Closed", "closed")}
+    
     </p>
 
+Deltet end 
+         
     <h2>Invitation Status Summary</h2>
 
     <table border="1"
