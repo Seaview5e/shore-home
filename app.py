@@ -19070,6 +19070,13 @@ def send_preview_email():
 
     send_email(to_email, subject, body)
 
+    write_email_audit(
+        ADMIN_NOTIFICATION_EMAIL,
+        "ICS debug",
+        "ICS_DEBUG",
+        "email_type=" + safe_text(email_type) + " request_id=" + safe_text(clean_request_id)
+    )
+
     try:
 
         conn.execute("BEGIN")
