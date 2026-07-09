@@ -1720,16 +1720,7 @@ def send_email(to_email, subject, body, html_body=None, attachments=None):
     except Exception as error:
         write_email_audit(to_email, subject, "FAILED", error)
         raise
-
-def build_admin_visit_ics(
-    guest_names,
-    room_names,
-    arrival_date,
-    departure_date,
-    location_text=""
-):
-
-
+        
 def notify_admin(action_title, details, review_path="/dashboard"):
 
     if not ADMIN_NOTIFICATIONS_ENABLED:
