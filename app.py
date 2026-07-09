@@ -14255,14 +14255,14 @@ def invitations_page():
         ORDER BY primary_name
     """).fetchall()
 
-valid_filters = [
-    "draft",
-    "no_reply",
-    "replied",
-    "closed"
-]
+    valid_filters = [
+        "draft",
+        "no_reply",
+        "replied",
+        "closed"
+    ]
 
-all_year_invitations = conn.execute("""
+    all_year_invitations = conn.execute("""
         SELECT
             invitations.id,
             invitations.guest_profile_id,
@@ -14293,24 +14293,18 @@ all_year_invitations = conn.execute("""
         str(selected_year),
     )).fetchall()
 
-
-
     if filter_status in valid_filters:
 
         if filter_status == "draft":
-
             filter_where = "invitations.status = 'draft'"
 
         elif filter_status == "no_reply":
-
             filter_where = "invitations.status = 'sent' AND COUNT(booking_requests.id) = 0"
 
         elif filter_status == "replied":
-
             filter_where = "COUNT(booking_requests.id) > 0"
 
         elif filter_status == "closed":
-
             filter_where = "invitations.status = 'closed'"
 
         invitations = conn.execute(f"""
@@ -14346,7 +14340,6 @@ all_year_invitations = conn.execute("""
             str(selected_year),
         )).fetchall()
 
-  
     else:
 
         invitations = conn.execute("""
@@ -14379,6 +14372,8 @@ all_year_invitations = conn.execute("""
         """, (
             str(selected_year),
         )).fetchall()
+
+
 
     invitation_requests = conn.execute("""
         SELECT
