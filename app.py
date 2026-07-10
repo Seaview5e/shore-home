@@ -12,8 +12,9 @@ import traceback
 import re
 import hmac
 import secrets
+import uuid
 from werkzeug.exceptions import HTTPException
- 
+  
  
 app = Flask(__name__)
 
@@ -1649,7 +1650,7 @@ def add_email_header_image_if_available(msg):
         )
 
 
-def send_email(to_email, subject, body, html_body=None):
+def send_email(to_email, subject, body, html_body=None, attachments=None):
 
     if not EMAIL_APP_PASSWORD:
         write_email_audit(to_email, subject, "FAILED", "EMAIL_APP_PASSWORD missing")
@@ -1661,9 +1662,34 @@ def send_email(to_email, subject, body, html_body=None):
     msg["From"] = EMAIL_ADDRESS
     msg["To"] = to_email
     msg["Subject"] = subject
+
     msg.set_content(body)
 
+    if attachments:
+
+        for attachment in attachments:
+
+            filename = safe_text(attachment.get("filename")).strip()
+            content = attachment.get("content", "")
+            maintype = safe_text(attachment.get("maintype")).strip() or "text"
+            subtype = safe_text(attachment.get("subtype")).strip() or "calendar"
+
+            if not filename:
+                filename = "visit.ics"
+
+            if isinstance(content, str):
+                content = content.encode("utf-8")
+
+            msg.add_attachment(
+                content,
+                maintype=maintype,
+                subtype=subtype,
+                filename=filename
+            )
+
     if HTML_EMAILS_ENABLED:
+
+
 
         try:
             if html_body is None:
@@ -1695,9 +1721,7 @@ def send_email(to_email, subject, body, html_body=None):
     except Exception as error:
         write_email_audit(to_email, subject, "FAILED", error)
         raise
-
-
-
+        
 def notify_admin(action_title, details, review_path="/dashboard"):
 
     if not ADMIN_NOTIFICATIONS_ENABLED:
@@ -1800,6 +1824,71 @@ def notify_admin_coordination_response(conn, group_id, guest_name, action_title=
             f"Group: {group_title}\nResponses: {responded_count} of {total_count}\nReady to review date matches.",
             f"/coordination-group/{group_id}"
         )
+
+def build_admin_visit_ics(
+    guest_names,
+    room_names,
+    arrival_date,
+    departure_date,
+    location_text=""
+):
+
+    def ics_escape(value):
+
+        value = safe_text(value)
+
+        value = value.replace("\\", "\\\\")
+        value = value.replace(";", "\\;")
+        value = value.replace(",", "\\,")
+        value = value.replace("\r\n", "\\n")
+        value = value.replace("\n", "\\n")
+
+        return value
+
+    guest_names = safe_text(guest_names).strip()
+    room_names = safe_text(room_names).strip()
+    location_text = safe_text(location_text).strip()
+
+    summary = guest_names
+
+    if room_names:
+        summary += f": {room_names}"
+
+    description = "\\n".join([
+        f"Guest(s): {guest_names}",
+        f"Room(s): {room_names}",
+        f"Arrival: {arrival_date}",
+        f"Departure: {departure_date}"
+    ])
+
+    event_uid = (
+        f"strathmere-visit-"
+        f"{arrival_date}-"
+        f"{departure_date}-"
+        f"{uuid.uuid4()}@shore-home"
+    )
+
+    ics_text = "\r\n".join([
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Strathmere Visit Request System//EN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        "BEGIN:VEVENT",
+        f"UID:{event_uid}",
+        f"DTSTAMP:{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}",
+        f"DTSTART;VALUE=DATE:{safe_text(arrival_date).replace('-', '')}",
+        f"DTEND;VALUE=DATE:{safe_text(departure_date).replace('-', '')}",
+        f"SUMMARY:{ics_escape(summary)}",
+        f"LOCATION:{ics_escape(location_text)}",
+        f"DESCRIPTION:{ics_escape(description)}",
+        "END:VEVENT",
+        "END:VCALENDAR",
+        ""
+    ])
+
+    return ics_text
+
 
 def format_date(date_string):
     try:
@@ -14257,14 +14346,57 @@ def invitations_page():
 
     valid_filters = [
         "draft",
-        "sent",
-        "responded",
+        "no_reply",
+        "replied",
         "closed"
     ]
 
+    all_year_invitations = conn.execute("""
+        SELECT
+            invitations.id,
+            invitations.guest_profile_id,
+            invitations.invitation_title,
+            invitations.message,
+            invitations.status,
+            invitations.response_notes,
+            invitations.created_at,
+            guest_profiles.primary_name,
+            guest_profiles.primary_email,
+            COUNT(booking_requests.id) AS request_count
+        FROM invitations
+
+        JOIN guest_profiles
+            ON invitations.guest_profile_id = guest_profiles.id
+
+        LEFT JOIN booking_requests
+            ON booking_requests.invitation_id = invitations.id
+
+        WHERE strftime('%Y', invitations.created_at) = ?
+
+        GROUP BY invitations.id
+
+        ORDER BY
+            guest_profiles.primary_email,
+            invitations.created_at DESC
+    """, (
+        str(selected_year),
+    )).fetchall()
+
     if filter_status in valid_filters:
 
-        invitations = conn.execute("""
+        if filter_status == "draft":
+            filter_where = "invitations.status = 'draft'"
+
+        elif filter_status == "no_reply":
+            filter_where = "invitations.status = 'sent' AND COUNT(booking_requests.id) = 0"
+
+        elif filter_status == "replied":
+            filter_where = "COUNT(booking_requests.id) > 0"
+
+        elif filter_status == "closed":
+            filter_where = "invitations.status = 'closed'"
+
+        invitations = conn.execute(f"""
             SELECT
                 invitations.id,
                 invitations.guest_profile_id,
@@ -14284,17 +14416,17 @@ def invitations_page():
             LEFT JOIN booking_requests
                 ON booking_requests.invitation_id = invitations.id
 
-            WHERE invitations.status = ?
-              AND strftime('%Y', invitations.created_at) = ?
+            WHERE strftime('%Y', invitations.created_at) = ?
 
             GROUP BY invitations.id
+
+            HAVING {filter_where}
 
             ORDER BY
                 guest_profiles.primary_email,
                 invitations.created_at DESC
         """, (
-            filter_status,
-            str(selected_year)
+            str(selected_year),
         )).fetchall()
 
     else:
@@ -14330,6 +14462,8 @@ def invitations_page():
             str(selected_year),
         )).fetchall()
 
+
+
     invitation_requests = conn.execute("""
         SELECT
             booking_requests.id,
@@ -14354,7 +14488,8 @@ def invitations_page():
 
     invited_profile_ids = set()
 
-    for invite in invitations:
+
+    for invite in all_year_invitations:
 
         invited_profile_ids.add(
             invite["guest_profile_id"]
@@ -14365,10 +14500,11 @@ def invitations_page():
         profile_id = profile["id"]
 
         matching_invites = [
-            i for i in invitations
+            i for i in all_year_invitations
             if i["guest_profile_id"] == profile_id
         ]
 
+        
         if not matching_invites:
 
             not_invited.append(profile)
@@ -14435,14 +14571,19 @@ def invitations_page():
         </a>
     </p>
 
+
     <p>
-        {link("All", "all")} |
-        {link("Draft", "draft")} |
-        {link("Sent", "sent")} |
-        {link("Responded", "responded")} |
+
+        {link("All Invitations", "all")} |
+        {link("Draft / Not Sent", "draft")} |
+        {link("Sent / No Reply", "no_reply")} |
+        {link("Replied", "replied")} |
         {link("Closed", "closed")}
+    
     </p>
 
+Deltet end 
+         
     <h2>Invitation Status Summary</h2>
 
     <table border="1"
@@ -18929,6 +19070,92 @@ def send_preview_email():
 
     send_email(to_email, subject, body)
 
+    if email_type == "approval" and clean_request_id:
+
+        try:
+            admin_calendar_email = safe_text(ADMIN_NOTIFICATION_EMAIL).strip()
+
+            if is_valid_email_address(admin_calendar_email):
+
+                if not request_row:
+                    request_row = conn.execute("""
+                        SELECT *
+                        FROM booking_requests
+                        WHERE id = ?
+                    """, (
+                        clean_request_id,
+                    )).fetchone()
+
+                if request_row:
+
+                    room_rows = conn.execute("""
+                        SELECT rooms.name
+                        FROM bookings
+                        JOIN rooms
+                            ON bookings.room_id = rooms.id
+                        WHERE bookings.request_id = ?
+                          AND bookings.status = 'approved'
+                        ORDER BY rooms.name
+                    """, (
+                        clean_request_id,
+                    )).fetchall()
+
+                    room_names = ", ".join(
+                        display_room_name(row["name"])
+                        for row in room_rows
+                    )
+
+                    if not room_names:
+                        room_names = "Room assignment not listed"
+
+                    additional_names = safe_text(
+                        row_value(request_row, "additional_names")
+                    ).strip()
+
+                    location_text = additional_names
+
+                    if not location_text:
+                        location_text = safe_text(request_row["name"])
+
+                    ics_text = build_admin_visit_ics(
+                        guest_names=safe_text(request_row["name"]),
+                        room_names=room_names,
+                        arrival_date=safe_text(request_row["arrival_date"]),
+                        departure_date=safe_text(request_row["departure_date"]),
+                        location_text=location_text
+                    )
+
+                    safe_filename_name = re.sub(
+                        r"[^A-Za-z0-9_-]+",
+                        "_",
+                        safe_text(request_row["name"]).strip()
+                    ).strip("_")
+
+                    if not safe_filename_name:
+                        safe_filename_name = "visit"
+
+                    send_email(
+                        admin_calendar_email,
+                        "Calendar: " + safe_text(request_row["name"]) + " Strathmere Visit",
+                        "Attached is the Apple Calendar file for this confirmed Strathmere visit.",
+                        attachments=[
+                            {
+                                "filename": safe_filename_name + "_strathmere_visit.ics",
+                                "content": ics_text,
+                                "maintype": "text",
+                                "subtype": "calendar"
+                            }
+                        ]
+                    )
+
+        except Exception as calendar_error:
+            write_email_audit(
+                ADMIN_NOTIFICATION_EMAIL,
+                "Calendar attachment failed",
+                "ICS_FAILED",
+                calendar_error
+            )
+
     try:
 
         conn.execute("BEGIN")
@@ -19022,6 +19249,7 @@ def send_preview_email():
         <a href="/requests">Request Review</a>
     </p>
     """
+
 
 @app.route("/preview-invitation-email/<int:invitation_id>")
 def preview_invitation_email(invitation_id):
@@ -19307,12 +19535,6 @@ def send_invitation_email():
     request_link = f"{BASE_URL}/invite/{invitation_id}"
     coordination_link = f"{BASE_URL}/coordinate/{invitation_id}"
 
-    # V30.0:
-    # Never send a posted preview textarea body.
-    # Rebuild the final email from the current invitation.txt template at send time.
-    # The optional saved invitation message is available only where the template
-    # explicitly includes {{ message }}.
-    
     existing_reservations_section = existing_reservations_section_for_guest(
         conn,
         row_value(invite, "guest_profile_id")
@@ -30924,6 +31146,50 @@ def coordination_group_close(group_id):
             )
             sent_count += 1
             sent_member_ids.append(final_request["member_id"])
+
+            try:
+                admin_calendar_email = safe_text(ADMIN_NOTIFICATION_EMAIL).strip()
+
+                if is_valid_email_address(admin_calendar_email):
+
+                    ics_text = build_admin_visit_ics(
+                        guest_names=safe_text(final_request["name"]),
+                        room_names=room_list,
+                        arrival_date=safe_text(final_request["arrival_date"]),
+                        departure_date=safe_text(final_request["departure_date"]),
+                        location_text=group_member_list_text
+                    )
+
+                    safe_filename_name = re.sub(
+                        r"[^A-Za-z0-9_-]+",
+                        "_",
+                        safe_text(final_request["name"]).strip()
+                    ).strip("_")
+
+                    if not safe_filename_name:
+                        safe_filename_name = "visit"
+
+                    send_email(
+                        admin_calendar_email,
+                        "Calendar: " + safe_text(final_request["name"]) + " Strathmere Visit",
+                        "Attached is the Apple Calendar file for this confirmed Strathmere visit.",
+                        attachments=[
+                            {
+                                "filename": safe_filename_name + "_strathmere_visit.ics",
+                                "content": ics_text,
+                                "maintype": "text",
+                                "subtype": "calendar"
+                            }
+                        ]
+                    )
+
+            except Exception as calendar_error:
+                write_email_audit(
+                    ADMIN_NOTIFICATION_EMAIL,
+                    "Calendar attachment failed",
+                    "ICS_FAILED",
+                    calendar_error
+                )
 
         except Exception as error:
 
